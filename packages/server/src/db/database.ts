@@ -110,6 +110,11 @@ const MIGRATIONS: string[] = [
      'Du bist ein Security-Reviewer. Pruefe die Aenderungen dieses Feature-Branches (git diff gegen den Merge-Base) auf: Injection-Risiken, unsichere Dateizugriffe, Command-Injection, Secrets im Code, unsichere Defaults, fehlende Validierung an Vertrauensgrenzen. Schreibe deinen Bericht als Markdown nach {reviewFile}. Die LETZTE Zeile MUSS exakt lauten: VERDICT: PASS oder VERDICT: FAIL. FAIL nur bei echten Sicherheitsproblemen, nicht bei Stilfragen.',
      1);
   `,
+  // WP7: Merge-Modus + Editor-Kommando pro Projekt
+  `
+  ALTER TABLE projects ADD COLUMN merge_mode TEXT NOT NULL DEFAULT 'ff';
+  ALTER TABLE projects ADD COLUMN editor_cmd TEXT;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

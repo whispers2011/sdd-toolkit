@@ -42,6 +42,8 @@ export class OnboardingService {
       enabledPhases: DEFAULT_ENABLED,
       verifyCommands: [],
       automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
     });
 
     const importedFeatures: string[] = [];

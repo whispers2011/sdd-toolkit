@@ -78,7 +78,7 @@ export async function buildServer(deps: ApiDeps) {
   app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/projects/:id', (req) => {
     const allowed: Record<string, unknown> = {};
     const b = req.body;
-    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation'] as const) {
+    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'mergeMode', 'editorCmd'] as const) {
       if (key in b) allowed[key] = b[key];
     }
     deps.projects.update(req.params.id, allowed);
@@ -117,6 +117,20 @@ export async function buildServer(deps: ApiDeps) {
     deps.orchestrator.discard(req.params.id, validatePhase(req.params.phase));
     return deps.features.get(req.params.id);
   });
+
+  app.patch<{ Params: { id: string }; Body: { automation?: Record<string, unknown> } }>(
+    '/api/features/:id',
+    (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      if (req.body.automation !== undefined) {
+        deps.features.setAutomation(feature.id, req.body.automation);
+      }
+      const fresh = deps.features.get(feature.id);
+      if (fresh) bus.emitEvent('feature_updated', fresh);
+      return fresh;
+    },
+  );
 
   app.post<{ Params: { id: string }; Body: { to: string } }>('/api/features/:id/advance', async (req) => {
     await deps.orchestrator.advanceTo(req.params.id, validatePhase(req.body.to));

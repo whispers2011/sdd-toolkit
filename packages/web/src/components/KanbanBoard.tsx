@@ -4,6 +4,8 @@ import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
+import { PresetChip } from './ProjectSettings.js';
+import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
 
 const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
 
@@ -103,6 +105,7 @@ export function KanbanBoard() {
 
 function FeatureCard({ feature, column }: { feature: Feature; column: Column }) {
   const { state, dispatch } = useStore();
+  const [showAutomation, setShowAutomation] = useState(false);
   const project = state.app?.projects.find((p) => p.id === feature.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
 
@@ -126,8 +129,37 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
           {feature.name}
         </button>
         {session && <span className={`status-dot status-${session.status} ml-auto`} />}
+        <button
+          onClick={() => setShowAutomation(!showAutomation)}
+          className={`${session ? '' : 'ml-auto '}rounded px-1 text-xs text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
+          title="Automation-Override für dieses Feature"
+        >
+          ⚙
+        </button>
       </div>
       <div className="mt-1 text-xs text-zinc-500">{project?.name}</div>
+      {showAutomation && (
+        <div className="mt-2 flex gap-1">
+          <PresetChip
+            active={Object.keys(feature.automation).length === 0}
+            onClick={() => void call(() => api.updateFeature(feature.id, { automation: {} }))}
+          >
+            erben
+          </PresetChip>
+          <PresetChip
+            active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL2_DEFAULTS)}
+            onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL2_DEFAULTS }))}
+          >
+            L2
+          </PresetChip>
+          <PresetChip
+            active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL3_DEFAULTS)}
+            onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL3_DEFAULTS }))}
+          >
+            L3
+          </PresetChip>
+        </div>
+      )}
 
       {phaseState?.status === 'running' && (
         <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">

@@ -231,7 +231,7 @@ export class MergeQueueService {
       projectPath: project.path,
       branch: feature.branch,
       defaultBranch: project.defaultBranch,
-      mode: 'ff',
+      mode: project.mergeMode,
       message: `feat: ${feature.name}`,
     });
     if (!merge.ok) {

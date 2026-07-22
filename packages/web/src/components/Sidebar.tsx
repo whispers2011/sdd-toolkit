@@ -2,11 +2,13 @@ import { useState } from 'react';
 import type { Feature } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
+import { ProjectSettings } from './ProjectSettings.js';
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
   const [showNewProject, setShowNewProject] = useState(false);
   const [newFeatureFor, setNewFeatureFor] = useState<string | null>(null);
+  const [settingsFor, setSettingsFor] = useState<string | null>(null);
   if (!state.app) return null;
 
   const sessionFor = (featureId: string): LiveSessionInfo | undefined =>
@@ -59,6 +61,16 @@ export function Sidebar() {
               >
                 +
               </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSettingsFor(project.id);
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Projekt-Einstellungen"
+              >
+                ⚙
+              </button>
             </div>
             <ul className="mt-0.5 space-y-0.5 pl-3">
               {state.app!.features
@@ -95,6 +107,10 @@ export function Sidebar() {
 
       {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
       {newFeatureFor && <NewFeatureDialog projectId={newFeatureFor} onClose={() => setNewFeatureFor(null)} />}
+      {settingsFor && (() => {
+        const project = state.app!.projects.find((p) => p.id === settingsFor);
+        return project ? <ProjectSettings project={project} onClose={() => setSettingsFor(null)} /> : null;
+      })()}
     </aside>
   );
 }

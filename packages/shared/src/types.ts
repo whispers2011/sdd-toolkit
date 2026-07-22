@@ -84,6 +84,9 @@ export interface Project {
   enabledPhases: FeaturePhase[];
   verifyCommands: VerifyCommand[];
   automation: Partial<AutomationSettings>;
+  mergeMode: 'ff' | 'squash';
+  /** Editor-Öffner, z. B. "code -g {file}:{line}" (WP10). */
+  editorCmd: string | null;
   createdAt: number;
 }
 

@@ -25,6 +25,8 @@ interface ProjectRow {
   enabled_phases: string;
   verify_commands: string;
   automation: string;
+  merge_mode: string;
+  editor_cmd: string | null;
   created_at: number;
 }
 
@@ -38,6 +40,8 @@ function toProject(r: ProjectRow): Project {
     enabledPhases: JSON.parse(r.enabled_phases) as FeaturePhase[],
     verifyCommands: JSON.parse(r.verify_commands) as VerifyCommand[],
     automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
+    mergeMode: r.merge_mode === 'squash' ? 'squash' : 'ff',
+    editorCmd: r.editor_cmd,
     createdAt: r.created_at,
   };
 }
@@ -50,8 +54,8 @@ export class ProjectRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, merge_mode, editor_cmd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -62,6 +66,8 @@ export class ProjectRepo {
         JSON.stringify(p.enabledPhases),
         JSON.stringify(p.verifyCommands),
         JSON.stringify(p.automation),
+        p.mergeMode,
+        p.editorCmd,
         createdAt,
       );
     return { ...p, id, createdAt };
@@ -73,7 +79,7 @@ export class ProjectRepo {
     const merged = { ...cur, ...patch };
     this.db
       .prepare(
-        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=? WHERE id=?`,
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, merge_mode=?, editor_cmd=? WHERE id=?`,
       )
       .run(
         merged.name,
@@ -83,6 +89,8 @@ export class ProjectRepo {
         JSON.stringify(merged.enabledPhases),
         JSON.stringify(merged.verifyCommands),
         JSON.stringify(merged.automation),
+        merged.mergeMode,
+        merged.editorCmd,
         id,
       );
   }
