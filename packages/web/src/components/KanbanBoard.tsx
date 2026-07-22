@@ -1,0 +1,184 @@
+import { useState, type DragEvent } from 'react';
+import type { Feature, FeaturePhase } from '@sdd/shared';
+import { FEATURE_PHASES } from '@sdd/shared';
+import { api } from '../api.js';
+import { useStore } from '../store.js';
+
+type Column = FeaturePhase | 'integration' | 'done';
+
+const PHASE_LABELS: Record<FeaturePhase, string> = {
+  specify: 'Specify',
+  clarify: 'Clarify',
+  plan: 'Plan',
+  checklist: 'Checklist',
+  analyze: 'Analyze',
+  tasks: 'Tasks',
+  implement: 'Implement',
+};
+
+/** Spalte, in der ein Feature aktuell steht. */
+function columnOf(feature: Feature): Column {
+  if (feature.integration === 'merged') return 'done';
+  if (feature.integration !== 'none') return 'integration';
+  for (const p of FEATURE_PHASES) {
+    const state = feature.phases[p];
+    if (state && state.status !== 'approved') return p;
+  }
+  return 'integration'; // alles approved → bereit zur Integration
+}
+
+export function KanbanBoard() {
+  const { state, dispatch } = useStore();
+  const [dragOver, setDragOver] = useState<Column | null>(null);
+  if (!state.app) return null;
+
+  const features = state.app.features.filter(
+    (f) => state.selectedProjectId === null || f.projectId === state.selectedProjectId,
+  );
+  const enabledUnion = new Set<FeaturePhase>();
+  for (const p of state.app.projects) {
+    if (state.selectedProjectId !== null && p.id !== state.selectedProjectId) continue;
+    for (const phase of p.enabledPhases) enabledUnion.add(phase);
+  }
+  const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));
+  const columns: Column[] = [...phaseColumns, 'integration', 'done'];
+
+  const call = (fn: () => Promise<unknown>) =>
+    fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+
+  const onDrop = (column: Column) => (e: DragEvent) => {
+    e.preventDefault();
+    setDragOver(null);
+    const featureId = e.dataTransfer.getData('text/feature-id');
+    if (!featureId) return;
+    if (column === 'done') return;
+    if (column === 'integration') {
+      void call(() => api.integrate(featureId));
+    } else {
+      void call(() => api.advance(featureId, column));
+    }
+  };
+
+  return (
+    <div className="flex h-full gap-3 overflow-x-auto p-4">
+      {columns.map((column) => {
+        const items = features.filter((f) => columnOf(f) === column);
+        return (
+          <div
+            key={column}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragOver(column);
+            }}
+            onDragLeave={() => setDragOver(null)}
+            onDrop={onDrop(column)}
+            className={`flex w-64 shrink-0 flex-col rounded-lg border ${
+              dragOver === column ? 'border-emerald-600 bg-zinc-900' : 'border-zinc-800 bg-zinc-925'
+            }`}
+          >
+            <div className="flex items-center justify-between px-3 py-2">
+              <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+                {column === 'integration' ? 'Integration' : column === 'done' ? 'Done' : PHASE_LABELS[column]}
+              </h3>
+              <span className="text-xs text-zinc-600">{items.length}</span>
+            </div>
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
+              {items.map((feature) => (
+                <FeatureCard key={feature.id} feature={feature} column={column} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FeatureCard({ feature, column }: { feature: Feature; column: Column }) {
+  const { state, dispatch } = useStore();
+  const project = state.app?.projects.find((p) => p.id === feature.projectId);
+  const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
+
+  const call = (fn: () => Promise<unknown>) =>
+    fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+
+  const phaseState = column !== 'integration' && column !== 'done' ? feature.phases[column] : undefined;
+
+  return (
+    <div
+      draggable
+      onDragStart={(e) => e.dataTransfer.setData('text/feature-id', feature.id)}
+      className="cursor-grab rounded-md border border-zinc-800 bg-zinc-900 p-2.5 shadow-sm hover:border-zinc-700 active:cursor-grabbing"
+    >
+      <div className="flex items-center gap-2">
+        <span className="h-2 w-2 shrink-0 rounded-sm" style={{ backgroundColor: project?.color ?? '#71717a' }} />
+        <button
+          className="truncate text-sm font-medium text-zinc-200 hover:underline"
+          onClick={() => dispatch({ type: 'set_view', view: { kind: 'console', featureId: feature.id } })}
+        >
+          {feature.name}
+        </button>
+        {session && <span className={`status-dot status-${session.status} ml-auto`} />}
+      </div>
+      <div className="mt-1 text-xs text-zinc-500">{project?.name}</div>
+
+      {phaseState?.status === 'running' && (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
+          <span className="status-dot status-working" /> läuft …
+        </div>
+      )}
+      {phaseState?.stale && <div className="mt-1 text-xs text-amber-500">⚠ stale — Upstream geändert</div>}
+      {feature.tasksTotal > 0 && (
+        <div className="mt-2">
+          <div className="h-1 overflow-hidden rounded bg-zinc-800">
+            <div
+              className="h-full bg-emerald-600"
+              style={{ width: `${Math.round((feature.tasksDone / feature.tasksTotal) * 100)}%` }}
+            />
+          </div>
+          <div className="mt-0.5 text-right text-xs text-zinc-600">
+            {feature.tasksDone}/{feature.tasksTotal} Tasks
+          </div>
+        </div>
+      )}
+
+      <div className="mt-2 flex flex-wrap gap-1">
+        {phaseState?.status === 'idle' && column !== 'integration' && column !== 'done' && (
+          <CardAction onClick={() => void call(() => api.startPhase(feature.id, column))}>▶ Start</CardAction>
+        )}
+        {phaseState?.status === 'awaiting_review' && column !== 'integration' && column !== 'done' && (
+          <>
+            <CardAction onClick={() => void call(() => api.approvePhase(feature.id, column))}>✓ Approve</CardAction>
+            <CardAction onClick={() => void call(() => api.discardPhase(feature.id, column))}>↺ Verwerfen</CardAction>
+          </>
+        )}
+        {column === 'integration' && feature.integration === 'none' && (
+          <CardAction onClick={() => void call(() => api.integrate(feature.id))}>⇥ Integrieren</CardAction>
+        )}
+        {feature.integration === 'awaiting_human_review' && (
+          <CardAction onClick={() => void call(() => api.approveMerge(feature.id))}>✓ Merge freigeben</CardAction>
+        )}
+        {(feature.integration === 'verify_failed' || feature.integration === 'conflict_escalated') && (
+          <CardAction onClick={() => void call(() => api.retryIntegration(feature.id))}>↻ Erneut</CardAction>
+        )}
+        {feature.integration !== 'none' && feature.integration !== 'merged' && (
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-sky-400">{feature.integration}</span>
+        )}
+        {column === 'done' && (
+          <CardAction onClick={() => void call(() => api.archiveFeature(feature.id))}>🗄 Archivieren</CardAction>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CardAction({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100"
+    >
+      {children}
+    </button>
+  );
+}

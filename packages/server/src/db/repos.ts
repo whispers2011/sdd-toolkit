@@ -1,0 +1,501 @@
+import { nanoid } from 'nanoid';
+import type {
+  AttentionItem,
+  AttentionKind,
+  AutomationSettings,
+  ExecutionRecord,
+  Feature,
+  FeaturePhase,
+  IntegrationStage,
+  MergeQueueItem,
+  Project,
+  VerifyCommand,
+} from '@sdd/shared';
+import { LEVEL2_DEFAULTS, type PhaseMap } from '@sdd/shared';
+import type { DB } from './database.js';
+
+// ---------- Projects ----------
+
+interface ProjectRow {
+  id: string;
+  name: string;
+  path: string;
+  default_branch: string;
+  color: string | null;
+  enabled_phases: string;
+  verify_commands: string;
+  automation: string;
+  created_at: number;
+}
+
+function toProject(r: ProjectRow): Project {
+  return {
+    id: r.id,
+    name: r.name,
+    path: r.path,
+    defaultBranch: r.default_branch,
+    color: r.color,
+    enabledPhases: JSON.parse(r.enabled_phases) as FeaturePhase[],
+    verifyCommands: JSON.parse(r.verify_commands) as VerifyCommand[],
+    automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
+    createdAt: r.created_at,
+  };
+}
+
+export class ProjectRepo {
+  constructor(private db: DB) {}
+
+  create(p: Omit<Project, 'id' | 'createdAt'>): Project {
+    const id = nanoid(10);
+    const createdAt = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        p.name,
+        p.path,
+        p.defaultBranch,
+        p.color,
+        JSON.stringify(p.enabledPhases),
+        JSON.stringify(p.verifyCommands),
+        JSON.stringify(p.automation),
+        createdAt,
+      );
+    return { ...p, id, createdAt };
+  }
+
+  update(id: string, patch: Partial<Omit<Project, 'id' | 'createdAt'>>): void {
+    const cur = this.get(id);
+    if (!cur) throw new Error(`Projekt ${id} nicht gefunden`);
+    const merged = { ...cur, ...patch };
+    this.db
+      .prepare(
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=? WHERE id=?`,
+      )
+      .run(
+        merged.name,
+        merged.path,
+        merged.defaultBranch,
+        merged.color,
+        JSON.stringify(merged.enabledPhases),
+        JSON.stringify(merged.verifyCommands),
+        JSON.stringify(merged.automation),
+        id,
+      );
+  }
+
+  get(id: string): Project | null {
+    const r = this.db.prepare('SELECT * FROM projects WHERE id=?').get(id) as ProjectRow | undefined;
+    return r ? toProject(r) : null;
+  }
+
+  getByPath(path: string): Project | null {
+    const r = this.db.prepare('SELECT * FROM projects WHERE path=?').get(path) as ProjectRow | undefined;
+    return r ? toProject(r) : null;
+  }
+
+  list(): Project[] {
+    return (this.db.prepare('SELECT * FROM projects ORDER BY name').all() as ProjectRow[]).map(toProject);
+  }
+
+  remove(id: string): void {
+    this.db.prepare('DELETE FROM projects WHERE id=?').run(id);
+  }
+}
+
+// ---------- Features ----------
+
+interface FeatureRow {
+  id: string;
+  project_id: string;
+  name: string;
+  branch: string;
+  worktree_path: string | null;
+  phases: string;
+  integration: string;
+  automation: string;
+  tasks_done: number;
+  tasks_total: number;
+  created_at: number;
+  archived_at: number | null;
+}
+
+function toFeature(r: FeatureRow): Feature {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    name: r.name,
+    branch: r.branch,
+    worktreePath: r.worktree_path,
+    phases: JSON.parse(r.phases) as PhaseMap,
+    integration: r.integration as IntegrationStage,
+    automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
+    tasksDone: r.tasks_done,
+    tasksTotal: r.tasks_total,
+    createdAt: r.created_at,
+    archivedAt: r.archived_at,
+  };
+}
+
+export class FeatureRepo {
+  constructor(private db: DB) {}
+
+  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt'>): Feature {
+    const id = nanoid(10);
+    const createdAt = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO features (id, project_id, name, branch, worktree_path, phases, integration, automation, tasks_done, tasks_total, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        f.projectId,
+        f.name,
+        f.branch,
+        f.worktreePath,
+        JSON.stringify(f.phases),
+        f.integration,
+        JSON.stringify(f.automation),
+        f.tasksDone,
+        f.tasksTotal,
+        createdAt,
+      );
+    return { ...f, id, createdAt, archivedAt: null };
+  }
+
+  get(id: string): Feature | null {
+    const r = this.db.prepare('SELECT * FROM features WHERE id=?').get(id) as FeatureRow | undefined;
+    return r ? toFeature(r) : null;
+  }
+
+  getByName(projectId: string, name: string): Feature | null {
+    const r = this.db
+      .prepare('SELECT * FROM features WHERE project_id=? AND name=?')
+      .get(projectId, name) as FeatureRow | undefined;
+    return r ? toFeature(r) : null;
+  }
+
+  listByProject(projectId: string, includeArchived = false): Feature[] {
+    const sql = includeArchived
+      ? 'SELECT * FROM features WHERE project_id=? ORDER BY created_at'
+      : 'SELECT * FROM features WHERE project_id=? AND archived_at IS NULL ORDER BY created_at';
+    return (this.db.prepare(sql).all(projectId) as FeatureRow[]).map(toFeature);
+  }
+
+  listAll(): Feature[] {
+    return (
+      this.db.prepare('SELECT * FROM features WHERE archived_at IS NULL ORDER BY created_at').all() as FeatureRow[]
+    ).map(toFeature);
+  }
+
+  savePhases(id: string, phases: PhaseMap): void {
+    this.db.prepare('UPDATE features SET phases=? WHERE id=?').run(JSON.stringify(phases), id);
+  }
+
+  setIntegration(id: string, stage: IntegrationStage): void {
+    this.db.prepare('UPDATE features SET integration=? WHERE id=?').run(stage, id);
+  }
+
+  setWorktree(id: string, worktreePath: string | null): void {
+    this.db.prepare('UPDATE features SET worktree_path=? WHERE id=?').run(worktreePath, id);
+  }
+
+  setTasks(id: string, done: number, total: number): void {
+    this.db.prepare('UPDATE features SET tasks_done=?, tasks_total=? WHERE id=?').run(done, total, id);
+  }
+
+  setAutomation(id: string, automation: Partial<AutomationSettings>): void {
+    this.db.prepare('UPDATE features SET automation=? WHERE id=?').run(JSON.stringify(automation), id);
+  }
+
+  archive(id: string): void {
+    this.db.prepare('UPDATE features SET archived_at=? WHERE id=?').run(Date.now(), id);
+  }
+}
+
+// ---------- Sessions (persistiert für Reaper/Resume) ----------
+
+export interface SessionRow {
+  id: string;
+  feature_id: string | null;
+  project_id: string;
+  kind: string;
+  claude_session_id: string | null;
+  pid: number | null;
+  created_at: number;
+  ended_at: number | null;
+}
+
+export class SessionRepo {
+  constructor(private db: DB) {}
+
+  create(s: { id: string; featureId: string | null; projectId: string; kind: string; pid: number | null }): void {
+    this.db
+      .prepare(
+        'INSERT INTO sessions (id, feature_id, project_id, kind, pid, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(s.id, s.featureId, s.projectId, s.kind, s.pid, Date.now());
+  }
+
+  setClaudeSessionId(id: string, claudeSessionId: string): void {
+    this.db.prepare('UPDATE sessions SET claude_session_id=? WHERE id=?').run(claudeSessionId, id);
+  }
+
+  setPid(id: string, pid: number | null): void {
+    this.db.prepare('UPDATE sessions SET pid=? WHERE id=?').run(pid, id);
+  }
+
+  end(id: string): void {
+    this.db.prepare('UPDATE sessions SET ended_at=?, pid=NULL WHERE id=?').run(Date.now(), id);
+  }
+
+  get(id: string): SessionRow | null {
+    return (this.db.prepare('SELECT * FROM sessions WHERE id=?').get(id) as SessionRow | undefined) ?? null;
+  }
+
+  listOpen(): SessionRow[] {
+    return this.db.prepare('SELECT * FROM sessions WHERE ended_at IS NULL').all() as SessionRow[];
+  }
+
+  latestForFeature(featureId: string): SessionRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM sessions WHERE feature_id=? ORDER BY created_at DESC LIMIT 1')
+        .get(featureId) as SessionRow | undefined) ?? null
+    );
+  }
+}
+
+// ---------- Executions ----------
+
+export class ExecutionRepo {
+  constructor(private db: DB) {}
+
+  start(e: Omit<ExecutionRecord, 'id' | 'status' | 'startedAt' | 'finishedAt' | 'exitCode' | 'costUsd'>): string {
+    const id = nanoid(10);
+    this.db
+      .prepare(
+        `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, log_path)
+         VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+      )
+      .run(id, e.projectId, e.featureId, e.kind, e.phase, Date.now(), e.logPath);
+    return id;
+  }
+
+  finish(id: string, exitCode: number, costUsd: number | null = null): void {
+    this.db
+      .prepare(`UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=? WHERE id=?`)
+      .run(exitCode === 0 ? 'succeeded' : 'failed', Date.now(), exitCode, costUsd, id);
+  }
+
+  /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
+  reapOrphans(): number {
+    return this.db
+      .prepare(`UPDATE executions SET status='orphaned', finished_at=? WHERE status='running'`)
+      .run(Date.now()).changes;
+  }
+
+  list(featureId?: string): ExecutionRecord[] {
+    const rows = featureId
+      ? this.db.prepare('SELECT * FROM executions WHERE feature_id=? ORDER BY started_at DESC').all(featureId)
+      : this.db.prepare('SELECT * FROM executions ORDER BY started_at DESC LIMIT 500').all();
+    return (rows as Record<string, unknown>[]).map((r) => ({
+      id: r.id as string,
+      projectId: r.project_id as string,
+      featureId: r.feature_id as string | null,
+      kind: r.kind as ExecutionRecord['kind'],
+      phase: r.phase as ExecutionRecord['phase'],
+      status: r.status as ExecutionRecord['status'],
+      startedAt: r.started_at as number,
+      finishedAt: r.finished_at as number | null,
+      exitCode: r.exit_code as number | null,
+      costUsd: r.cost_usd as number | null,
+      logPath: r.log_path as string | null,
+    }));
+  }
+}
+
+// ---------- Merge-Queue ----------
+
+export class QueueRepo {
+  constructor(private db: DB) {}
+
+  enqueue(projectId: string, featureId: string): MergeQueueItem {
+    const id = nanoid(10);
+    const max = this.db
+      .prepare('SELECT COALESCE(MAX(position), 0) AS m FROM merge_queue WHERE project_id=?')
+      .get(projectId) as { m: number };
+    const item: MergeQueueItem = {
+      id,
+      projectId,
+      featureId,
+      position: max.m + 1,
+      stage: 'queued',
+      attempts: 0,
+      lastError: null,
+      enqueuedAt: Date.now(),
+    };
+    this.db
+      .prepare(
+        `INSERT INTO merge_queue (id, project_id, feature_id, position, stage, attempts, enqueued_at)
+         VALUES (?, ?, ?, ?, 'queued', 0, ?)`,
+      )
+      .run(id, projectId, featureId, item.position, item.enqueuedAt);
+    return item;
+  }
+
+  head(projectId: string): MergeQueueItem | null {
+    const r = this.db
+      .prepare(`SELECT * FROM merge_queue WHERE project_id=? ORDER BY position LIMIT 1`)
+      .get(projectId) as Record<string, unknown> | undefined;
+    return r ? toQueueItem(r) : null;
+  }
+
+  listByProject(projectId: string): MergeQueueItem[] {
+    return (
+      this.db.prepare('SELECT * FROM merge_queue WHERE project_id=? ORDER BY position').all(projectId) as Record<
+        string,
+        unknown
+      >[]
+    ).map(toQueueItem);
+  }
+
+  setStage(id: string, stage: IntegrationStage, lastError: string | null = null): void {
+    this.db.prepare('UPDATE merge_queue SET stage=?, last_error=? WHERE id=?').run(stage, lastError, id);
+  }
+
+  bumpAttempts(id: string): void {
+    this.db.prepare('UPDATE merge_queue SET attempts=attempts+1 WHERE id=?').run(id);
+  }
+
+  remove(id: string): void {
+    this.db.prepare('DELETE FROM merge_queue WHERE id=?').run(id);
+  }
+}
+
+function toQueueItem(r: Record<string, unknown>): MergeQueueItem {
+  return {
+    id: r.id as string,
+    projectId: r.project_id as string,
+    featureId: r.feature_id as string,
+    position: r.position as number,
+    stage: r.stage as IntegrationStage,
+    attempts: r.attempts as number,
+    lastError: r.last_error as string | null,
+    enqueuedAt: r.enqueued_at as number,
+  };
+}
+
+// ---------- Attention (Exception-Inbox) ----------
+
+export class AttentionRepo {
+  constructor(private db: DB) {}
+
+  raise(a: {
+    kind: AttentionKind;
+    projectId: string;
+    featureId?: string | null;
+    sessionId?: string | null;
+    message: string;
+  }): AttentionItem {
+    // Dedup: gleiche offene Meldung (kind+feature/session) nicht doppelt anlegen.
+    const existing = this.db
+      .prepare(
+        `SELECT id FROM attention WHERE resolved_at IS NULL AND kind=? AND project_id=?
+         AND COALESCE(feature_id,'')=COALESCE(?,'') AND COALESCE(session_id,'')=COALESCE(?,'')`,
+      )
+      .get(a.kind, a.projectId, a.featureId ?? null, a.sessionId ?? null) as { id: string } | undefined;
+    if (existing) return this.get(existing.id)!;
+
+    const item: AttentionItem = {
+      id: nanoid(10),
+      kind: a.kind,
+      projectId: a.projectId,
+      featureId: a.featureId ?? null,
+      sessionId: a.sessionId ?? null,
+      message: a.message,
+      createdAt: Date.now(),
+      resolvedAt: null,
+    };
+    this.db
+      .prepare(
+        `INSERT INTO attention (id, kind, project_id, feature_id, session_id, message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(item.id, item.kind, item.projectId, item.featureId, item.sessionId, item.message, item.createdAt);
+    return item;
+  }
+
+  resolve(id: string): void {
+    this.db.prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(Date.now(), id);
+  }
+
+  /** Offene Items einer Session/eines Features auflösen (z.B. Input wurde gegeben). */
+  resolveFor(filter: { sessionId?: string; featureId?: string; kinds?: AttentionKind[] }): void {
+    const conds: string[] = ['resolved_at IS NULL'];
+    const params: unknown[] = [];
+    if (filter.sessionId) {
+      conds.push('session_id=?');
+      params.push(filter.sessionId);
+    }
+    if (filter.featureId) {
+      conds.push('feature_id=?');
+      params.push(filter.featureId);
+    }
+    if (filter.kinds?.length) {
+      conds.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
+      params.push(...filter.kinds);
+    }
+    this.db.prepare(`UPDATE attention SET resolved_at=? WHERE ${conds.join(' AND ')}`).run(Date.now(), ...params);
+  }
+
+  get(id: string): AttentionItem | null {
+    const r = this.db.prepare('SELECT * FROM attention WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    return r ? toAttention(r) : null;
+  }
+
+  listOpen(): AttentionItem[] {
+    return (
+      this.db.prepare('SELECT * FROM attention WHERE resolved_at IS NULL ORDER BY created_at DESC').all() as Record<
+        string,
+        unknown
+      >[]
+    ).map(toAttention);
+  }
+}
+
+function toAttention(r: Record<string, unknown>): AttentionItem {
+  return {
+    id: r.id as string,
+    kind: r.kind as AttentionKind,
+    projectId: r.project_id as string,
+    featureId: r.feature_id as string | null,
+    sessionId: r.session_id as string | null,
+    message: r.message as string,
+    createdAt: r.created_at as number,
+    resolvedAt: r.resolved_at as number | null,
+  };
+}
+
+// ---------- Settings ----------
+
+export class SettingsRepo {
+  constructor(private db: DB) {}
+
+  getAutomation(): AutomationSettings {
+    const r = this.db.prepare(`SELECT value FROM settings WHERE key='automation'`).get() as
+      | { value: string }
+      | undefined;
+    return r ? { ...LEVEL2_DEFAULTS, ...(JSON.parse(r.value) as Partial<AutomationSettings>) } : LEVEL2_DEFAULTS;
+  }
+
+  setAutomation(a: AutomationSettings): void {
+    this.db
+      .prepare(`INSERT INTO settings (key, value) VALUES ('automation', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify(a));
+  }
+}

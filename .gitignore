@@ -1,0 +1,10 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# Referenz-Repos (nur zur Analyse geklont)
+reference/
+# Laufzeitdaten
+data/
+*.sqlite
+*.sqlite-*

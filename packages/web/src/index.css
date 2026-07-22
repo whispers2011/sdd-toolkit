@@ -1,0 +1,41 @@
+@import 'tailwindcss';
+@import '@xterm/xterm/css/xterm.css';
+
+@theme {
+  --color-zinc-925: #0e0e11;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-200 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.status-dot {
+  @apply inline-block h-2 w-2 rounded-full;
+}
+.status-working {
+  @apply bg-emerald-400;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.status-awaiting_input {
+  @apply bg-amber-400;
+}
+.status-idle {
+  @apply bg-zinc-500;
+}
+.status-stopped {
+  @apply bg-zinc-700;
+}
+.status-errored {
+  @apply bg-red-500;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
