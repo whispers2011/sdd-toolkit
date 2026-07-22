@@ -44,7 +44,11 @@ export function Sidebar() {
               className={`group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 ${
                 state.selectedProjectId === project.id ? 'bg-zinc-800' : 'hover:bg-zinc-900'
               }`}
-              onClick={() => dispatch({ type: 'select_project', projectId: project.id })}
+              onClick={() => {
+                // Klick auf den Projektnamen öffnet das Board dieses Projekts (FR-001/FR-004).
+                dispatch({ type: 'select_project', projectId: project.id });
+                dispatch({ type: 'set_view', view: { kind: 'board' } });
+              }}
             >
               <span
                 className="h-2.5 w-2.5 shrink-0 rounded-sm"
