@@ -7,6 +7,7 @@ const KIND_LABELS: Record<ExecutionInfo['kind'], string> = {
   verify: 'Verifikation',
   review: 'Review-Agent',
   conflict_resolution: 'Konfliktauflösung',
+  chat: 'Chat',
 };
 
 /** Executions-View (WP6): Audit-Trail aller Agent-/Verify-Läufe. */

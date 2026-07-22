@@ -3,9 +3,13 @@ import type {
   AttentionItem,
   AttentionKind,
   AutomationSettings,
+  ChatConversation,
+  ChatMessage,
+  ChatMessageStatus,
   ExecutionRecord,
   Feature,
   FeaturePhase,
+  FeatureProposal,
   IntegrationStage,
   MergeQueueItem,
   Project,
@@ -494,6 +498,196 @@ function toAttention(r: Record<string, unknown>): AttentionItem {
     createdAt: r.created_at as number,
     resolvedAt: r.resolved_at as number | null,
   };
+}
+
+// ---------- Projekt-Chat (Ask-a-Question) ----------
+
+interface ChatConversationRow {
+  id: string;
+  project_id: string;
+  claude_session_id: string | null;
+  created_at: number;
+  updated_at: number;
+  ended_at: number | null;
+}
+
+interface ChatMessageRow {
+  id: string;
+  conversation_id: string;
+  role: string;
+  content: string;
+  status: string;
+  error: string | null;
+  proposal_json: string | null;
+  cost_usd: number | null;
+  tokens: number | null;
+  created_at: number;
+}
+
+function toConversation(r: ChatConversationRow): ChatConversation {
+  return {
+    id: r.id,
+    projectId: r.project_id,
+    claudeSessionId: r.claude_session_id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    endedAt: r.ended_at,
+  };
+}
+
+function toChatMessage(r: ChatMessageRow): ChatMessage {
+  return {
+    id: r.id,
+    conversationId: r.conversation_id,
+    role: r.role as ChatMessage['role'],
+    content: r.content,
+    status: r.status as ChatMessageStatus,
+    error: r.error,
+    proposal: r.proposal_json ? (JSON.parse(r.proposal_json) as FeatureProposal) : null,
+    costUsd: r.cost_usd,
+    tokens: r.tokens,
+    createdAt: r.created_at,
+  };
+}
+
+export class ChatRepo {
+  constructor(private db: DB) {}
+
+  /** Aktive Unterhaltung des Projekts; legt bei Bedarf lazy eine an. */
+  ensureActive(projectId: string): ChatConversation {
+    return this.getActive(projectId) ?? this.createConversation(projectId);
+  }
+
+  getActive(projectId: string): ChatConversation | null {
+    const r = this.db
+      .prepare('SELECT * FROM chat_conversations WHERE project_id=? AND ended_at IS NULL')
+      .get(projectId) as ChatConversationRow | undefined;
+    return r ? toConversation(r) : null;
+  }
+
+  /** Auch beendete Unterhaltungen (z. B. für Vorschlag-Entscheidungen nach Reset). */
+  getConversation(id: string): ChatConversation | null {
+    const r = this.db.prepare('SELECT * FROM chat_conversations WHERE id=?').get(id) as
+      | ChatConversationRow
+      | undefined;
+    return r ? toConversation(r) : null;
+  }
+
+  createConversation(projectId: string): ChatConversation {
+    const now = Date.now();
+    const conv: ChatConversation = {
+      id: nanoid(10),
+      projectId,
+      claudeSessionId: null,
+      createdAt: now,
+      updatedAt: now,
+      endedAt: null,
+    };
+    this.db
+      .prepare(
+        'INSERT INTO chat_conversations (id, project_id, claude_session_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)',
+      )
+      .run(conv.id, projectId, now, now);
+    return conv;
+  }
+
+  endConversation(id: string): void {
+    this.db.prepare('UPDATE chat_conversations SET ended_at=? WHERE id=? AND ended_at IS NULL').run(Date.now(), id);
+  }
+
+  touch(id: string): void {
+    this.db.prepare('UPDATE chat_conversations SET updated_at=? WHERE id=?').run(Date.now(), id);
+  }
+
+  setClaudeSessionId(id: string, claudeSessionId: string | null): void {
+    this.db.prepare('UPDATE chat_conversations SET claude_session_id=? WHERE id=?').run(claudeSessionId, id);
+  }
+
+  listMessages(conversationId: string): ChatMessage[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM chat_messages WHERE conversation_id=? ORDER BY created_at, rowid')
+        .all(conversationId) as ChatMessageRow[]
+    ).map(toChatMessage);
+  }
+
+  getMessage(id: string): ChatMessage | null {
+    const r = this.db.prepare('SELECT * FROM chat_messages WHERE id=?').get(id) as ChatMessageRow | undefined;
+    return r ? toChatMessage(r) : null;
+  }
+
+  createMessage(m: {
+    conversationId: string;
+    role: ChatMessage['role'];
+    content: string;
+    status: ChatMessageStatus;
+  }): ChatMessage {
+    const msg: ChatMessage = {
+      id: nanoid(10),
+      conversationId: m.conversationId,
+      role: m.role,
+      content: m.content,
+      status: m.status,
+      error: null,
+      proposal: null,
+      costUsd: null,
+      tokens: null,
+      createdAt: Date.now(),
+    };
+    this.db
+      .prepare(
+        'INSERT INTO chat_messages (id, conversation_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      )
+      .run(msg.id, msg.conversationId, msg.role, msg.content, msg.status, msg.createdAt);
+    return msg;
+  }
+
+  appendDelta(id: string, delta: string): void {
+    this.db.prepare(`UPDATE chat_messages SET content = content || ? WHERE id=? AND status='streaming'`).run(delta, id);
+  }
+
+  /** Streaming-Nachricht während des Resume-Fallbacks auf leer zurücksetzen. */
+  resetContent(id: string): void {
+    this.db.prepare(`UPDATE chat_messages SET content='' WHERE id=? AND status='streaming'`).run(id);
+  }
+
+  /** Terminaler Abschluss eines Turns — wirkt nur auf noch streamende Nachrichten. */
+  finalizeMessage(
+    id: string,
+    outcome: {
+      status: Exclude<ChatMessageStatus, 'streaming'>;
+      content?: string;
+      error?: string | null;
+      proposal?: FeatureProposal | null;
+      costUsd?: number | null;
+      tokens?: number | null;
+    },
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE chat_messages SET status=?, content=COALESCE(?, content), error=?, proposal_json=?, cost_usd=?, tokens=?
+         WHERE id=? AND status='streaming'`,
+      )
+      .run(
+        outcome.status,
+        outcome.content ?? null,
+        outcome.error ?? null,
+        outcome.proposal ? JSON.stringify(outcome.proposal) : null,
+        outcome.costUsd ?? null,
+        outcome.tokens ?? null,
+        id,
+      );
+  }
+
+  /** Entscheidung zum Feature-Vorschlag verbuchen (Statusübergänge prüft der Service). */
+  setProposal(messageId: string, proposal: FeatureProposal): void {
+    this.db.prepare('UPDATE chat_messages SET proposal_json=? WHERE id=?').run(JSON.stringify(proposal), messageId);
+  }
+
+  /** Boot-Cleanup: streamende Leichen aus früheren Server-Läufen als unterbrochen markieren. */
+  interruptStreaming(): number {
+    return this.db.prepare(`UPDATE chat_messages SET status='interrupted' WHERE status='streaming'`).run().changes;
+  }
 }
 
 // ---------- Personas (WP4) ----------

@@ -3,7 +3,7 @@ import type { Feature } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
-import { VoiceButton } from './VoiceButton.js';
+import { NewFeatureDialog } from './NewFeatureDialog.js';
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
@@ -296,56 +296,6 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
       )}
 
       <DialogActions busy={busy} onCancel={onClose} onSubmit={() => void submit()} submitLabel="Hinzufügen" />
-    </Dialog>
-  );
-}
-
-function NewFeatureDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const { dispatch } = useStore();
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      const feature = await api.createFeature(projectId, name.trim(), description.trim() || undefined);
-      dispatch({ type: 'feature_updated', feature });
-      dispatch({ type: 'set_view', view: { kind: 'console', featureId: feature.id } });
-      onClose();
-    } catch (e) {
-      dispatch({ type: 'error', message: (e as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Dialog title="Neues Feature" onClose={onClose}>
-      <input
-        autoFocus
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        placeholder="feature-name"
-        className="mb-2 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-500"
-      />
-      <div className="relative">
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          placeholder="Beschreibung (optional) — startet direkt /speckit.specify mit diesem Text"
-          rows={4}
-          className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 pr-10 text-sm text-zinc-200 outline-none focus:border-zinc-500"
-        />
-        <div className="absolute top-1.5 right-1.5">
-          <VoiceButton onText={(t) => setDescription((cur) => cur + t)} />
-        </div>
-      </div>
-      <p className="mt-1 text-xs text-zinc-600">
-        Legt Worktree + Branch an und öffnet die Feature-Konsole.
-      </p>
-      <DialogActions busy={busy} onCancel={onClose} onSubmit={() => void submit()} submitLabel="Anlegen" />
     </Dialog>
   );
 }

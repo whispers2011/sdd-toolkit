@@ -19,6 +19,14 @@ export type View =
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string };
 
+/** Laufender Antwort-Stream eines Chat-Turns (kumulierter Text, idempotent). */
+export interface ChatStreamState {
+  projectId: string;
+  conversationId: string;
+  text: string;
+  done: boolean;
+}
+
 export interface UiState {
   app: AppState | null;
   view: View;
@@ -28,6 +36,13 @@ export interface UiState {
   /** Invalidierungs-Zähler je Projekt — Wissens-Views refetchen bei Änderung. */
   knowledgeVersion: Record<string, number>;
   error: string | null;
+  /**
+   * Projekt-Chat: Streams pro messageId + Invalidierungssignal. Die
+   * Panel-Sichtbarkeit ist bewusst lokal (ChatBubble) — hier liegt nur, was
+   * über WS hereinkommt und Panel-Lebenszyklen überleben muss.
+   */
+  chatStreams: Record<string, ChatStreamState>;
+  chatUpdated: { projectId: string; conversationId: string; ts: number } | null;
 }
 
 export type Action =
@@ -41,7 +56,9 @@ export type Action =
   | { type: 'select_project'; projectId: string }
   | { type: 'toggle_completed' }
   | { type: 'knowledge_updated'; projectId: string }
-  | { type: 'error'; message: string | null };
+  | { type: 'error'; message: string | null }
+  | { type: 'chat_stream'; payload: { projectId: string; conversationId: string; messageId: string; text: string; done: boolean } }
+  | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -142,6 +159,20 @@ function reducer(state: UiState, action: Action): UiState {
     }
     case 'error':
       return { ...state, error: action.message };
+    case 'chat_stream': {
+      const { messageId, ...stream } = action.payload;
+      return { ...state, chatStreams: { ...state.chatStreams, [messageId]: stream } };
+    }
+    case 'chat_updated': {
+      // Abgeschlossene Streams der Unterhaltung aufräumen — das Panel lädt bei
+      // diesem Signal ohnehin die autoritative Fassung per GET nach.
+      const chatStreams = Object.fromEntries(
+        Object.entries(state.chatStreams).filter(
+          ([, s]) => !(s.conversationId === action.payload.conversationId && s.done),
+        ),
+      );
+      return { ...state, chatStreams, chatUpdated: { ...action.payload, ts: Date.now() } };
+    }
   }
 }
 
@@ -217,6 +248,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     showCompleted: localStorage.getItem('sdd-show-completed') === 'on',
     knowledgeVersion: {},
     error: null,
+    chatStreams: {},
+    chatUpdated: null,
   });
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -260,6 +293,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               break;
             case 'knowledge_updated':
               dispatch({ type: 'knowledge_updated', projectId: (msg.payload as { projectId: string }).projectId });
+              break;
+            case 'chat_stream':
+              dispatch({
+                type: 'chat_stream',
+                payload: msg.payload as Extract<Action, { type: 'chat_stream' }>['payload'],
+              });
+              break;
+            case 'chat_updated':
+              dispatch({
+                type: 'chat_updated',
+                payload: msg.payload as Extract<Action, { type: 'chat_updated' }>['payload'],
+              });
               break;
             case 'notification': {
               const n = msg.payload as {

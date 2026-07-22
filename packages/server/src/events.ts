@@ -27,6 +27,16 @@ export interface BusEvents {
     kind: 'turn_completed' | 'input_requested' | 'escalation' | 'merged';
   }) => void;
   knowledge_updated: (payload: { projectId: string }) => void;
+  /** Antwortfortschritt eines Chat-Turns: kumulierter Text (idempotent), done = terminal. */
+  chat_stream: (payload: {
+    projectId: string;
+    conversationId: string;
+    messageId: string;
+    text: string;
+    done: boolean;
+  }) => void;
+  /** Invalidierungssignal: Turn fertig, Vorschlag entschieden oder Unterhaltung zurückgesetzt. */
+  chat_updated: (payload: { projectId: string; conversationId: string }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -49,4 +59,6 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'queue_updated',
   'notification',
   'knowledge_updated',
+  'chat_stream',
+  'chat_updated',
 ];

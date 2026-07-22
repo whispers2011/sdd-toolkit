@@ -2,6 +2,7 @@ import { loadConfig } from './config.js';
 import { openDatabase } from './db/database.js';
 import {
   AttentionRepo,
+  ChatRepo,
   ExecutionRepo,
   FeatureRepo,
   PersonaRepo,
@@ -12,6 +13,7 @@ import {
 } from './db/repos.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { KnowledgeService } from './services/knowledgeService.js';
+import { ChatService } from './services/chatService.js';
 import { ReviewGateService } from './services/reviewGateService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
@@ -75,8 +77,13 @@ async function main(): Promise<void> {
   });
   orchestrator.attachMergeQueue(mergeQueue);
 
+  // Projekt-Chat (Ask-a-Question): Q&A-Turns, persistente Unterhaltung pro Projekt.
+  const chatRepo = new ChatRepo(db);
+  const chat = new ChatService({ projects, chat: chatRepo, executions, dataDir: config.dataDir });
+
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
+  chat.interruptStreamingOnBoot();
 
   // Change-Guard (WP12): specs/** beobachten, Watcher-Menge bei Änderungen angleichen.
   const changeGuard = new ChangeGuard(projects, features, orchestrator);
@@ -103,6 +110,7 @@ async function main(): Promise<void> {
     orchestrator,
     mergeQueue,
     onboarding,
+    chat,
     ptys,
     dataDir: config.dataDir,
   });
@@ -115,6 +123,7 @@ async function main(): Promise<void> {
     clearInterval(guardInterval);
     await changeGuard.stop();
     ptys.saveAllSnapshots();
+    chat.killAll();
     await Promise.allSettled(ptys.list().map((s) => ptys.terminate(s.id)));
     await app.close();
     db.close();

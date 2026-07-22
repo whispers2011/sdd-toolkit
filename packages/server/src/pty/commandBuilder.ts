@@ -34,6 +34,24 @@ export function buildHeadlessArgv(prompt: string, opts: { model?: string; addDir
 }
 
 /**
+ * Argv für einen Chat-Turn (Projekt-Q&A): streamend, resümierbar und strikt
+ * lesend — nur Lese-Tools sind erlaubt, alles andere wird im Headless-Modus
+ * automatisch verweigert (bewusst KEIN acceptEdits, anders als buildHeadlessArgv).
+ */
+export function buildChatArgv(
+  prompt: string,
+  opts: { resume?: string; systemPrompt: string; model?: string },
+): string[] {
+  // --verbose ist im Print-Modus Voraussetzung für stream-json.
+  const args = ['claude', '-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+  if (opts.resume) args.push('--resume', opts.resume);
+  args.push('--append-system-prompt', opts.systemPrompt);
+  if (opts.model) args.push('--model', opts.model);
+  args.push('--allowedTools', 'Read,Grep,Glob');
+  return args;
+}
+
+/**
  * Slash-Command für eine spec-kit-Phase (wird in die Feature-Session gesendet).
  * `prefix` kommt aus der Repo-Erkennung: `/speckit-` (Skills) oder `/speckit.` (Commands).
  */

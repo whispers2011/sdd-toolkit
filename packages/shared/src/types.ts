@@ -168,7 +168,7 @@ export interface ExecutionRecord {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat';
   phase: WorkflowPhase | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
@@ -207,6 +207,47 @@ export interface SavePhaseDefinitionRequest {
 export interface SavePhaseDefinitionResult {
   ok: true;
   mtimeMs: number;
+}
+
+// ---------- Projekt-Chat (Ask-a-Question) ----------
+
+/** Fortlaufende Q&A-Unterhaltung eines Projekts; höchstens eine aktive (endedAt = null) pro Projekt. */
+export interface ChatConversation {
+  id: string;
+  projectId: string;
+  /** Externe Claude-Session-ID (für --resume über App-Neustarts hinweg). */
+  claudeSessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Gesetzt durch „Neue Unterhaltung" — beendete Unterhaltungen werden nicht mehr angezeigt. */
+  endedAt: number | null;
+}
+
+export type ChatMessageStatus = 'complete' | 'streaming' | 'error' | 'interrupted';
+
+export type FeatureProposalStatus = 'offen' | 'angenommen' | 'abgelehnt';
+
+/** Vom Assistenten abgeleiteter Feature-Vorschlag (Marker-Protokoll) samt Nutzer-Entscheidung. */
+export interface FeatureProposal {
+  name: string;
+  description: string;
+  status: FeatureProposalStatus;
+  /** Gesetzt bei 'angenommen' nach erfolgreicher Feature-Anlage (lose Referenz, kein FK). */
+  featureId?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'assistant';
+  /** Anzeigetext; bei Assistenten-Nachrichten ist der Vorschlag-Marker bereits entfernt. */
+  content: string;
+  status: ChatMessageStatus;
+  error: string | null;
+  proposal: FeatureProposal | null;
+  costUsd: number | null;
+  tokens: number | null;
+  createdAt: number;
 }
 
 export function resolveAutomation(

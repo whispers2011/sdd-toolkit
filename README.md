@@ -59,6 +59,23 @@ Aufruf über das 📚-Icon je Projekt (Sidebar) bzw. je Feature (Konsolen-Header
 Speicherung projekt-gescopt in SQLite (`knowledge_*`-Tabellen), Transport on-demand via
 REST + `knowledge_updated`-WS-Event.
 
+## Projekt-Chat (Ask-a-Question)
+
+Die **Sprechblase unten rechts** (sichtbar bei geöffnetem Projekt) öffnet einen Chat,
+um Fragen zu stellen, ohne ein Feature zu bauen — zum Projekt („Wie funktioniert die
+Merge-Queue?") oder projektunabhängig. Jeder Turn läuft als Headless-Claude im
+Projekt-Root, **strikt lesend** (Tool-Whitelist `Read,Grep,Glob`, kein Worktree, kein
+`acceptEdits`) — reines Chatten hinterlässt keinerlei Artefakte. Der Verlauf wird pro
+Projekt in SQLite persistiert und überlebt App-Neustarts (`--resume` hält den
+Gesprächskontext); Turns erscheinen als `chat`-Läufe im Kosten-Audit.
+
+Beschreibt eine Nachricht eine **feature-würdige Anforderung**, weist der Assistent
+darauf hin und schlägt per Karte ein Feature vor. „Feature anlegen …" öffnet den
+bekannten Anlege-Dialog, vorbefüllt mit Namensvorschlag und der im Chat erarbeiteten
+Beschreibung — die Anlage läuft über denselben Weg wie manuell angelegte Features
+(Worktree, Branch, optional direkt `/speckit.specify`). Ablehnen oder Dialog-Abbruch
+haben keine Seiteneffekte.
+
 ## Automation-Dial (Level 2 ↔ Level 3)
 
 | Automation | Level 2 (aus) | Level 3 (an) |

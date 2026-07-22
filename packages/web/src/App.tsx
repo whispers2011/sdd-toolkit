@@ -10,6 +10,7 @@ import { GridView } from './components/GridView.js';
 import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
+import { ChatBubble } from './components/ChatBubble.js';
 import { api } from './api.js';
 
 export function App() {
@@ -42,6 +43,8 @@ export function App() {
   return (
     <div className="flex h-screen">
       <QuickSwitcher />
+      {/* Projekt-Chat: nur bei geöffnetem Projekt sichtbar (FR-001). */}
+      <ChatBubble />
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-4 border-b border-zinc-800 px-4 py-2">

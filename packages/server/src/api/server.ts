@@ -26,6 +26,7 @@ import type { Applicability, SelectionDecision } from '@sdd/shared';
 import type { Orchestrator } from '../services/orchestrator.js';
 import type { MergeQueueService } from '../services/mergeQueueService.js';
 import type { OnboardingService } from '../services/onboardingService.js';
+import type { ChatService } from '../services/chatService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
@@ -48,6 +49,7 @@ export interface ApiDeps {
   orchestrator: Orchestrator;
   mergeQueue: MergeQueueService;
   onboarding: OnboardingService;
+  chat: ChatService;
   ptys: PtySessionManager;
   dataDir: string;
 }
@@ -276,6 +278,43 @@ export async function buildServer(deps: ApiDeps) {
       return { ok: true };
     },
   );
+
+  // ---------- Projekt-Chat (Ask-a-Question) ----------
+
+  /** Aktive Unterhaltung samt Nachrichten; conversation: null = noch nie gechattet/Reset. */
+  app.get<{ Params: { id: string } }>('/api/projects/:id/chat', (req) => {
+    if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
+    return deps.chat.getState(req.params.id);
+  });
+
+  /** Nutzer-Nachricht senden — startet den Assistenten-Turn asynchron (202). */
+  app.post<{ Params: { id: string }; Body: { content?: string } }>(
+    '/api/projects/:id/chat/messages',
+    (req, reply) => {
+      const content = req.body?.content?.trim();
+      if (!content) throw httpError(400, 'Nachricht fehlt');
+      const result = deps.chat.sendMessage(req.params.id, content);
+      void reply.code(202);
+      return result;
+    },
+  );
+
+  /** „Neue Unterhaltung": aktive Unterhaltung beenden, laufenden Turn abbrechen. */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/reset', (req) => {
+    deps.chat.reset(req.params.id);
+    return { conversation: null };
+  });
+
+  /** Entscheidung zum Feature-Vorschlag (Anlage selbst läuft über POST /features). */
+  app.patch<{
+    Params: { messageId: string };
+    Body: { status: 'angenommen' | 'abgelehnt'; featureId?: string };
+  }>('/api/chat/messages/:messageId/proposal', (req) => {
+    if (req.body?.status !== 'angenommen' && req.body?.status !== 'abgelehnt') {
+      throw httpError(400, 'status muss angenommen oder abgelehnt sein');
+    }
+    return deps.chat.decideProposal(req.params.messageId, req.body);
+  });
 
   // ---------- Features ----------
 

@@ -159,6 +159,33 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_kentries_project ON knowledge_entries(project_id);
   CREATE INDEX idx_kentries_bundle  ON knowledge_entries(bundle_id);
   `,
+  // Projekt-Chat (Ask-a-Question): persistente Unterhaltung + Nachrichten
+  `
+  CREATE TABLE chat_conversations (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    claude_session_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    ended_at INTEGER
+  );
+  -- Höchstens eine aktive Unterhaltung pro Projekt
+  CREATE UNIQUE INDEX idx_chat_active ON chat_conversations(project_id) WHERE ended_at IS NULL;
+
+  CREATE TABLE chat_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+    content TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL CHECK (status IN ('complete','streaming','error','interrupted')),
+    error TEXT,
+    proposal_json TEXT,
+    cost_usd REAL,
+    tokens INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id, created_at);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

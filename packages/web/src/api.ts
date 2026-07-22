@@ -2,8 +2,11 @@ import type {
   Applicability,
   AttentionItem,
   AutomationSettings,
+  ChatConversation,
+  ChatMessage,
   Feature,
   FeaturePhase,
+  FeatureProposalStatus,
   KnowledgeBundle,
   KnowledgeEntry,
   KnowledgeIndex,
@@ -26,6 +29,11 @@ export class SaveConflictError extends Error {
     super(message);
     this.name = 'SaveConflictError';
   }
+}
+
+export interface ChatState {
+  conversation: ChatConversation | null;
+  messages: ChatMessage[];
 }
 
 export interface LiveSessionInfo {
@@ -185,6 +193,17 @@ export const api = {
       'POST',
       `/api/features/${featureId}/knowledge/materialize`,
     ),
+  getChat: (projectId: string) => request<ChatState>('GET', `/api/projects/${projectId}/chat`),
+  sendChatMessage: (projectId: string, content: string) =>
+    request<{ conversationId: string; userMessage: ChatMessage; assistantMessage: ChatMessage }>(
+      'POST',
+      `/api/projects/${projectId}/chat/messages`,
+      { content },
+    ),
+  resetChat: (projectId: string) =>
+    request<{ conversation: null }>('POST', `/api/projects/${projectId}/chat/reset`),
+  decideChatProposal: (messageId: string, status: Exclude<FeatureProposalStatus, 'offen'>, featureId?: string) =>
+    request<ChatMessage>('PATCH', `/api/chat/messages/${messageId}/proposal`, { status, featureId }),
 };
 
 export interface KnowledgeResponse {
@@ -216,7 +235,7 @@ export interface ExecutionInfo {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat';
   phase: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
