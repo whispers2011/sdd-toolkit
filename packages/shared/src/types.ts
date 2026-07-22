@@ -72,6 +72,22 @@ export const LEVEL3_DEFAULTS: AutomationSettings = {
   autoMode: true,
 };
 
+/** Kontext-Strategie einer Downstream-Phase (Token-Reduktion, Feature "minimize-token-consumption"). */
+export type ContextStrategy = 'full' | 'compact' | 'fresh';
+/** Verdichtungs-Modus für toolkit-injizierte Inhalte. */
+export type CompressionMode = 'off' | 'deterministic' | 'llm';
+
+/**
+ * Optimierungs-Dial (Token-Reduktion): Ebenen global → Projekt → Feature (Override),
+ * analog zu {@link AutomationSettings}. `full`/`off` == unverändertes Alt-Verhalten (reversibel).
+ */
+export interface OptimizationSettings {
+  /** Kontext-Reset vor Downstream-Phasen: none/compact/fresh. */
+  contextStrategy: ContextStrategy;
+  /** Verdichtung signalarmer, toolkit-injizierter Inhalte. */
+  compression: CompressionMode;
+}
+
 export interface VerifyCommand {
   name: string; // z.B. "test", "build", "lint"
   command: string; // Shell-Kommando, läuft im Worktree
@@ -88,6 +104,8 @@ export interface Project {
   enabledPhases: FeaturePhase[];
   verifyCommands: VerifyCommand[];
   automation: Partial<AutomationSettings>;
+  /** Token-Optimierungs-Override auf Projektebene (leer = global erben). */
+  optimization: Partial<OptimizationSettings>;
   mergeMode: 'ff' | 'squash';
   /** Editor-Öffner, z. B. "code -g {file}:{line}" (WP10). */
   editorCmd: string | null;
@@ -107,6 +125,8 @@ export interface Feature {
   phases: Record<FeaturePhase, PhaseState>;
   integration: IntegrationStage;
   automation: Partial<AutomationSettings>;
+  /** Token-Optimierungs-Override auf Feature-Ebene (leer = Projekt/global erben). */
+  optimization: Partial<OptimizationSettings>;
   /** Fortschritt aus tasks.md-Checkboxen. */
   tasksDone: number;
   tasksTotal: number;
@@ -178,6 +198,18 @@ export interface ExecutionRecord {
   exitCode: number | null;
   costUsd: number | null;
   tokens: number | null;
+  /** Autoritative Token-Komponenten (aus Transkript); null wenn nur geschätzt. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  /** Herkunft des Verbrauchswerts. */
+  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  /** Byte-Offset des Transkripts beim Phasenstart (Attribution der Usage). */
+  transcriptOffsetStart: number | null;
+  /** Snapshot der aktiven Optimierungs-Settings beim Lauf (nur kind='phase'). */
+  optContextStrategy: ContextStrategy | null;
+  optCompression: CompressionMode | null;
   logPath: string | null;
 }
 

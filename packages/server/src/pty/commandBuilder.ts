@@ -68,6 +68,15 @@ export function phaseSlashCommand(
 }
 
 /**
+ * Kontext-Reset-Kommando vor einer Downstream-Phase (Token-Reduktion, Feature
+ * "minimize-token-consumption"): `/compact` fasst den Verlauf zusammen (sicher),
+ * `/clear` leert ihn ganz (maximale Ersparnis). Wird als Prompt in die Session gesendet.
+ */
+export function resetCommand(strategy: 'compact' | 'fresh'): string {
+  return strategy === 'fresh' ? '/clear' : '/compact';
+}
+
+/**
  * Prompt-Send-Pipeline (WhisperM8-Muster): Bracketed Paste verhindert, dass
  * eingebettete Newlines sofort submitten; CR folgt nach kurzer Verzögerung.
  */

@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES, detectCycle } from '@sdd/shared';
+import { FEATURE_PHASES, aggregateBreakdown, detectCycle } from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
@@ -84,6 +84,7 @@ export async function buildServer(deps: ApiDeps) {
       attention: deps.attention.listOpen(),
       queues: Object.fromEntries(projects.map((p) => [p.id, deps.queue.listByProject(p.id)])),
       automation: deps.settings.getAutomation(),
+      optimization: deps.settings.getOptimization(),
     };
   });
 
@@ -163,7 +164,7 @@ export async function buildServer(deps: ApiDeps) {
   app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/projects/:id', (req) => {
     const allowed: Record<string, unknown> = {};
     const b = req.body;
-    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'mergeMode', 'editorCmd', 'integrationMode'] as const) {
+    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'optimization', 'mergeMode', 'editorCmd', 'integrationMode'] as const) {
       if (key in b) allowed[key] = b[key];
     }
     deps.projects.update(req.params.id, allowed);
@@ -371,13 +372,16 @@ export async function buildServer(deps: ApiDeps) {
     return deps.features.get(req.params.id);
   });
 
-  app.patch<{ Params: { id: string }; Body: { automation?: Record<string, unknown> } }>(
+  app.patch<{ Params: { id: string }; Body: { automation?: Record<string, unknown>; optimization?: Record<string, unknown> } }>(
     '/api/features/:id',
     (req) => {
       const feature = deps.features.get(req.params.id);
       if (!feature) throw httpError(404, 'Feature nicht gefunden');
       if (req.body.automation !== undefined) {
         deps.features.setAutomation(feature.id, req.body.automation);
+      }
+      if (req.body.optimization !== undefined) {
+        deps.features.setOptimization(feature.id, req.body.optimization);
       }
       const fresh = deps.features.get(feature.id);
       if (fresh) bus.emitEvent('feature_updated', fresh);
@@ -861,8 +865,27 @@ export async function buildServer(deps: ApiDeps) {
     return deps.settings.getAutomation();
   });
 
+  // Token-Optimierung (Feature "minimize-token-consumption"): globaler Default.
+  app.get('/api/settings/optimization', () => ({ optimization: deps.settings.getOptimization() }));
+  app.patch<{ Body: Record<string, unknown> }>('/api/settings/optimization', (req) => ({
+    optimization: deps.settings.setOptimization(req.body),
+  }));
+
   app.get<{ Querystring: { featureId?: string } }>('/api/executions', (req) =>
     deps.executions.list(req.query.featureId),
+  );
+
+  /** Aggregierte Verbrauchssicht eines Features nach Phase/Art (P1, SC-003). */
+  app.get<{ Params: { featureId: string }; Querystring: { groupByOptimization?: string } }>(
+    '/api/features/:featureId/cost-breakdown',
+    (req) => {
+      const feature = deps.features.get(req.params.featureId);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      return aggregateBreakdown(deps.executions.list(feature.id), {
+        featureId: feature.id,
+        groupByOptimization: req.query.groupByOptimization === 'true',
+      });
+    },
   );
 
   /** Lauf-Log (WP5/WP6): Logs liegen per Konvention unter <dataDir>/logs/<id>.log. */

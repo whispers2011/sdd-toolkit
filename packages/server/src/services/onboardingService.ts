@@ -42,6 +42,7 @@ export class OnboardingService {
       enabledPhases: DEFAULT_ENABLED,
       verifyCommands: [],
       automation: {},
+      optimization: {},
       mergeMode: 'ff',
       editorCmd: null,
       integrationMode: 'local',
@@ -65,6 +66,7 @@ export class OnboardingService {
         phases,
         integration: 'none',
         automation: {},
+        optimization: {},
         tasksDone: progress.done,
         tasksTotal: progress.total,
       });

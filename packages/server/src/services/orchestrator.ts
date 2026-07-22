@@ -4,17 +4,22 @@ import {
   discardPhase,
   finishPhase,
   initialPhases,
+  hasUsage,
   meter,
   nextPhase,
   reapOrphanedRunning,
   reconcileWithDisk,
   resolveAutomation,
+  resolveOptimization,
   shouldAutoProgress,
   startPhase,
+  sumUsage,
   displayStatus,
+  usageToCost,
   type AutomationSettings,
   type Feature,
   type FeaturePhase,
+  type OptimizationSettings,
   type Project,
   type SessionEffect,
 } from '@sdd/shared';
@@ -22,8 +27,9 @@ import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRep
 import type { KnowledgeService } from './knowledgeService.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import { locateTranscript } from '../pty/transcriptWatcher.js';
-import { buildClaudeArgv, phaseSlashCommand } from '../pty/commandBuilder.js';
+import { locateTranscript, readTranscriptDelta, transcriptSize } from '../pty/transcriptWatcher.js';
+import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
+import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
 import { bus } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
@@ -49,6 +55,8 @@ interface RunningPhase {
   executionId: string;
   /** Scrollback-Offset beim Start — für Kosten-Metering des Turn-Deltas (WP3). */
   scrollbackStart: number;
+  /** Transkript-Byte-Offset beim Start — für autoritative Usage-Messung. */
+  transcriptOffsetStart: number;
   promptText: string;
 }
 
@@ -94,6 +102,7 @@ export class Orchestrator {
       phases: initialPhases(project.enabledPhases),
       integration: 'none',
       automation: {},
+      optimization: {},
       tasksDone: 0,
       tasksTotal: 0,
     });
@@ -173,27 +182,79 @@ export class Orchestrator {
     const t = startPhase(feature.phases, phase, Date.now());
     this.deps.features.savePhases(featureId, t.phases);
 
-    const executionId = this.deps.executions.start({
-      projectId: feature.projectId,
-      featureId,
-      kind: 'phase',
-      phase,
-      logPath: null,
-    });
-
     const session = await this.ensureSession(featureId);
     const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
     const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
-    const prompt = base + this.knowledgePreambleFor(featureId);
-    this.runningPhases.set(featureId, {
+    this.launchPhase(feature, phase, session, base);
+    this.emitFeature(featureId);
+  }
+
+  /**
+   * Gemeinsamer Phasen-Start (Token-Optimierung): Optimierungs-Settings auflösen,
+   * Kontext ggf. zurücksetzen (P2) und Wissens-Präambel ggf. verdichten (P3),
+   * Transkript-Offset für autoritative Messung festhalten, dann Prompt senden.
+   */
+  private launchPhase(feature: Feature, phase: FeaturePhase, session: LiveSession, base: string): void {
+    const opt = this.optimizationFor(feature);
+    const root = feature.worktreePath ?? this.mustProject(feature.projectId).path;
+    const plan = prepareForPhase({
+      phase,
+      worktreeRoot: root,
+      featureName: feature.name,
+      opt,
+      rawPreamble: this.knowledgePreambleFor(feature.id),
+    });
+    if (plan.fellBackToFull) {
+      console.warn(`[optimizer] ${feature.name}/${phase}: Basis-Artefakt fehlt → voller Kontext`);
+    }
+    if (plan.report) {
+      console.log(
+        `[optimizer] ${feature.name}/${phase}: Präambel verdichtet ${plan.report.tokensBefore}→${plan.report.tokensAfter} Tokens`,
+      );
+    }
+
+    // Offset VOR dem Reset festhalten: die Usage des Resets (z. B. /compact) gehört
+    // zur realen Kosten dieses optimierten Laufs und wird so mitgemessen (faires A/B).
+    const transcriptOffsetStart = this.transcriptOffsetFor(session);
+    const executionId = this.deps.executions.start({
+      projectId: feature.projectId,
+      featureId: feature.id,
+      kind: 'phase',
+      phase,
+      logPath: null,
+      transcriptOffsetStart,
+      optContextStrategy: opt.contextStrategy,
+      optCompression: opt.compression,
+    });
+
+    const prompt = base + plan.preamble;
+    this.runningPhases.set(feature.id, {
       phase,
       executionId,
       scrollbackStart: session.scrollback.length,
+      transcriptOffsetStart,
       promptText: prompt,
     });
-    this.deps.ptys.sendPrompt(session.id, prompt);
 
-    this.emitFeature(featureId);
+    // Reset-Kommando (opt-in) VOR dem Phasenprompt; Session-Prozess/-ID bleiben.
+    if (plan.reset) this.deps.ptys.sendPrompt(session.id, resetCommand(plan.reset));
+    this.deps.ptys.sendPrompt(session.id, prompt);
+  }
+
+  /** Aktueller Transkript-Byte-Offset der Session (0, wenn Session-ID/Datei fehlen). */
+  private transcriptOffsetFor(session: LiveSession): number {
+    if (!session.claudeSessionId) return 0;
+    const path = locateTranscript(session.cwd, session.claudeSessionId);
+    return path ? transcriptSize(path) : 0;
+  }
+
+  private optimizationFor(feature: Feature): OptimizationSettings {
+    const project = this.mustProject(feature.projectId);
+    return resolveOptimization(
+      this.deps.settings.getOptimization(),
+      project.optimization,
+      feature.optimization,
+    );
   }
 
   approve(featureId: string, phase: FeaturePhase): void {
@@ -248,24 +309,9 @@ export class Orchestrator {
   /** Effekt start_agent: Phase ist in der Maschine schon running — nur Lauf starten. */
   private async startAgentForApprovedChain(featureId: string, phase: FeaturePhase): Promise<void> {
     const feature = this.mustFeature(featureId);
-    const executionId = this.deps.executions.start({
-      projectId: feature.projectId,
-      featureId,
-      kind: 'phase',
-      phase,
-      logPath: null,
-    });
     const session = await this.ensureSession(featureId);
-    const prompt =
-      phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature)) +
-      this.knowledgePreambleFor(featureId);
-    this.runningPhases.set(featureId, {
-      phase,
-      executionId,
-      scrollbackStart: session.scrollback.length,
-      promptText: prompt,
-    });
-    this.deps.ptys.sendPrompt(session.id, prompt);
+    const base = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
+    this.launchPhase(feature, phase, session, base);
     this.emitFeature(featureId);
   }
 
@@ -354,10 +400,8 @@ export class Orchestrator {
 
     if (running) {
       this.runningPhases.delete(featureId);
-      // Kosten-Metering (WP3): Turn-Delta des Scrollbacks als Output messen.
-      const outputText = session.scrollback.slice(running.scrollbackStart);
-      const cost = meter({ promptText: running.promptText, outputText });
-      this.deps.executions.finish(running.executionId, 0, cost.costUsd, cost.totalTokens);
+      // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
+      this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
@@ -397,6 +441,39 @@ export class Orchestrator {
         });
       }
     }
+  }
+
+  /**
+   * Verbrauch eines abgeschlossenen Phasen-Turns messen. Bevorzugt autoritative
+   * Usage aus dem Transkript-Delta (inkl. cache_read = akkumulierter Kontext);
+   * fällt auf die Scrollback-Schätzung zurück, wenn kein Transkript/keine Usage vorliegt.
+   */
+  private meterTurn(session: LiveSession, running: RunningPhase) {
+    if (session.claudeSessionId) {
+      const path = locateTranscript(session.cwd, session.claudeSessionId);
+      if (path) {
+        const usage = sumUsage(readTranscriptDelta(path, running.transcriptOffsetStart));
+        if (hasUsage(usage)) {
+          const { totalTokens, costUsd } = usageToCost(usage);
+          return {
+            costUsd,
+            tokens: totalTokens,
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            cacheCreationTokens: usage.cacheCreationTokens,
+            tokensSource: 'transcript' as const,
+          };
+        }
+      }
+    }
+    const outputText = session.scrollback.slice(running.scrollbackStart);
+    const cost = meter({ promptText: running.promptText, outputText });
+    return {
+      costUsd: cost.costUsd,
+      tokens: cost.totalTokens,
+      tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
+    };
   }
 
   handleExit(session: LiveSession, exitCode: number): void {

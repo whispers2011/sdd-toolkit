@@ -5,6 +5,7 @@ import {
   LEVEL3_DEFAULTS,
   type AutomationSettings,
   type FeaturePhase,
+  type OptimizationSettings,
   type Project,
   type VerifyCommand,
 } from '@sdd/shared';
@@ -23,6 +24,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
   const [enabledPhases, setEnabledPhases] = useState<FeaturePhase[]>(project.enabledPhases);
   const [verifyCommands, setVerifyCommands] = useState<VerifyCommand[]>(project.verifyCommands);
   const [automation, setAutomation] = useState<Partial<AutomationSettings>>(project.automation);
+  const [optimization, setOptimization] = useState<Partial<OptimizationSettings>>(project.optimization);
   const [mergeMode, setMergeMode] = useState(project.mergeMode);
   const [integrationMode, setIntegrationMode] = useState(project.integrationMode);
   const [editorCmd, setEditorCmd] = useState(project.editorCmd ?? '');
@@ -39,6 +41,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
         enabledPhases,
         verifyCommands: verifyCommands.filter((v) => v.name.trim() && v.command.trim()),
         automation,
+        optimization,
         mergeMode,
         integrationMode,
         editorCmd: editorCmd.trim() || null,
@@ -138,6 +141,41 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
 
         <Field label="Automation (Override — leer = global erben)">
           <AutomationOverride value={automation} onChange={setAutomation} />
+        </Field>
+
+        <Field label="Token-Reduktion (Override — leer = global erben)">
+          <div className="flex gap-2">
+            <select
+              value={optimization.contextStrategy ?? ''}
+              onChange={(e) => {
+                const next = { ...optimization };
+                if (e.target.value) next.contextStrategy = e.target.value as OptimizationSettings['contextStrategy'];
+                else delete next.contextStrategy;
+                setOptimization(next);
+              }}
+              className={inputCls}
+            >
+              <option value="">Kontext: global erben</option>
+              <option value="full">Kontext: voll</option>
+              <option value="compact">Kontext: compact</option>
+              <option value="fresh">Kontext: fresh</option>
+            </select>
+            <select
+              value={optimization.compression ?? ''}
+              onChange={(e) => {
+                const next = { ...optimization };
+                if (e.target.value) next.compression = e.target.value as OptimizationSettings['compression'];
+                else delete next.compression;
+                setOptimization(next);
+              }}
+              className={inputCls}
+            >
+              <option value="">Verdichtung: global erben</option>
+              <option value="off">Verdichtung: aus</option>
+              <option value="deterministic">Verdichtung: deterministisch</option>
+              <option value="llm">Verdichtung: LLM</option>
+            </select>
+          </div>
         </Field>
 
         <Field label="Integration">

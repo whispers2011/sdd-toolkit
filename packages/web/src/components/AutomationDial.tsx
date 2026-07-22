@@ -1,5 +1,11 @@
 import { useEffect, useState } from 'react';
-import { FEATURE_PHASES, LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, type AutomationSettings } from '@sdd/shared';
+import {
+  FEATURE_PHASES,
+  LEVEL2_DEFAULTS,
+  LEVEL3_DEFAULTS,
+  type AutomationSettings,
+  type OptimizationSettings,
+} from '@sdd/shared';
 import { api } from '../api.js';
 import { setSoundEnabled, soundEnabled, useStore } from '../store.js';
 import { setVoiceLang, setVoiceProvider, voiceLang, voiceProvider } from './VoiceButton.js';
@@ -17,6 +23,13 @@ export function AutomationDial() {
     api
       .setAutomation(patch)
       .then((automation) => dispatch({ type: 'bootstrap', state: { ...state.app!, automation } }))
+      .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+
+  const opt = state.app.optimization;
+  const applyOpt = (patch: Partial<OptimizationSettings>) =>
+    api
+      .setOptimization(patch)
+      .then((r) => dispatch({ type: 'bootstrap', state: { ...state.app!, optimization: r.optimization } }))
       .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
 
   return (
@@ -81,6 +94,40 @@ export function AutomationDial() {
           <p className="mb-1.5 ml-6 text-xs text-zinc-600">
             Keine Kommando-Rückfragen; gilt ab dem nächsten Session-Start.
           </p>
+          <div className="mt-2 border-t border-zinc-800 pt-2">
+            <p className="mb-1 text-xs font-medium text-zinc-400">Token-Reduktion</p>
+            <label className="mb-2 block text-xs text-zinc-400">
+              Kontext je Downstream-Phase
+              <select
+                value={opt.contextStrategy}
+                onChange={(e) =>
+                  void applyOpt({ contextStrategy: e.target.value as OptimizationSettings['contextStrategy'] })
+                }
+                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
+              >
+                <option value="full">voll — Verlauf akkumulieren (Alt-Verhalten)</option>
+                <option value="compact">compact — Verlauf vor Phase zusammenfassen</option>
+                <option value="fresh">fresh — Kontext vor Phase leeren (max. Ersparnis)</option>
+              </select>
+            </label>
+            <label className="mb-1 block text-xs text-zinc-400">
+              Verdichtung signalarmer Inhalte
+              <select
+                value={opt.compression}
+                onChange={(e) =>
+                  void applyOpt({ compression: e.target.value as OptimizationSettings['compression'] })
+                }
+                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-200"
+              >
+                <option value="off">aus</option>
+                <option value="deterministic">deterministisch (lokal, ohne Modellkosten)</option>
+                <option value="llm">LLM (nur bei Netto-Ersparnis)</option>
+              </select>
+            </label>
+            <p className="mb-2 text-xs text-zinc-600">
+              Gilt ab dem nächsten Phasenstart; „voll/aus" = unverändertes Verhalten. Pro Projekt/Feature überschreibbar.
+            </p>
+          </div>
           <div className="mt-2 border-t border-zinc-800 pt-2">
             <SoundToggle />
             <VoiceSettings />

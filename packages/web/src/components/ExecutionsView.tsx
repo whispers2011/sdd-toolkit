@@ -8,7 +8,25 @@ const KIND_LABELS: Record<ExecutionInfo['kind'], string> = {
   review: 'Review-Agent',
   conflict_resolution: 'Konfliktauflösung',
   chat: 'Chat',
+  chat_work: 'Arbeits-Chat',
 };
+
+const SOURCE_LABELS: Record<NonNullable<ExecutionInfo['tokensSource']>, string> = {
+  transcript: 'gemessen',
+  parsed: 'geparst',
+  estimated: 'geschätzt',
+};
+
+function SourceBadge({ source }: { source: ExecutionInfo['tokensSource'] }) {
+  if (!source) return null;
+  const cls =
+    source === 'transcript'
+      ? 'bg-emerald-950 text-emerald-400'
+      : source === 'parsed'
+        ? 'bg-sky-950 text-sky-400'
+        : 'bg-zinc-800 text-zinc-500';
+  return <span className={`ml-1 rounded px-1 py-0.5 text-[10px] ${cls}`}>{SOURCE_LABELS[source]}</span>;
+}
 
 /** Executions-View (WP6): Audit-Trail aller Agent-/Verify-Läufe. */
 export function ExecutionsView() {
@@ -45,6 +63,21 @@ export function ExecutionsView() {
     id ? (state.app?.features.find((f) => f.id === id)?.name ?? '—') : '—';
   const projectName = (id: string) => state.app?.projects.find((p) => p.id === id)?.name ?? '—';
   const totalCost = rows.reduce((s, e) => s + (e.costUsd ?? 0), 0);
+  const totalTokens = rows.reduce((s, e) => s + (e.tokens ?? 0), 0);
+
+  // Aufschlüsselung nach Phase (nur Phasen-Läufe) — Kern von US1/SC-003.
+  const byPhase = useMemo(() => {
+    const m = new Map<string, { tokens: number; cost: number; runs: number }>();
+    for (const e of rows) {
+      if (e.kind !== 'phase' || !e.phase) continue;
+      const cur = m.get(e.phase) ?? { tokens: 0, cost: 0, runs: 0 };
+      cur.tokens += e.tokens ?? 0;
+      cur.cost += e.costUsd ?? 0;
+      cur.runs += 1;
+      m.set(e.phase, cur);
+    }
+    return [...m.entries()].sort((a, b) => b[1].tokens - a[1].tokens);
+  }, [rows]);
 
   return (
     <div className="flex h-full">
@@ -61,9 +94,23 @@ export function ExecutionsView() {
             ))}
           </select>
           <span className="ml-auto text-xs text-zinc-500">
-            {rows.length} Läufe · Kosten gesamt ${totalCost.toFixed(2)}
+            {rows.length} Läufe · {totalTokens.toLocaleString('de-CH')} Tokens · Kosten gesamt ${totalCost.toFixed(2)}
           </span>
         </div>
+        {byPhase.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {byPhase.map(([phase, r]) => (
+              <span
+                key={phase}
+                title={`${r.runs} Lauf/Läufe · $${r.cost.toFixed(3)}`}
+                className="rounded bg-zinc-900 px-2 py-1 text-[11px] text-zinc-400"
+              >
+                <span className="text-zinc-300">{phase}</span>{' '}
+                {r.tokens.toLocaleString('de-CH')} Tok · ${r.cost.toFixed(2)}
+              </span>
+            ))}
+          </div>
+        )}
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-zinc-800 text-zinc-500">
@@ -101,6 +148,7 @@ export function ExecutionsView() {
                 </td>
                 <td className="px-2 py-1.5 text-right text-zinc-500">
                   {e.tokens !== null ? e.tokens.toLocaleString('de-CH') : '—'}
+                  <SourceBadge source={e.tokensSource} />
                 </td>
                 <td className="px-2 py-1.5">
                   <button

@@ -32,6 +32,42 @@ export function locateTranscript(cwd: string, claudeSessionId: string): string |
   return null;
 }
 
+/**
+ * Aktuelle Größe (Byte-Offset) eines Transkript-JSONL — als Startmarke für die
+ * Usage-Attribution einer Phase. 0, wenn die Datei (noch) nicht existiert.
+ */
+export function transcriptSize(path: string): number {
+  try {
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Neue JSONL-Zeilen ab `startOffset` lesen (Token-Usage-Auswertung, Feature
+ * "minimize-token-consumption"). Robust gegen fehlende Datei / gekürzte Datei.
+ */
+export function readTranscriptDelta(path: string, startOffset: number): string[] {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return [];
+  }
+  const from = startOffset < 0 || startOffset > size ? 0 : startOffset;
+  if (size <= from) return [];
+  const fd = openSync(path, 'r');
+  try {
+    const len = size - from;
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, from);
+    return buf.toString('utf8').split('\n').filter((l) => l.trim().length > 0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const STALL_CHECK_INTERVAL_MS = 30_000;
 
 /**

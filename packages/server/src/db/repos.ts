@@ -7,16 +7,25 @@ import type {
   ChatMessage,
   ChatMessageStatus,
   ChatMode,
+  CompressionMode,
+  ContextStrategy,
   ExecutionRecord,
   Feature,
   FeaturePhase,
   FeatureProposal,
   IntegrationStage,
   MergeQueueItem,
+  OptimizationSettings,
   Project,
   VerifyCommand,
+  WorkflowPhase,
 } from '@sdd/shared';
-import { LEVEL2_DEFAULTS, type PhaseMap } from '@sdd/shared';
+import {
+  LEVEL2_DEFAULTS,
+  OPTIMIZATION_OFF_DEFAULTS,
+  parseOptimizationPartial,
+  type PhaseMap,
+} from '@sdd/shared';
 import type { DB } from './database.js';
 
 // ---------- Projects ----------
@@ -30,6 +39,7 @@ interface ProjectRow {
   enabled_phases: string;
   verify_commands: string;
   automation: string;
+  optimization: string;
   merge_mode: string;
   editor_cmd: string | null;
   integration_mode: string;
@@ -46,6 +56,7 @@ function toProject(r: ProjectRow): Project {
     enabledPhases: JSON.parse(r.enabled_phases) as FeaturePhase[],
     verifyCommands: JSON.parse(r.verify_commands) as VerifyCommand[],
     automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
+    optimization: parseOptimizationPartial(JSON.parse(r.optimization ?? '{}')),
     mergeMode: r.merge_mode === 'squash' ? 'squash' : 'ff',
     editorCmd: r.editor_cmd,
     integrationMode: r.integration_mode === 'pr' ? 'pr' : 'local',
@@ -61,8 +72,8 @@ export class ProjectRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, merge_mode, editor_cmd, integration_mode, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, optimization, merge_mode, editor_cmd, integration_mode, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -73,6 +84,7 @@ export class ProjectRepo {
         JSON.stringify(p.enabledPhases),
         JSON.stringify(p.verifyCommands),
         JSON.stringify(p.automation),
+        JSON.stringify(p.optimization ?? {}),
         p.mergeMode,
         p.editorCmd,
         p.integrationMode,
@@ -87,7 +99,7 @@ export class ProjectRepo {
     const merged = { ...cur, ...patch };
     this.db
       .prepare(
-        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, merge_mode=?, editor_cmd=?, integration_mode=? WHERE id=?`,
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, optimization=?, merge_mode=?, editor_cmd=?, integration_mode=? WHERE id=?`,
       )
       .run(
         merged.name,
@@ -97,6 +109,7 @@ export class ProjectRepo {
         JSON.stringify(merged.enabledPhases),
         JSON.stringify(merged.verifyCommands),
         JSON.stringify(merged.automation),
+        JSON.stringify(merged.optimization ?? {}),
         merged.mergeMode,
         merged.editorCmd,
         merged.integrationMode,
@@ -134,6 +147,7 @@ interface FeatureRow {
   phases: string;
   integration: string;
   automation: string;
+  optimization: string;
   tasks_done: number;
   tasks_total: number;
   created_at: number;
@@ -150,6 +164,7 @@ function toFeature(r: FeatureRow): Feature {
     phases: JSON.parse(r.phases) as PhaseMap,
     integration: r.integration as IntegrationStage,
     automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
+    optimization: parseOptimizationPartial(JSON.parse(r.optimization ?? '{}')),
     tasksDone: r.tasks_done,
     tasksTotal: r.tasks_total,
     createdAt: r.created_at,
@@ -165,8 +180,8 @@ export class FeatureRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO features (id, project_id, name, branch, worktree_path, phases, integration, automation, tasks_done, tasks_total, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO features (id, project_id, name, branch, worktree_path, phases, integration, automation, optimization, tasks_done, tasks_total, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -177,6 +192,7 @@ export class FeatureRepo {
         JSON.stringify(f.phases),
         f.integration,
         JSON.stringify(f.automation),
+        JSON.stringify(f.optimization ?? {}),
         f.tasksDone,
         f.tasksTotal,
         createdAt,
@@ -227,6 +243,12 @@ export class FeatureRepo {
 
   setAutomation(id: string, automation: Partial<AutomationSettings>): void {
     this.db.prepare('UPDATE features SET automation=? WHERE id=?').run(JSON.stringify(automation), id);
+  }
+
+  setOptimization(id: string, optimization: Partial<OptimizationSettings>): void {
+    this.db
+      .prepare('UPDATE features SET optimization=? WHERE id=?')
+      .run(JSON.stringify(parseOptimizationPartial(optimization)), id);
   }
 
   archive(id: string): void {
@@ -305,26 +327,82 @@ export class SessionRepo {
 
 // ---------- Executions ----------
 
+export interface ExecutionStartInput {
+  projectId: string;
+  featureId: string | null;
+  kind: ExecutionRecord['kind'];
+  phase: WorkflowPhase | null;
+  logPath: string | null;
+  /** Transkript-Byte-Offset beim Start (Usage-Attribution, nur Phasen). */
+  transcriptOffsetStart?: number | null;
+  /** Snapshot der aktiven Optimierungs-Strategie (nur Phasen). */
+  optContextStrategy?: ContextStrategy | null;
+  optCompression?: CompressionMode | null;
+}
+
+/** Autoritative/geschätzte Verbrauchsdaten beim Abschluss eines Laufs. */
+export interface ExecutionUsageInput {
+  costUsd?: number | null;
+  tokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  tokensSource?: ExecutionRecord['tokensSource'];
+}
+
 export class ExecutionRepo {
   constructor(private db: DB) {}
 
-  start(
-    e: Omit<ExecutionRecord, 'id' | 'status' | 'startedAt' | 'finishedAt' | 'exitCode' | 'costUsd' | 'tokens'>,
-  ): string {
+  start(e: ExecutionStartInput): string {
     const id = nanoid(10);
     this.db
       .prepare(
-        `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, log_path)
-         VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+        `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, log_path,
+           transcript_offset_start, opt_context_strategy, opt_compression)
+         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
       )
-      .run(id, e.projectId, e.featureId, e.kind, e.phase, Date.now(), e.logPath);
+      .run(
+        id,
+        e.projectId,
+        e.featureId,
+        e.kind,
+        e.phase,
+        Date.now(),
+        e.logPath,
+        e.transcriptOffsetStart ?? null,
+        e.optContextStrategy ?? null,
+        e.optCompression ?? null,
+      );
     return id;
   }
 
+  /** Schlanker Abschluss (Kosten/Tokens geschätzt, ohne Komponenten). */
   finish(id: string, exitCode: number, costUsd: number | null = null, tokens: number | null = null): void {
+    this.finishWithUsage(id, exitCode, { costUsd, tokens });
+  }
+
+  /** Abschluss mit autoritativen Komponenten + Herkunft. */
+  finishWithUsage(id: string, exitCode: number, usage: ExecutionUsageInput = {}): void {
     this.db
-      .prepare(`UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=?, tokens=? WHERE id=?`)
-      .run(exitCode === 0 ? 'succeeded' : 'failed', Date.now(), exitCode, costUsd, tokens, id);
+      .prepare(
+        `UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=?, tokens=?,
+           input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
+         WHERE id=?`,
+      )
+      .run(
+        exitCode === 0 ? 'succeeded' : 'failed',
+        Date.now(),
+        exitCode,
+        usage.costUsd ?? null,
+        usage.tokens ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.cacheReadTokens ?? null,
+        usage.cacheCreationTokens ?? null,
+        usage.tokensSource ?? null,
+        id,
+      );
   }
 
   /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
@@ -350,6 +428,14 @@ export class ExecutionRepo {
       exitCode: r.exit_code as number | null,
       costUsd: r.cost_usd as number | null,
       tokens: (r.tokens as number | null) ?? null,
+      inputTokens: (r.input_tokens as number | null) ?? null,
+      outputTokens: (r.output_tokens as number | null) ?? null,
+      cacheReadTokens: (r.cache_read_tokens as number | null) ?? null,
+      cacheCreationTokens: (r.cache_creation_tokens as number | null) ?? null,
+      tokensSource: (r.tokens_source as ExecutionRecord['tokensSource']) ?? null,
+      transcriptOffsetStart: (r.transcript_offset_start as number | null) ?? null,
+      optContextStrategy: (r.opt_context_strategy as ContextStrategy | null) ?? null,
+      optCompression: (r.opt_compression as CompressionMode | null) ?? null,
       logPath: r.log_path as string | null,
     }));
   }
@@ -805,5 +891,23 @@ export class SettingsRepo {
     this.db
       .prepare(`INSERT INTO settings (key, value) VALUES ('automation', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(JSON.stringify(a));
+  }
+
+  /** Globaler Optimierungs-Default (Token-Reduktion). Fehlt der Key → OFF (Alt-Verhalten). */
+  getOptimization(): OptimizationSettings {
+    const r = this.db.prepare(`SELECT value FROM settings WHERE key='optimization'`).get() as
+      | { value: string }
+      | undefined;
+    return r
+      ? { ...OPTIMIZATION_OFF_DEFAULTS, ...parseOptimizationPartial(JSON.parse(r.value)) }
+      : OPTIMIZATION_OFF_DEFAULTS;
+  }
+
+  setOptimization(patch: Partial<OptimizationSettings>): OptimizationSettings {
+    const merged = { ...this.getOptimization(), ...parseOptimizationPartial(patch) };
+    this.db
+      .prepare(`INSERT INTO settings (key, value) VALUES ('optimization', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(JSON.stringify(merged));
+    return merged;
   }
 }

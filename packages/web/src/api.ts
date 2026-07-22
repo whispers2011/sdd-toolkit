@@ -7,6 +7,7 @@ import type {
   ChatMessage,
   ChatWorkSessionInfo,
   Feature,
+  FeatureCostBreakdown,
   FeaturePhase,
   FeatureProposalStatus,
   KnowledgeBundle,
@@ -14,6 +15,7 @@ import type {
   KnowledgeIndex,
   KnowledgeTree,
   MergeQueueItem,
+  OptimizationSettings,
   PhaseDefinition,
   Project,
   ResolvedSelection,
@@ -58,6 +60,7 @@ export interface AppState {
   attention: AttentionItem[];
   queues: Record<string, MergeQueueItem[]>;
   automation: AutomationSettings;
+  optimization: OptimizationSettings;
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -101,8 +104,17 @@ export const api = {
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
   markDone: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/mark-done`),
-  updateFeature: (featureId: string, patch: { automation?: Partial<AutomationSettings> }) =>
-    request<Feature>('PATCH', `/api/features/${featureId}`, patch),
+  updateFeature: (
+    featureId: string,
+    patch: { automation?: Partial<AutomationSettings>; optimization?: Partial<OptimizationSettings> },
+  ) => request<Feature>('PATCH', `/api/features/${featureId}`, patch),
+  setOptimization: (patch: Partial<OptimizationSettings>) =>
+    request<{ optimization: OptimizationSettings }>('PATCH', '/api/settings/optimization', patch),
+  costBreakdown: (featureId: string, groupByOptimization = false) =>
+    request<FeatureCostBreakdown>(
+      'GET',
+      `/api/features/${featureId}/cost-breakdown${groupByOptimization ? '?groupByOptimization=true' : ''}`,
+    ),
   ensureSession: (featureId: string) => request<{ sessionId: string }>('POST', `/api/features/${featureId}/session`),
   sendPrompt: (featureId: string, text: string) =>
     request<unknown>('POST', `/api/features/${featureId}/prompt`, { text }),
@@ -247,7 +259,7 @@ export interface ExecutionInfo {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
   phase: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
@@ -255,5 +267,6 @@ export interface ExecutionInfo {
   exitCode: number | null;
   costUsd: number | null;
   tokens: number | null;
+  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
   logPath: string | null;
 }

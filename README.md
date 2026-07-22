@@ -137,6 +137,12 @@ Verifikations-Kommandos pro Projekt: `PATCH /api/projects/:id` mit
   klickbare Links, Projekt-Terminal + spec-kit-Init, Change-Guard, PR-Modus,
   native Ordnerauswahl, Voice-Eingabe (Web Speech / Whisper / Groq), ⌘K-Switcher,
   Bild-Paste, Confirm-Dialoge
+- **Token-Reduktion (2026-07)**: autoritative Token-Messung pro Phase aus dem Claude-
+  Transkript (statt Terminal-Schätzung; inkl. `cache_read` = akkumulierter Kontext),
+  Kosten-Aufschlüsselung je Phase/Art mit Quelle-Badge (`GET /api/features/:id/cost-breakdown`,
+  Executions-View), plus ein **Optimierungs-Dial** (global → Projekt → Feature): Kontext-Reset
+  vor Downstream-Phasen (`compact`/`fresh`) und deterministische Verdichtung signalarmer
+  Inhalte. Default `full`/`off` = unverändertes Verhalten (reversibel).
 - **P2**: Multi-Provider (Codex/Gemini), CLI-Fernsteuerung (`sdd`), Tab-Management,
   DAG-Ansicht, MCP-Management, Routinen, Kosten-Dashboard — siehe
   `docs/funktionsuebernahme.md` §3 und `docs/implementation-prompt.md` (P2-Folgeprompt)

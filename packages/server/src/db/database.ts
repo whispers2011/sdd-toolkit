@@ -193,6 +193,20 @@ const MIGRATIONS: string[] = [
   ALTER TABLE sessions ADD COLUMN conversation_id TEXT REFERENCES chat_conversations(id) ON DELETE SET NULL;
   ALTER TABLE attention ADD COLUMN conversation_id TEXT;
   `,
+  // Feature "minimize-token-consumption": autoritative Token-Messung + Optimierungs-Dial.
+  // Additiv/nullable — Alt-Verhalten bleibt bei leeren Optimierungs-Spalten unverändert.
+  `
+  ALTER TABLE executions ADD COLUMN input_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN output_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN cache_read_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN cache_creation_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN tokens_source TEXT;
+  ALTER TABLE executions ADD COLUMN transcript_offset_start INTEGER;
+  ALTER TABLE executions ADD COLUMN opt_context_strategy TEXT;
+  ALTER TABLE executions ADD COLUMN opt_compression TEXT;
+  ALTER TABLE projects ADD COLUMN optimization TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE features ADD COLUMN optimization TEXT NOT NULL DEFAULT '{}';
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {
