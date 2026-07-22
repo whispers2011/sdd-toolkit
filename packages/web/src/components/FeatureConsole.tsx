@@ -1,81 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
-import { Terminal } from '@xterm/xterm';
-import { FitAddon } from '@xterm/addon-fit';
+import { useState } from 'react';
 import { FEATURE_PHASES, type FeaturePhase } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
+import { TerminalPane } from './TerminalPane.js';
 
-/** Konsole pro Feature: xterm.js ⇄ WebSocket ⇄ Server-PTY (mit Reconnect). */
+/** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
-  const { state, dispatch } = useStore();
-  const containerRef = useRef<HTMLDivElement>(null);
+  const { state } = useStore();
   const [connected, setConnected] = useState(false);
   const [showReview, setShowReview] = useState(false);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    const term = new Terminal({
-      fontSize: 13,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      theme: { background: '#09090b', foreground: '#d4d4d8', cursor: '#a1a1aa' },
-      scrollback: 20_000,
-      allowProposedApi: true,
-    });
-    const fit = new FitAddon();
-    term.loadAddon(fit);
-    term.open(containerRef.current);
-    fit.fit();
-
-    let ws: WebSocket | null = null;
-    let disposed = false;
-
-    const connect = async () => {
-      try {
-        const { sessionId } = await api.ensureSession(featureId);
-        if (disposed) return;
-        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-        ws = new WebSocket(`${proto}://${location.host}/ws/terminal/${sessionId}`);
-        ws.onopen = () => {
-          setConnected(true);
-          ws?.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-        };
-        ws.onmessage = (ev) => term.write(ev.data as string);
-        ws.onclose = () => {
-          setConnected(false);
-          if (!disposed) setTimeout(() => void connect(), 1500);
-        };
-      } catch (e) {
-        dispatch({ type: 'error', message: (e as Error).message });
-      }
-    };
-    void connect();
-
-    const dataDisposable = term.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
-    });
-
-    const observer = new ResizeObserver(() => {
-      fit.fit();
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
-      }
-    });
-    observer.observe(containerRef.current);
-
-    return () => {
-      disposed = true;
-      observer.disconnect();
-      dataDisposable.dispose();
-      ws?.close();
-      term.dispose();
-    };
-  }, [featureId, dispatch]);
 
   if (!feature) return <div className="p-8 text-zinc-500">Feature nicht gefunden.</div>;
 
@@ -107,7 +45,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 
       <div className="min-h-0 flex-1 bg-[#09090b] p-2">
-        <div ref={containerRef} className="h-full w-full" />
+        <TerminalPane featureId={featureId} focused onConnectionChange={setConnected} />
       </div>
     </div>
   );

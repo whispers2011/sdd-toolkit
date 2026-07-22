@@ -14,6 +14,7 @@ export type View =
   | { kind: 'board' }
   | { kind: 'inbox' }
   | { kind: 'executions' }
+  | { kind: 'grid' }
   | { kind: 'console'; featureId: string };
 
 export interface UiState {

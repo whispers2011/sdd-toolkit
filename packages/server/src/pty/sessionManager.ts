@@ -32,9 +32,28 @@ export interface LiveSession {
   scrollback: string;
   /** Snapshot der Vorgänger-Session (Replay nach Server-Neustart). */
   snapshotPrefix: string | null;
-  subscribers: Set<(data: string) => void>;
+  subscribers: Set<Subscriber>;
   exited: boolean;
 }
+
+/**
+ * Feed-Drosselung (WP8, WhisperM8 TerminalFeedBatcher-Muster): fokussierte
+ * Subscriber streamen sofort, unfokussierte gebündelt (~12 Hz) — sonst bricht
+ * der Browser bei vielen gleichzeitigen Grid-Panes ein.
+ */
+interface Subscriber {
+  send: (data: string) => void;
+  focused: boolean;
+  buffer: string;
+  timer: NodeJS.Timeout | null;
+}
+
+export interface SubscribeHandle {
+  unsubscribe: () => void;
+  setFocused: (focused: boolean) => void;
+}
+
+const BATCH_INTERVAL_MS = 80;
 
 export interface SessionCallbacks {
   onStatusChange: (session: LiveSession, effects: SessionEffect[]) => void;
@@ -111,7 +130,22 @@ export class PtySessionManager {
 
     pty.onData((data) => {
       session.scrollback = (session.scrollback + data).slice(-SCROLLBACK_LIMIT);
-      for (const sub of session.subscribers) sub(data);
+      for (const sub of session.subscribers) {
+        if (sub.focused) {
+          sub.send(data);
+        } else {
+          sub.buffer += data;
+          if (!sub.timer) {
+            sub.timer = setTimeout(() => {
+              sub.timer = null;
+              if (sub.buffer) {
+                sub.send(sub.buffer);
+                sub.buffer = '';
+              }
+            }, BATCH_INTERVAL_MS);
+          }
+        }
+      }
     });
 
     pty.onExit(({ exitCode }) => {
@@ -189,14 +223,29 @@ export class PtySessionManager {
     return [...this.sessions.values()];
   }
 
-  subscribe(id: string, onData: (data: string) => void): (() => void) | null {
+  subscribe(id: string, onData: (data: string) => void): SubscribeHandle | null {
     const s = this.sessions.get(id);
     if (!s) return null;
     // Replay: erst Snapshot der Vorgänger-Session (falls vorhanden), dann Live-Scrollback.
     if (s.snapshotPrefix) onData(s.snapshotPrefix + snapshotReplayBanner());
     if (s.scrollback) onData(s.scrollback);
-    s.subscribers.add(onData);
-    return () => s.subscribers.delete(onData);
+    const sub: Subscriber = { send: onData, focused: true, buffer: '', timer: null };
+    s.subscribers.add(sub);
+    return {
+      unsubscribe: () => {
+        if (sub.timer) clearTimeout(sub.timer);
+        s.subscribers.delete(sub);
+      },
+      setFocused: (focused: boolean) => {
+        sub.focused = focused;
+        if (focused && sub.buffer) {
+          if (sub.timer) clearTimeout(sub.timer);
+          sub.timer = null;
+          sub.send(sub.buffer);
+          sub.buffer = '';
+        }
+      },
+    };
   }
 
   /** Beim Server-Shutdown: alle Feature-Scrollbacks sichern. */

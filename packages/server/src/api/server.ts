@@ -306,13 +306,13 @@ export async function buildServer(deps: ApiDeps) {
     });
   });
 
-  /** Terminal-Stream: bidirektional, mit Scrollback-Replay beim Connect. */
+  /** Terminal-Stream: bidirektional, Scrollback-Replay, Focus-Drosselung (WP8). */
   app.get<{ Params: { sessionId: string } }>('/ws/terminal/:sessionId', { websocket: true }, (socket, req) => {
     const { sessionId } = req.params;
-    const unsubscribe = deps.ptys.subscribe(sessionId, (data) => {
+    const handle = deps.ptys.subscribe(sessionId, (data) => {
       if (socket.readyState === socket.OPEN) socket.send(data);
     });
-    if (!unsubscribe) {
+    if (!handle) {
       socket.close(4404, 'Session nicht gefunden');
       return;
     }
@@ -320,15 +320,17 @@ export async function buildServer(deps: ApiDeps) {
       try {
         const msg = JSON.parse(raw.toString()) as
           | { type: 'input'; data: string }
-          | { type: 'resize'; cols: number; rows: number };
+          | { type: 'resize'; cols: number; rows: number }
+          | { type: 'focus'; focused: boolean };
         if (msg.type === 'input') deps.ptys.write(sessionId, msg.data);
         else if (msg.type === 'resize') deps.ptys.resize(sessionId, msg.cols, msg.rows);
+        else if (msg.type === 'focus') handle.setFocused(msg.focused);
       } catch {
         // Nicht-JSON = Roh-Input
         deps.ptys.write(sessionId, raw.toString());
       }
     });
-    socket.on('close', () => unsubscribe());
+    socket.on('close', () => handle.unsubscribe());
   });
 
   return app;

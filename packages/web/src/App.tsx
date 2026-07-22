@@ -6,6 +6,7 @@ import { FeatureConsole } from './components/FeatureConsole.js';
 import { AttentionInbox } from './components/AttentionInbox.js';
 import { AutomationDial } from './components/AutomationDial.js';
 import { ExecutionsView } from './components/ExecutionsView.js';
+import { GridView } from './components/GridView.js';
 
 export function App() {
   const { state, dispatch } = useStore();
@@ -41,6 +42,12 @@ export function App() {
               Board
             </TabButton>
             <TabButton
+              active={state.view.kind === 'grid'}
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'grid' } })}
+            >
+              Grid
+            </TabButton>
+            <TabButton
               active={state.view.kind === 'executions'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
             >
@@ -74,6 +81,7 @@ export function App() {
           {state.view.kind === 'board' && <KanbanBoard />}
           {state.view.kind === 'inbox' && <AttentionInbox />}
           {state.view.kind === 'executions' && <ExecutionsView />}
+          {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
         </main>
       </div>
