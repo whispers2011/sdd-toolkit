@@ -16,7 +16,8 @@ export type View =
   | { kind: 'executions' }
   | { kind: 'grid' }
   | { kind: 'console'; featureId: string }
-  | { kind: 'shell'; projectId: string };
+  | { kind: 'shell'; projectId: string }
+  | { kind: 'knowledge'; projectId: string };
 
 export interface UiState {
   app: AppState | null;
@@ -24,6 +25,8 @@ export interface UiState {
   selectedProjectId: string | null; // null = kein Projekt vorhanden (Leerzustand); sonst genau ein Projekt
   /** Abgeschlossene (merged) Features anzeigen? Default: ausgeblendet. */
   showCompleted: boolean;
+  /** Invalidierungs-Zähler je Projekt — Wissens-Views refetchen bei Änderung. */
+  knowledgeVersion: Record<string, number>;
   error: string | null;
 }
 
@@ -37,6 +40,7 @@ export type Action =
   | { type: 'set_view'; view: View }
   | { type: 'select_project'; projectId: string }
   | { type: 'toggle_completed' }
+  | { type: 'knowledge_updated'; projectId: string }
   | { type: 'error'; message: string | null };
 
 function reducer(state: UiState, action: Action): UiState {
@@ -120,6 +124,8 @@ function reducer(state: UiState, action: Action): UiState {
           if (feature && feature.projectId !== action.projectId) view = { kind: 'board' };
         } else if (view.kind === 'shell' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
+        } else if (view.kind === 'knowledge' && view.projectId !== action.projectId) {
+          view = { kind: 'board' };
         }
       }
       persistSelectedProject(action.projectId);
@@ -129,6 +135,10 @@ function reducer(state: UiState, action: Action): UiState {
       const next = !state.showCompleted;
       localStorage.setItem('sdd-show-completed', next ? 'on' : 'off');
       return { ...state, showCompleted: next };
+    }
+    case 'knowledge_updated': {
+      const cur = state.knowledgeVersion[action.projectId] ?? 0;
+      return { ...state, knowledgeVersion: { ...state.knowledgeVersion, [action.projectId]: cur + 1 } };
     }
     case 'error':
       return { ...state, error: action.message };
@@ -205,6 +215,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     view: { kind: 'board' },
     selectedProjectId: null,
     showCompleted: localStorage.getItem('sdd-show-completed') === 'on',
+    knowledgeVersion: {},
     error: null,
   });
   const wsRef = useRef<WebSocket | null>(null);
@@ -246,6 +257,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               break;
             case 'queue_updated':
               dispatch({ type: 'queue_updated', payload: msg.payload as { projectId: string; items: MergeQueueItem[] } });
+              break;
+            case 'knowledge_updated':
+              dispatch({ type: 'knowledge_updated', projectId: (msg.payload as { projectId: string }).projectId });
               break;
             case 'notification': {
               const n = msg.payload as {

@@ -5,12 +5,14 @@ import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
+import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
   const { state } = useStore();
   const [connected, setConnected] = useState(false);
   const [showReview, setShowReview] = useState(false);
+  const [showKnowledge, setShowKnowledge] = useState(false);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
@@ -36,6 +38,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <div className="ml-auto flex items-center gap-1">
           <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>📂</HeaderIcon>
           <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>⌨</HeaderIcon>
+          <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}>📚</HeaderIcon>
           <HeaderIcon
             title="Worktree-Pfad kopieren"
             onClick={() => feature.worktreePath && void navigator.clipboard.writeText(feature.worktreePath)}
@@ -52,6 +55,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <span className="text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
       </div>
       {showReview && <ReviewPortal featureId={featureId} onClose={() => setShowReview(false)} />}
+      {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
 
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 

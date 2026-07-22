@@ -1,13 +1,20 @@
 import type {
+  Applicability,
   AttentionItem,
   AutomationSettings,
   Feature,
   FeaturePhase,
+  KnowledgeBundle,
+  KnowledgeEntry,
+  KnowledgeIndex,
+  KnowledgeTree,
   MergeQueueItem,
   PhaseDefinition,
   Project,
+  ResolvedSelection,
   SavePhaseDefinitionRequest,
   SavePhaseDefinitionResult,
+  SelectionDecision,
 } from '@sdd/shared';
 
 /** Konflikt beim Speichern einer Definition: Datei wurde extern geändert. */
@@ -152,7 +159,53 @@ export const api = {
   },
   openPhaseDefinitionInEditor: (projectId: string, phase: FeaturePhase) =>
     request<unknown>('POST', `/api/projects/${projectId}/phases/${phase}/definition/open-in-editor`),
+
+  // Projektspezifisches Wissen
+  getKnowledge: (projectId: string) =>
+    request<KnowledgeResponse>('GET', `/api/projects/${projectId}/knowledge`),
+  createBundle: (projectId: string, body: BundleBody) =>
+    request<KnowledgeBundle>('POST', `/api/projects/${projectId}/knowledge/bundles`, body),
+  updateBundle: (bundleId: string, patch: Partial<BundleBody>) =>
+    request<KnowledgeBundle>('PATCH', `/api/knowledge/bundles/${bundleId}`, patch),
+  deleteBundle: (bundleId: string) => request<unknown>('DELETE', `/api/knowledge/bundles/${bundleId}`),
+  createEntry: (projectId: string, body: EntryBody) =>
+    request<KnowledgeEntry>('POST', `/api/projects/${projectId}/knowledge/entries`, body),
+  updateEntry: (entryId: string, patch: Partial<EntryBody>) =>
+    request<KnowledgeEntry>('PATCH', `/api/knowledge/entries/${entryId}`, patch),
+  deleteEntry: (entryId: string) => request<unknown>('DELETE', `/api/knowledge/entries/${entryId}`),
+  importEntry: (projectId: string, body: { bundleId: string | null; sourcePath: string; title?: string; applicability: Applicability }) =>
+    request<KnowledgeEntry>('POST', `/api/projects/${projectId}/knowledge/entries/import`, body),
+  refreshEntry: (entryId: string) => request<KnowledgeEntry>('POST', `/api/knowledge/entries/${entryId}/refresh`),
+  featureKnowledge: (featureId: string) =>
+    request<FeatureKnowledgeResponse>('GET', `/api/features/${featureId}/knowledge`),
+  setKnowledgeSelection: (featureId: string, body: { targetId: string; targetKind: 'bundle' | 'entry'; decision: SelectionDecision | 'auto' }) =>
+    request<FeatureKnowledgeResponse>('PUT', `/api/features/${featureId}/knowledge/selection`, body),
+  materializeKnowledge: (featureId: string) =>
+    request<{ indexPath: string | null; materialized: { id: string; path: string }[]; resolved: ResolvedSelection }>(
+      'POST',
+      `/api/features/${featureId}/knowledge/materialize`,
+    ),
 };
+
+export interface KnowledgeResponse {
+  tree: KnowledgeTree;
+  index: KnowledgeIndex;
+}
+export interface FeatureKnowledgeResponse {
+  index: KnowledgeIndex;
+  resolved: ResolvedSelection;
+}
+export interface BundleBody {
+  parentId: string | null;
+  name: string;
+  applicability: Applicability;
+}
+export interface EntryBody {
+  bundleId: string | null;
+  title: string;
+  body: string;
+  applicability: Applicability;
+}
 
 export interface DiffSummary {
   files: { path: string; additions: number; deletions: number; binary: boolean }[];

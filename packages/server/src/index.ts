@@ -10,6 +10,8 @@ import {
   SessionRepo,
   SettingsRepo,
 } from './db/repos.js';
+import { KnowledgeRepo } from './db/knowledgeRepo.js';
+import { KnowledgeService } from './services/knowledgeService.js';
 import { ReviewGateService } from './services/reviewGateService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
@@ -32,7 +34,10 @@ async function main(): Promise<void> {
   const queue = new QueueRepo(db);
   const settings = new SettingsRepo(db);
   const personas = new PersonaRepo(db);
+  const knowledge = new KnowledgeRepo(db);
   const worktrees = new WorktreeManager(config.dataDir);
+
+  const knowledgeService = new KnowledgeService({ knowledge, projects, features });
 
   // PTY-Callbacks delegieren an den (danach konstruierten) Orchestrator.
   let orchestrator: Orchestrator;
@@ -51,6 +56,7 @@ async function main(): Promise<void> {
     settings,
     worktrees,
     ptys,
+    knowledge: knowledgeService,
     dataDir: config.dataDir,
   });
 
@@ -92,6 +98,8 @@ async function main(): Promise<void> {
     queue,
     settings,
     personas,
+    knowledge,
+    knowledgeService,
     orchestrator,
     mergeQueue,
     onboarding,

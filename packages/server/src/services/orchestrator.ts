@@ -19,6 +19,7 @@ import {
   type SessionEffect,
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
+import type { KnowledgeService } from './knowledgeService.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript } from '../pty/transcriptWatcher.js';
@@ -37,6 +38,7 @@ export interface OrchestratorDeps {
   settings: SettingsRepo;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
+  knowledge: KnowledgeService;
   dataDir: string;
 }
 
@@ -174,7 +176,8 @@ export class Orchestrator {
 
     const session = await this.ensureSession(featureId);
     const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
-    const prompt = extraPrompt ? `${slash} ${extraPrompt}` : slash;
+    const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
+    const prompt = base + this.knowledgePreambleFor(featureId);
     this.runningPhases.set(featureId, {
       phase,
       executionId,
@@ -246,7 +249,9 @@ export class Orchestrator {
       logPath: null,
     });
     const session = await this.ensureSession(featureId);
-    const prompt = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
+    const prompt =
+      phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature)) +
+      this.knowledgePreambleFor(featureId);
     this.runningPhases.set(featureId, {
       phase,
       executionId,
@@ -255,6 +260,22 @@ export class Orchestrator {
     });
     this.deps.ptys.sendPrompt(session.id, prompt);
     this.emitFeature(featureId);
+  }
+
+  /**
+   * Projektspezifisches Wissen für die Phase in den Worktree materialisieren und
+   * einen kompakten Pointer für die Prompt zurückgeben. Best-effort — Wissen darf
+   * eine Phase nie blockieren.
+   */
+  private knowledgePreambleFor(featureId: string): string {
+    try {
+      const feature = this.deps.features.get(featureId);
+      if (!feature) return '';
+      return this.deps.knowledge.materializeForFeature(feature).preamble;
+    } catch (err) {
+      console.warn('[knowledge] Materialisierung übersprungen:', (err as Error).message);
+      return '';
+    }
   }
 
   // ---------- Session-Callbacks (von PtySessionManager) ----------

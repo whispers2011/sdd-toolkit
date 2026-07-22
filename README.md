@@ -41,6 +41,24 @@ mit `/speckit.*`-Punktnotation werden automatisch erkannt.
 5. **„Braucht dich"-Inbox**: Agent-Fragen, Permission-Requests, rote Tests, eskalierte
    Konflikte — Monitoring by exception. Klick springt in die richtige Konsole.
 
+## Projektspezifisches Wissen
+
+Pro Projekt verwaltbares, verschachteltes Wissen (**Bundles → Einträge**), das die
+Feature-Sessions **selektiv** konsumieren — nicht jeder Kontext wird sofort eingelesen.
+Aufruf über das 📚-Icon je Projekt (Sidebar) bzw. je Feature (Konsolen-Header).
+
+- **Verwalten**: Bundles/Einträge anlegen, verschachteln, mit **Anwendbarkeit**
+  (Freitext + Tags) versehen; bestehende Repo-Dateien importieren/referenzieren.
+- **Index**: kompakte, immer aktuelle Projektion (Titel + Anwendbarkeit, ohne Inhalte) —
+  als abgeleitete Sicht, daher nie veraltet.
+- **Selektiv bei der Feature-Erstellung**: Vor jeder Phase wird nur das relevante Wissen
+  nach `<worktree>/.sdd/knowledge/` materialisiert (git-excluded) und per kompakter
+  Präambel referenziert; Relevanz automatisch aus Anwendbarkeit vorgeschlagen, pro
+  Feature manuell übersteuerbar.
+
+Speicherung projekt-gescopt in SQLite (`knowledge_*`-Tabellen), Transport on-demand via
+REST + `knowledge_updated`-WS-Event.
+
 ## Automation-Dial (Level 2 ↔ Level 3)
 
 | Automation | Level 2 (aus) | Level 3 (an) |

@@ -26,6 +26,7 @@ export interface BusEvents {
     featureId: string | null;
     kind: 'turn_completed' | 'input_requested' | 'escalation' | 'merged';
   }) => void;
+  knowledge_updated: (payload: { projectId: string }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -47,4 +48,5 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'attention_resolved',
   'queue_updated',
   'notification',
+  'knowledge_updated',
 ];

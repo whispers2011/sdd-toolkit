@@ -70,6 +70,17 @@ export function Sidebar() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  dispatch({ type: 'select_project', projectId: project.id });
+                  dispatch({ type: 'set_view', view: { kind: 'knowledge', projectId: project.id } });
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Projektspezifisches Wissen"
+              >
+                📚
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   setSettingsFor(project.id);
                 }}
                 className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"

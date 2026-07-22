@@ -117,6 +117,48 @@ const MIGRATIONS: string[] = [
   `,
   // WP13: Integrationsmodus (lokaler Merge vs. GitHub-PR)
   `ALTER TABLE projects ADD COLUMN integration_mode TEXT NOT NULL DEFAULT 'local';`,
+  // Feature "projektspezifisches-wissen": projekt-gescopte Wissensbasis
+  `
+  CREATE TABLE knowledge_bundles (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    parent_id          TEXT REFERENCES knowledge_bundles(id) ON DELETE CASCADE,
+    name               TEXT NOT NULL,
+    applicability_text TEXT NOT NULL DEFAULT '',
+    applicability_tags TEXT NOT NULL DEFAULT '[]',
+    sort_order         INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+  );
+
+  CREATE TABLE knowledge_entries (
+    id                 TEXT PRIMARY KEY,
+    project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    bundle_id          TEXT REFERENCES knowledge_bundles(id) ON DELETE CASCADE,
+    title              TEXT NOT NULL,
+    body               TEXT NOT NULL DEFAULT '',
+    applicability_text TEXT NOT NULL DEFAULT '',
+    applicability_tags TEXT NOT NULL DEFAULT '[]',
+    source             TEXT NOT NULL DEFAULT 'inline',
+    source_path        TEXT,
+    sort_order         INTEGER NOT NULL DEFAULT 0,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL
+  );
+
+  CREATE TABLE knowledge_feature_selection (
+    feature_id  TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    target_id   TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    decision    TEXT NOT NULL,
+    PRIMARY KEY (feature_id, target_id)
+  );
+
+  CREATE INDEX idx_kbundles_project ON knowledge_bundles(project_id);
+  CREATE INDEX idx_kbundles_parent  ON knowledge_bundles(parent_id);
+  CREATE INDEX idx_kentries_project ON knowledge_entries(project_id);
+  CREATE INDEX idx_kentries_bundle  ON knowledge_entries(bundle_id);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

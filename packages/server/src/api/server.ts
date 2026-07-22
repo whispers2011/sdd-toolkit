@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES } from '@sdd/shared';
+import { FEATURE_PHASES, detectCycle } from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
@@ -20,6 +20,9 @@ import type {
   SessionRepo,
   SettingsRepo,
 } from '../db/repos.js';
+import type { KnowledgeRepo } from '../db/knowledgeRepo.js';
+import type { KnowledgeService } from '../services/knowledgeService.js';
+import type { Applicability, SelectionDecision } from '@sdd/shared';
 import type { Orchestrator } from '../services/orchestrator.js';
 import type { MergeQueueService } from '../services/mergeQueueService.js';
 import type { OnboardingService } from '../services/onboardingService.js';
@@ -40,6 +43,8 @@ export interface ApiDeps {
   queue: QueueRepo;
   settings: SettingsRepo;
   personas: PersonaRepo;
+  knowledge: KnowledgeRepo;
+  knowledgeService: KnowledgeService;
   orchestrator: Orchestrator;
   mergeQueue: MergeQueueService;
   onboarding: OnboardingService;
@@ -510,6 +515,217 @@ export async function buildServer(deps: ApiDeps) {
   app.delete<{ Params: { id: string } }>('/api/personas/:id', (req) => {
     deps.personas.remove(req.params.id);
     return { ok: true };
+  });
+
+  // ---------- Projektspezifisches Wissen ----------
+
+  const mustProject = (id: string) => {
+    const p = deps.projects.get(id);
+    if (!p) throw httpError(404, 'Projekt nicht gefunden');
+    return p;
+  };
+  const normApplicability = (a: unknown): Applicability => {
+    const o = (a ?? {}) as { text?: unknown; tags?: unknown };
+    const tags = Array.isArray(o.tags)
+      ? o.tags.filter((t): t is string => typeof t === 'string').map((t) => t.trim()).filter(Boolean)
+      : [];
+    return { text: typeof o.text === 'string' ? o.text : '', tags: [...new Set(tags)] };
+  };
+  const knowledgeChanged = (projectId: string) => bus.emitEvent('knowledge_updated', { projectId });
+
+  app.get<{ Params: { id: string } }>('/api/projects/:id/knowledge', (req) => {
+    const project = mustProject(req.params.id);
+    return { tree: deps.knowledge.tree(project.id), index: deps.knowledge.index(project.id) };
+  });
+
+  app.post<{ Params: { id: string }; Body: { parentId?: string | null; name?: string; applicability?: unknown; sortOrder?: number } }>(
+    '/api/projects/:id/knowledge/bundles',
+    (req) => {
+      const project = mustProject(req.params.id);
+      const name = (req.body.name ?? '').trim();
+      if (!name) throw httpError(400, 'Name erforderlich');
+      const parentId = req.body.parentId ?? null;
+      if (parentId) {
+        const parent = deps.knowledge.getBundle(parentId);
+        if (!parent || parent.projectId !== project.id) throw httpError(400, 'Ungültiges Eltern-Bundle');
+      }
+      const bundle = deps.knowledge.createBundle(project.id, {
+        parentId,
+        name,
+        applicability: normApplicability(req.body.applicability),
+        sortOrder: req.body.sortOrder ?? 0,
+      });
+      knowledgeChanged(project.id);
+      return bundle;
+    },
+  );
+
+  app.patch<{ Params: { bundleId: string }; Body: { name?: string; applicability?: unknown; parentId?: string | null; sortOrder?: number } }>(
+    '/api/knowledge/bundles/:bundleId',
+    (req) => {
+      const cur = deps.knowledge.getBundle(req.params.bundleId);
+      if (!cur) throw httpError(404, 'Bundle nicht gefunden');
+      const patch: Parameters<typeof deps.knowledge.updateBundle>[1] = {};
+      if (req.body.name !== undefined) {
+        const name = req.body.name.trim();
+        if (!name) throw httpError(400, 'Name darf nicht leer sein');
+        patch.name = name;
+      }
+      if (req.body.applicability !== undefined) patch.applicability = normApplicability(req.body.applicability);
+      if (req.body.sortOrder !== undefined) patch.sortOrder = req.body.sortOrder;
+      if (req.body.parentId !== undefined) {
+        const parentId = req.body.parentId;
+        if (parentId) {
+          const parent = deps.knowledge.getBundle(parentId);
+          if (!parent || parent.projectId !== cur.projectId) throw httpError(400, 'Ungültiges Eltern-Bundle');
+        }
+        if (detectCycle(deps.knowledge.listBundles(cur.projectId), cur.id, parentId)) {
+          throw httpError(400, 'Zyklus: Bundle kann nicht unter sich selbst hängen');
+        }
+        patch.parentId = parentId;
+      }
+      const bundle = deps.knowledge.updateBundle(cur.id, patch);
+      knowledgeChanged(cur.projectId);
+      return bundle;
+    },
+  );
+
+  app.delete<{ Params: { bundleId: string } }>('/api/knowledge/bundles/:bundleId', (req) => {
+    const cur = deps.knowledge.getBundle(req.params.bundleId);
+    if (!cur) throw httpError(404, 'Bundle nicht gefunden');
+    deps.knowledge.deleteBundle(cur.id);
+    knowledgeChanged(cur.projectId);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string }; Body: { bundleId?: string | null; title?: string; body?: string; applicability?: unknown; sortOrder?: number } }>(
+    '/api/projects/:id/knowledge/entries',
+    (req) => {
+      const project = mustProject(req.params.id);
+      const title = (req.body.title ?? '').trim();
+      if (!title) throw httpError(400, 'Titel erforderlich');
+      const bundleId = req.body.bundleId ?? null;
+      if (bundleId) {
+        const b = deps.knowledge.getBundle(bundleId);
+        if (!b || b.projectId !== project.id) throw httpError(400, 'Ungültiges Bundle');
+      }
+      const entry = deps.knowledge.createEntry(project.id, {
+        bundleId,
+        title,
+        body: typeof req.body.body === 'string' ? req.body.body : '',
+        applicability: normApplicability(req.body.applicability),
+        source: 'inline',
+        sortOrder: req.body.sortOrder ?? 0,
+      });
+      knowledgeChanged(project.id);
+      return entry;
+    },
+  );
+
+  app.patch<{ Params: { entryId: string }; Body: { title?: string; body?: string; bundleId?: string | null; applicability?: unknown; sortOrder?: number } }>(
+    '/api/knowledge/entries/:entryId',
+    (req) => {
+      const cur = deps.knowledge.getEntry(req.params.entryId);
+      if (!cur) throw httpError(404, 'Eintrag nicht gefunden');
+      const patch: Parameters<typeof deps.knowledge.updateEntry>[1] = {};
+      if (req.body.title !== undefined) {
+        const t = req.body.title.trim();
+        if (!t) throw httpError(400, 'Titel darf nicht leer sein');
+        patch.title = t;
+      }
+      if (req.body.body !== undefined) patch.body = req.body.body;
+      if (req.body.applicability !== undefined) patch.applicability = normApplicability(req.body.applicability);
+      if (req.body.sortOrder !== undefined) patch.sortOrder = req.body.sortOrder;
+      if (req.body.bundleId !== undefined) {
+        const bundleId = req.body.bundleId;
+        if (bundleId) {
+          const b = deps.knowledge.getBundle(bundleId);
+          if (!b || b.projectId !== cur.projectId) throw httpError(400, 'Ungültiges Bundle');
+        }
+        patch.bundleId = bundleId;
+      }
+      const entry = deps.knowledge.updateEntry(cur.id, patch);
+      knowledgeChanged(cur.projectId);
+      return entry;
+    },
+  );
+
+  app.delete<{ Params: { entryId: string } }>('/api/knowledge/entries/:entryId', (req) => {
+    const cur = deps.knowledge.getEntry(req.params.entryId);
+    if (!cur) throw httpError(404, 'Eintrag nicht gefunden');
+    deps.knowledge.deleteEntry(cur.id);
+    knowledgeChanged(cur.projectId);
+    return { ok: true };
+  });
+
+  app.post<{ Params: { id: string }; Body: { bundleId?: string | null; sourcePath?: string; title?: string; applicability?: unknown } }>(
+    '/api/projects/:id/knowledge/entries/import',
+    (req) => {
+      const project = mustProject(req.params.id);
+      const sourcePath = (req.body.sourcePath ?? '').trim();
+      if (!sourcePath) throw httpError(400, 'sourcePath erforderlich');
+      const bundleId = req.body.bundleId ?? null;
+      if (bundleId) {
+        const b = deps.knowledge.getBundle(bundleId);
+        if (!b || b.projectId !== project.id) throw httpError(400, 'Ungültiges Bundle');
+      }
+      try {
+        const entry = deps.knowledgeService.importFromFile(project.id, {
+          bundleId,
+          sourcePath,
+          title: req.body.title,
+          applicability: normApplicability(req.body.applicability),
+        });
+        knowledgeChanged(project.id);
+        return entry;
+      } catch (e) {
+        throw httpError(400, (e as Error).message);
+      }
+    },
+  );
+
+  app.post<{ Params: { entryId: string } }>('/api/knowledge/entries/:entryId/refresh', (req) => {
+    const cur = deps.knowledge.getEntry(req.params.entryId);
+    if (!cur) throw httpError(404, 'Eintrag nicht gefunden');
+    if (cur.source !== 'file') throw httpError(409, 'Nur datei-basierte Einträge können aktualisiert werden');
+    try {
+      const entry = deps.knowledgeService.refreshFromFile(cur.id);
+      knowledgeChanged(cur.projectId);
+      return entry;
+    } catch (e) {
+      throw httpError(400, (e as Error).message);
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/api/features/:id/knowledge', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    return deps.knowledgeService.resolveForFeature(feature);
+  });
+
+  app.put<{ Params: { id: string }; Body: { targetId?: string; targetKind?: 'bundle' | 'entry'; decision?: SelectionDecision | 'auto' } }>(
+    '/api/features/:id/knowledge/selection',
+    (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const targetId = req.body.targetId;
+      if (!targetId) throw httpError(400, 'targetId erforderlich');
+      if (!req.body.decision || req.body.decision === 'auto') {
+        deps.knowledge.clearSelection(feature.id, targetId);
+      } else {
+        const kind = req.body.targetKind === 'bundle' ? 'bundle' : 'entry';
+        deps.knowledge.setSelection(feature.id, targetId, kind, req.body.decision);
+      }
+      return deps.knowledgeService.resolveForFeature(feature);
+    },
+  );
+
+  app.post<{ Params: { id: string } }>('/api/features/:id/knowledge/materialize', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    if (!feature.worktreePath || !existsSync(feature.worktreePath)) throw httpError(409, 'Kein Worktree vorhanden');
+    const result = deps.knowledgeService.materializeForFeature(feature);
+    return { indexPath: result.indexPath, materialized: result.materialized, resolved: result.resolved };
   });
 
   // ---------- Voice-Transkription (WP15) ----------

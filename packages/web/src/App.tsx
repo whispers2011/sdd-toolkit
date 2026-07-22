@@ -9,6 +9,7 @@ import { ExecutionsView } from './components/ExecutionsView.js';
 import { GridView } from './components/GridView.js';
 import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
+import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { api } from './api.js';
 
 export function App() {
@@ -95,6 +96,7 @@ export function App() {
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}
+          {state.view.kind === 'knowledge' && <KnowledgePanel projectId={state.view.projectId} />}
         </main>
       </div>
     </div>
