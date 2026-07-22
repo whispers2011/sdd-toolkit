@@ -299,6 +299,16 @@ export async function buildServer(deps: ApiDeps) {
     return deps.chatWork.ensure(req.params.id);
   });
 
+  /** Wissens-Chat neu starten: frische Session. 409 { needsConfirm, reason } wenn Arbeit droht. */
+  app.post<{ Params: { id: string }; Body: { confirm?: boolean } }>(
+    '/api/projects/:id/chat/work/restart',
+    async (req, reply) => {
+      const result = await deps.chatWork.restart(req.params.id, { confirm: req.body?.confirm === true });
+      if ('needsConfirm' in result) void reply.code(409);
+      return result;
+    },
+  );
+
   /** Bestätigte Feature(s) aus dem Vorschlag anlegen (Teilmenge per Name). */
   app.post<{ Params: { id: string }; Body: { names?: string[] } }>(
     '/api/projects/:id/chat/work/features/create',
