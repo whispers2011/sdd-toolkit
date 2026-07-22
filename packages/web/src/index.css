@@ -5,6 +5,86 @@
   --color-zinc-925: #0e0e11;
 }
 
+/*
+ * Light-Mode: Farbskalen invertieren (Contract C4 / research D4).
+ * Das Dark-UI verwendet alle Skalen richtungsgleich (hohe Stufe = dunkel,
+ * niedrige = hell). Eine Inversion der Skalen kippt das gesamte Erscheinungsbild
+ * kohärent nach hell, OHNE die ~550 Farb-Utilities in den Komponenten anzufassen
+ * (Tailwind v4 kompiliert Farb-Utilities zu var(--color-…)).
+ * Die Overrides stehen bewusst außerhalb jedes @layer (schlagen damit den
+ * Tailwind-theme-Layer); :root[data-theme='light'] erhöht zusätzlich die Spezifität.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* Neutral (zinc) — trägt den Großteil des UIs */
+  --color-zinc-50: #09090b;
+  --color-zinc-100: #18181b;
+  --color-zinc-200: #27272a;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-400: #52525b;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-900: #f4f4f5;
+  --color-zinc-925: #f7f7f8;
+  --color-zinc-950: #fafafa;
+
+  /* Akzent: emerald */
+  --color-emerald-50: #022c22;
+  --color-emerald-100: #064e3b;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-emerald-400: #059669;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #34d399;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  /* Akzent: amber */
+  --color-amber-50: #451a03;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-amber-950: #fffbeb;
+
+  /* Akzent: red */
+  --color-red-50: #450a0a;
+  --color-red-100: #7f1d1d;
+  --color-red-200: #991b1b;
+  --color-red-300: #b91c1c;
+  --color-red-400: #dc2626;
+  --color-red-500: #ef4444;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+  --color-red-950: #fef2f2;
+
+  /* Akzent: sky */
+  --color-sky-50: #082f49;
+  --color-sky-100: #0c4a6e;
+  --color-sky-200: #075985;
+  --color-sky-300: #0369a1;
+  --color-sky-400: #0284c7;
+  --color-sky-500: #0ea5e9;
+  --color-sky-600: #38bdf8;
+  --color-sky-700: #7dd3fc;
+  --color-sky-800: #bae6fd;
+  --color-sky-900: #e0f2fe;
+  --color-sky-950: #f0f9ff;
+}
+
+/* Dark bleibt Basis; color-scheme wird zusätzlich inline vom FOUC-Guard gesetzt. */
 :root {
   color-scheme: dark;
 }

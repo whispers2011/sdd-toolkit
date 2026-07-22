@@ -142,7 +142,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                 .then(() => onClose())
                 .catch(fail)
             }
-            className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
+            className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600"
           >
             ✓ Approve & Merge
           </button>
@@ -175,7 +175,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                   .then(() => onClose())
                   .catch(fail)
               }
-              className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+              className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-red-700"
             >
               Zurückweisen
             </button>

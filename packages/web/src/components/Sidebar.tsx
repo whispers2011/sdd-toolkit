@@ -327,7 +327,7 @@ export function ConfirmDialog({
             onConfirm();
             onClose();
           }}
-          className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+          className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-red-700"
         >
           {confirmLabel}
         </button>
@@ -377,7 +377,7 @@ export function DialogActions({
       <button
         onClick={onSubmit}
         disabled={busy}
-        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-50"
+        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-50"
       >
         {busy ? '…' : submitLabel}
       </button>

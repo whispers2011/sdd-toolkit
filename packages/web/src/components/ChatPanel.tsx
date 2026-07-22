@@ -170,8 +170,9 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         </div>
       )}
 
-      {/* Echte Konsole der Session — man tippt direkt hier hinein. */}
-      <div className="min-h-0 flex-1 bg-black">
+      {/* Echte Konsole der Session — man tippt direkt hier hinein.
+          Hintergrund folgt dem Terminal-Theme (zinc-950 ⇄ hell). */}
+      <div className="min-h-0 flex-1 bg-zinc-950">
         {ready ? (
           <TerminalPane
             key={projectId}
@@ -217,7 +218,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
             <button
               onClick={createFeatures}
               disabled={selected.size === 0}
-              className="rounded bg-emerald-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+              className="rounded bg-emerald-700 px-2.5 py-1 text-xs font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
             >
               Anlegen{selected.size > 1 ? ` (${selected.size})` : ''}
             </button>
