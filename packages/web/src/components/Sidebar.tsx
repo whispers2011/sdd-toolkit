@@ -28,15 +28,6 @@ export function Sidebar() {
         </button>
       </div>
 
-      <button
-        onClick={() => dispatch({ type: 'select_project', projectId: null })}
-        className={`mx-2 rounded px-2 py-1 text-left text-xs ${
-          state.selectedProjectId === null ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-900'
-        }`}
-      >
-        Alle Projekte
-      </button>
-
       <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-4">
         {state.app.projects.map((project) => (
           <div key={project.id} className="mb-3">

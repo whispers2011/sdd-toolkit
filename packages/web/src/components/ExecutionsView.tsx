@@ -36,9 +36,7 @@ export function ExecutionsView() {
   const rows = useMemo(() => {
     const projectFilter = state.selectedProjectId;
     return executions.filter(
-      (e) =>
-        (projectFilter === null || e.projectId === projectFilter) &&
-        (kindFilter === 'all' || e.kind === kindFilter),
+      (e) => e.projectId === projectFilter && (kindFilter === 'all' || e.kind === kindFilter),
     );
   }, [executions, state.selectedProjectId, kindFilter]);
 

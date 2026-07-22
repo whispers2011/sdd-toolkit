@@ -5,7 +5,7 @@ interface Entry {
   label: string;
   hint: string;
   view: View;
-  projectId?: string | null;
+  projectId?: string;
 }
 
 /** Quick-Switcher (WP16/Q5): ⌘K — Projekte, Features und Views anspringen. */

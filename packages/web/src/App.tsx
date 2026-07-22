@@ -106,7 +106,7 @@ function SpecKitBanner() {
   const { state, dispatch } = useStore();
   if (!state.app) return null;
   const missing = state.app.projects.filter(
-    (p) => !p.specKit && (state.selectedProjectId === null || p.id === state.selectedProjectId),
+    (p) => !p.specKit && p.id === state.selectedProjectId,
   );
   if (missing.length === 0 || state.view.kind === 'shell') return null;
   return (

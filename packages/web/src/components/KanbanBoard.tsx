@@ -43,12 +43,12 @@ export function KanbanBoard() {
 
   const features = state.app.features.filter(
     (f) =>
-      (state.selectedProjectId === null || f.projectId === state.selectedProjectId) &&
+      f.projectId === state.selectedProjectId &&
       (state.showCompleted || f.integration !== 'merged'),
   );
   const enabledUnion = new Set<FeaturePhase>();
   for (const p of state.app.projects) {
-    if (state.selectedProjectId !== null && p.id !== state.selectedProjectId) continue;
+    if (p.id !== state.selectedProjectId) continue;
     for (const phase of p.enabledPhases) enabledUnion.add(phase);
   }
   const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));

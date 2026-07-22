@@ -6,7 +6,7 @@ const MAX_PANES = 9;
 
 /** Panes pro Projekt-Scope gespeichert — Projektwechsel = eigener Grid-Kontext. */
 function storageKey(projectId: string | null): string {
-  return `sdd-grid-panes:${projectId ?? 'all'}`;
+  return `sdd-grid-panes:${projectId ?? 'none'}`;
 }
 
 function gridClass(count: number): string {
@@ -41,10 +41,9 @@ export function GridView() {
   }, [panes, scope]);
 
   if (!state.app) return null;
-  // Kontext-Trennung: nur Features des gewählten Projekts (bzw. alle bei „Alle Projekte").
+  // Kontext-Trennung: nur Features des gewählten Projekts.
   const features = state.app.features.filter(
-    (f) =>
-      (scope === null || f.projectId === scope) && (state.showCompleted || f.integration !== 'merged'),
+    (f) => f.projectId === scope && (state.showCompleted || f.integration !== 'merged'),
   );
   // Panes bereinigen, deren Features nicht (mehr) im Scope sind (UI-State, kein Domain-State).
   const validPanes = panes.filter((id) => features.some((f) => f.id === id));

@@ -21,7 +21,7 @@ export type View =
 export interface UiState {
   app: AppState | null;
   view: View;
-  selectedProjectId: string | null; // null = alle Projekte
+  selectedProjectId: string | null; // null = kein Projekt vorhanden (Leerzustand); sonst genau ein Projekt
   /** Abgeschlossene (merged) Features anzeigen? Default: ausgeblendet. */
   showCompleted: boolean;
   error: string | null;
@@ -35,14 +35,18 @@ export type Action =
   | { type: 'attention_resolved'; id: string }
   | { type: 'queue_updated'; payload: { projectId: string; items: MergeQueueItem[] } }
   | { type: 'set_view'; view: View }
-  | { type: 'select_project'; projectId: string | null }
+  | { type: 'select_project'; projectId: string }
   | { type: 'toggle_completed' }
   | { type: 'error'; message: string | null };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
-    case 'bootstrap':
-      return { ...state, app: action.state };
+    case 'bootstrap': {
+      // Kontext auflösen: sobald Projekte existieren, ist genau eines aktiv (FR-001/FR-004).
+      const selectedProjectId = resolveSelectedProject(action.state.projects, state.selectedProjectId);
+      if (selectedProjectId !== null) persistSelectedProject(selectedProjectId);
+      return { ...state, app: action.state, selectedProjectId };
+    }
     case 'feature_updated': {
       if (!state.app) return state;
       const exists = state.app.features.some((f) => f.id === action.feature.id);
@@ -92,13 +96,25 @@ function reducer(state: UiState, action: Action): UiState {
         app: { ...state.app, queues: { ...state.app.queues, [action.payload.projectId]: action.payload.items } },
       };
     }
-    case 'set_view':
-      return { ...state, view: action.view };
+    case 'set_view': {
+      // Fremd-Navigation zieht den Projektkontext mit (FR-007/Contract C6):
+      // Öffnet man eine Feature-Konsole (Benachrichtigung, Inbox, ⌘K, Board),
+      // wird automatisch dessen Projekt aktiver Kontext.
+      const view = action.view;
+      if (view.kind === 'console' && state.app) {
+        const feature = state.app.features.find((f) => f.id === view.featureId);
+        if (feature && feature.projectId !== state.selectedProjectId) {
+          persistSelectedProject(feature.projectId);
+          return { ...state, view, selectedProjectId: feature.projectId };
+        }
+      }
+      return { ...state, view };
+    }
     case 'select_project': {
       // Kontext-Trennung: beim Projektwechsel keine fremden Inhalte stehen lassen —
       // Konsole/Terminal eines anderen Projekts fällt aufs Board zurück.
       let view = state.view;
-      if (action.projectId !== null && state.app) {
+      if (state.app) {
         if (view.kind === 'console') {
           const feature = state.app.features.find((f) => f.id === (view as { featureId: string }).featureId);
           if (feature && feature.projectId !== action.projectId) view = { kind: 'board' };
@@ -106,6 +122,7 @@ function reducer(state: UiState, action: Action): UiState {
           view = { kind: 'board' };
         }
       }
+      persistSelectedProject(action.projectId);
       return { ...state, selectedProjectId: action.projectId, view };
     }
     case 'toggle_completed': {
@@ -123,9 +140,29 @@ export function visibleFeatures(state: UiState): AppState['features'] {
   if (!state.app) return [];
   return state.app.features.filter(
     (f) =>
-      (state.selectedProjectId === null || f.projectId === state.selectedProjectId) &&
+      f.projectId === state.selectedProjectId &&
       (state.showCompleted || f.integration !== 'merged'),
   );
+}
+
+/** Gemerkte Projektauswahl — überlebt Neustarts (FR-005). */
+const SELECTED_PROJECT_KEY = 'sdd-selected-project';
+
+function rememberedProject(): string | null {
+  return localStorage.getItem(SELECTED_PROJECT_KEY);
+}
+
+function persistSelectedProject(id: string): void {
+  localStorage.setItem(SELECTED_PROJECT_KEY, id);
+}
+
+/** Auflösung des aktiven Projektkontexts (Contract C4): bestehende Auswahl →
+ *  gemerkte ID → erstes Projekt → null (Leerzustand, wenn keine Projekte). */
+function resolveSelectedProject(projects: AppState['projects'], current: string | null): string | null {
+  if (current !== null && projects.some((p) => p.id === current)) return current;
+  const remembered = rememberedProject();
+  if (remembered !== null && projects.some((p) => p.id === remembered)) return remembered;
+  return projects[0]?.id ?? null;
 }
 
 export function soundEnabled(): boolean {

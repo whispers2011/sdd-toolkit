@@ -17,12 +17,10 @@ export function AttentionInbox() {
   const { state, dispatch } = useStore();
   if (!state.app) return null;
 
-  // Kontext-Trennung: Inbox respektiert den Projekt-Scope.
+  // Kontext-Trennung: Inbox respektiert den Projekt-Scope (genau 1 Projekt).
   // Berechtigungs-Rückfragen (auch Alt-Einträge) gehören nicht in „Braucht dich".
   const items = state.app.attention.filter(
-    (a) =>
-      a.kind !== 'permission_request' &&
-      (state.selectedProjectId === null || a.projectId === state.selectedProjectId),
+    (a) => a.kind !== 'permission_request' && a.projectId === state.selectedProjectId,
   );
   const projectName = (id: string) => state.app!.projects.find((p) => p.id === id)?.name ?? '?';
 
