@@ -10,6 +10,7 @@
     "test": "echo 'keine Web-Tests (MVP)' && exit 0"
   },
   "dependencies": {
+    "@mdxeditor/editor": "^4.1.0",
     "@sdd/shared": "workspace:*",
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/addon-web-links": "^0.12.0",

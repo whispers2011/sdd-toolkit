@@ -190,3 +190,51 @@ export function PauseIcon(props: IconProps) {
     </Base>
   );
 }
+
+/** Specify-Ergebnis (spec.md) — Dokument mit Textzeilen. */
+export function SpecifyResultIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="13" y2="17" />
+    </Base>
+  );
+}
+
+/** Plan-Ergebnis (plan.md + Begleitartefakte) — Blueprint/Karte. */
+export function PlanResultIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M9 3 3 5v16l6-2 6 2 6-2V3l-6 2z" />
+      <line x1="9" y1="3" x2="9" y2="19" />
+      <line x1="15" y1="5" x2="15" y2="21" />
+    </Base>
+  );
+}
+
+/** Tasks-Ergebnis (tasks.md) — Liste mit Häkchen. */
+export function TasksResultIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="3 6 4 7 6 5" />
+      <polyline points="3 12 4 13 6 11" />
+      <polyline points="3 18 4 19 6 17" />
+      <line x1="10" y1="6" x2="21" y2="6" />
+      <line x1="10" y1="12" x2="21" y2="12" />
+      <line x1="10" y1="18" x2="21" y2="18" />
+    </Base>
+  );
+}
+
+/** Checklist-Ergebnis (checklists/*) — Klemmbrett mit Häkchen. */
+export function ChecklistResultIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M9 2h6a1 1 0 0 1 1 1v2H8V3a1 1 0 0 1 1-1z" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <polyline points="9 13 11 15 15 11" />
+    </Base>
+  );
+}

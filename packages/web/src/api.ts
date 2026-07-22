@@ -7,8 +7,12 @@ import type {
   ChatMessage,
   ChatWorkSessionInfo,
   Feature,
+  FeatureArtifact,
+  FeatureArtifactStep,
   FeatureCostBreakdown,
   FeaturePhase,
+  SaveFeatureArtifactRequest,
+  SaveFeatureArtifactResult,
   FeatureProposalStatus,
   KnowledgeBundle,
   KnowledgeEntry,
@@ -184,6 +188,39 @@ export const api = {
   },
   openPhaseDefinitionInEditor: (projectId: string, phase: FeaturePhase) =>
     request<unknown>('POST', `/api/projects/${projectId}/phases/${phase}/definition/open-in-editor`),
+
+  // Feature-Artefakte (Kachel-Ergebnis-Icons)
+  featureArtifacts: (featureId: string) =>
+    request<FeatureArtifactStep[]>('GET', `/api/features/${featureId}/artifacts`),
+  featureArtifact: (featureId: string, phase: FeaturePhase, fileId?: string) =>
+    request<FeatureArtifact>(
+      'GET',
+      `/api/features/${featureId}/artifacts/${phase}${fileId ? `?file=${encodeURIComponent(fileId)}` : ''}`,
+    ),
+  saveFeatureArtifact: async (
+    featureId: string,
+    phase: FeaturePhase,
+    fileId: string,
+    body: SaveFeatureArtifactRequest,
+  ): Promise<SaveFeatureArtifactResult> => {
+    const res = await fetch(
+      `/api/features/${featureId}/artifacts/${phase}?file=${encodeURIComponent(fileId)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    );
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.status === 409 && data.error === 'conflict') {
+      throw new SaveConflictError(
+        (data.message as string) ?? 'Konflikt beim Speichern',
+        data.current as { content: string; mtimeMs: number },
+      );
+    }
+    if (!res.ok) throw new Error((data.message as string) ?? `PUT → ${res.status}`);
+    return data as unknown as SaveFeatureArtifactResult;
+  },
 
   // Projektspezifisches Wissen
   getKnowledge: (projectId: string) =>

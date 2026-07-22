@@ -1,13 +1,29 @@
-import { createContext, useContext, useState, type DragEvent } from 'react';
-import type { Feature, FeaturePhase } from '@sdd/shared';
+import { createContext, useContext, useEffect, useState, type DragEvent } from 'react';
+import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
+import { FeatureResultDialog } from './FeatureResultDialog.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
 import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
+import {
+  SpecifyResultIcon,
+  PlanResultIcon,
+  TasksResultIcon,
+  ChecklistResultIcon,
+  type IconProps,
+} from './icons.js';
+
+/** Icon je artefakt-erzeugendem Schritt (Kachel-Ergebnis-Icons). */
+const RESULT_ICONS: Partial<Record<FeaturePhase, (p: IconProps) => React.ReactElement>> = {
+  specify: SpecifyResultIcon,
+  plan: PlanResultIcon,
+  tasks: TasksResultIcon,
+  checklist: ChecklistResultIcon,
+};
 
 const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
 
@@ -144,8 +160,24 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
   const { state, dispatch } = useStore();
   const [showAutomation, setShowAutomation] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  const [steps, setSteps] = useState<FeatureArtifactStep[]>([]);
+  const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
   const project = state.app?.projects.find((p) => p.id === feature.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
+
+  // Ergebnis-Artefakte laden; neu laden, wenn sich ein Phasen-Status ändert (z. B. spec.md entsteht).
+  const phaseSig = FEATURE_PHASES.map((p) => feature.phases[p]?.status ?? '-').join(',');
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .featureArtifacts(feature.id)
+      .then((s) => !cancelled && setSteps(s))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feature.id, phaseSig]);
 
   const call = (fn: () => Promise<unknown>) =>
     fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
@@ -176,6 +208,40 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         </button>
       </div>
       <div className="mt-1 text-xs text-zinc-500">{project?.name}</div>
+
+      {steps.length > 0 && (
+        <div className="mt-1.5 flex items-center gap-1">
+          {steps.map((s) => {
+            const Icon = RESULT_ICONS[s.phase];
+            if (!Icon) return null;
+            return (
+              <button
+                key={s.phase}
+                disabled={!s.available}
+                title={s.available ? s.tooltip : `${s.label}: noch kein Ergebnis`}
+                onClick={() => setResultPhase(s.phase)}
+                className={`flex h-5 w-5 items-center justify-center rounded text-[13px] ${
+                  s.available
+                    ? 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+                    : 'cursor-default text-zinc-700'
+                }`}
+              >
+                <Icon />
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {resultPhase && (
+        <FeatureResultDialog
+          featureId={feature.id}
+          featureName={feature.name}
+          phase={resultPhase}
+          phaseLabel={PHASE_LABELS[resultPhase]}
+          onClose={() => setResultPhase(null)}
+        />
+      )}
+
       {showAutomation && (
         <div className="mt-2 space-y-1">
           <div className="flex gap-1">
