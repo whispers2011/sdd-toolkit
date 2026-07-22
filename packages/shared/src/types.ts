@@ -179,6 +179,36 @@ export interface ExecutionRecord {
   logPath: string | null;
 }
 
+/** DTO: spec-kit-Definition eines SDD-Schritts (Lane-Info-Icon). */
+export interface PhaseDefinition {
+  projectId: string;
+  phase: FeaturePhase;
+  /** Ob eine Definitionsdatei gefunden wurde. */
+  exists: boolean;
+  /** Absoluter Pfad der Datei (informativ / „im Editor öffnen"); null wenn nicht gefunden. */
+  path: string | null;
+  /** Markdown-Inhalt; null wenn nicht vorhanden. */
+  content: string | null;
+  /** Änderungszeit für Konfliktprüfung; null wenn nicht vorhanden. */
+  mtimeMs: number | null;
+  /** Bearbeiten gesperrt (Agent führt den Schritt aus)? */
+  locked: boolean;
+  lockReason: string | null;
+}
+
+export interface SavePhaseDefinitionRequest {
+  content: string;
+  /** Beim Öffnen gelesene mtimeMs (Basis der Konfliktprüfung). */
+  baseMtimeMs: number;
+  /** Konfliktprüfung überspringen (bewusstes Überschreiben). */
+  overwrite?: boolean;
+}
+
+export interface SavePhaseDefinitionResult {
+  ok: true;
+  mtimeMs: number;
+}
+
 export function resolveAutomation(
   global: AutomationSettings,
   project: Partial<AutomationSettings>,

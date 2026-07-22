@@ -22,6 +22,19 @@ export function artifactPath(repoRoot: string, featureName: string, phase: Featu
   }
 }
 
+/**
+ * Pfad zur spec-kit-Definitionsdatei eines Schritts (beschreibt, *was* der Schritt tut).
+ * Unterstützt Skills- und ältere Command-Installationen; null wenn keine Datei existiert.
+ */
+export function phaseDefinitionPath(repoRoot: string, phase: FeaturePhase): string | null {
+  const candidates = [
+    join(repoRoot, '.claude', 'skills', `speckit-${phase}`, 'SKILL.md'),
+    join(repoRoot, '.claude', 'commands', `speckit-${phase}.md`),
+    join(repoRoot, '.claude', 'commands', `speckit.${phase}.md`),
+  ];
+  return candidates.find((p) => existsSync(p)) ?? null;
+}
+
 export function artifactExists(repoRoot: string, featureName: string, phase: FeaturePhase): boolean {
   const p = artifactPath(repoRoot, featureName, phase);
   return p !== null && existsSync(p);

@@ -4,6 +4,7 @@ import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
+import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
 import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
@@ -37,6 +38,7 @@ export function KanbanBoard() {
   const { state, dispatch } = useStore();
   const [dragOver, setDragOver] = useState<Column | null>(null);
   const [reviewFeatureId, setReviewFeatureId] = useState<string | null>(null);
+  const [defPhase, setDefPhase] = useState<FeaturePhase | null>(null);
   if (!state.app) return null;
 
   const features = state.app.features.filter(
@@ -72,6 +74,26 @@ export function KanbanBoard() {
   return (
     <OpenReviewContext.Provider value={setReviewFeatureId}>
     {reviewFeatureId && <ReviewPortal featureId={reviewFeatureId} onClose={() => setReviewFeatureId(null)} />}
+    {defPhase &&
+      (() => {
+        const all = state.app!.projects;
+        const scoped = state.selectedProjectId
+          ? all.filter((p) => p.id === state.selectedProjectId)
+          : all;
+        const withPhase = scoped.filter((p) => p.enabledPhases.includes(defPhase));
+        const candidates = (withPhase.length ? withPhase : scoped).map((p) => ({ id: p.id, name: p.name }));
+        const first = candidates[0];
+        if (!first) return null;
+        return (
+          <PhaseDefinitionDialog
+            phase={defPhase}
+            phaseLabel={PHASE_LABELS[defPhase]}
+            projects={candidates}
+            initialProjectId={first.id}
+            onClose={() => setDefPhase(null)}
+          />
+        );
+      })()}
     <div className="flex h-full gap-3 overflow-x-auto p-4">
       {columns.map((column) => {
         const items = features.filter((f) => columnOf(f) === column);
@@ -89,9 +111,20 @@ export function KanbanBoard() {
             }`}
           >
             <div className="flex items-center justify-between px-3 py-2">
-              <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
-                {column === 'integration' ? 'Integration' : column === 'done' ? 'Done' : PHASE_LABELS[column]}
-              </h3>
+              <div className="flex items-center gap-1.5">
+                <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
+                  {column === 'integration' ? 'Integration' : column === 'done' ? 'Done' : PHASE_LABELS[column]}
+                </h3>
+                {column !== 'integration' && column !== 'done' && (
+                  <button
+                    onClick={() => setDefPhase(column)}
+                    title="Was macht dieser Schritt? (Spezifikation ansehen/bearbeiten)"
+                    className="flex h-4 w-4 items-center justify-center rounded-full border border-zinc-600 text-[10px] leading-none font-serif text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
+                  >
+                    i
+                  </button>
+                )}
+              </div>
               <span className="text-xs text-zinc-600">{items.length}</span>
             </div>
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">

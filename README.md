@@ -31,7 +31,9 @@ mit `/speckit.*`-Punktnotation werden automatisch erkannt.
    direkt `/speckit.specify`.
 3. **Phasen** laufen als Slash-Commands in dieser Session: specify → clarify → plan →
    tasks → implement. Steuerung per Kanban (Drag-to-Advance), Phasen-Leiste über der
-   Konsole oder direkt in der Konsole.
+   Konsole oder direkt in der Konsole. Über das **ℹ-Icon im Lane-Header** lässt sich die
+   spec-kit-Definition jedes Schritts einsehen und direkt bearbeiten („Was macht dieser
+   Schritt?") — inkl. Konfliktschutz und Sperre bei laufendem Agenten.
 4. **Integration**: implement fertig → Verifikations-Pipeline (Test/Build/Lint, pro
    Projekt konfigurierbar) → Merge-Queue: rebase auf main → **Konflikte löst ein
    Headless-Claude mit Spec-Kontext beider Seiten** → erneute Verifikation → Merge →

@@ -4,8 +4,22 @@ import type {
   Feature,
   FeaturePhase,
   MergeQueueItem,
+  PhaseDefinition,
   Project,
+  SavePhaseDefinitionRequest,
+  SavePhaseDefinitionResult,
 } from '@sdd/shared';
+
+/** Konflikt beim Speichern einer Definition: Datei wurde extern geändert. */
+export class SaveConflictError extends Error {
+  constructor(
+    message: string,
+    public readonly current: { content: string; mtimeMs: number },
+  ) {
+    super(message);
+    this.name = 'SaveConflictError';
+  }
+}
 
 export interface LiveSessionInfo {
   id: string;
@@ -114,6 +128,30 @@ export const api = {
   },
   initSpeckit: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/init-speckit`),
+  phaseDefinition: (projectId: string, phase: FeaturePhase) =>
+    request<PhaseDefinition>('GET', `/api/projects/${projectId}/phases/${phase}/definition`),
+  savePhaseDefinition: async (
+    projectId: string,
+    phase: FeaturePhase,
+    body: SavePhaseDefinitionRequest,
+  ): Promise<SavePhaseDefinitionResult> => {
+    const res = await fetch(`/api/projects/${projectId}/phases/${phase}/definition`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.status === 409 && data.error === 'conflict') {
+      throw new SaveConflictError(
+        (data.message as string) ?? 'Konflikt beim Speichern',
+        data.current as { content: string; mtimeMs: number },
+      );
+    }
+    if (!res.ok) throw new Error((data.message as string) ?? `PUT → ${res.status}`);
+    return data as unknown as SavePhaseDefinitionResult;
+  },
+  openPhaseDefinitionInEditor: (projectId: string, phase: FeaturePhase) =>
+    request<unknown>('POST', `/api/projects/${projectId}/phases/${phase}/definition/open-in-editor`),
 };
 
 export interface DiffSummary {

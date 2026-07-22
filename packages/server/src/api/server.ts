@@ -26,7 +26,8 @@ import type { OnboardingService } from '../services/onboardingService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
-import { hasSpecKit } from '../services/artifacts.js';
+import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
+import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 
@@ -208,6 +209,68 @@ export async function buildServer(deps: ApiDeps) {
     );
     return res;
   });
+
+  // ---------- Phase-Definitionen (Lane-Info-Icon) ----------
+
+  /** Definition eines SDD-Schritts lesen (was der Schritt tut). */
+  app.get<{ Params: { id: string; phase: string } }>(
+    '/api/projects/:id/phases/:phase/definition',
+    async (req) => {
+      const project = deps.projects.get(req.params.id);
+      if (!project) throw httpError(404, 'Projekt nicht gefunden');
+      const phase = validatePhase(req.params.phase);
+      const features = deps.features.listByProject(project.id);
+      return readPhaseDefinition(project, phase, features);
+    },
+  );
+
+  /** Definition eines SDD-Schritts speichern (Konflikt- & Sperr-geschützt). */
+  app.put<{ Params: { id: string; phase: string }; Body: { content?: string; baseMtimeMs?: number; overwrite?: boolean } }>(
+    '/api/projects/:id/phases/:phase/definition',
+    async (req, reply) => {
+      const project = deps.projects.get(req.params.id);
+      if (!project) throw httpError(404, 'Projekt nicht gefunden');
+      const phase = validatePhase(req.params.phase);
+      if (typeof req.body.content !== 'string' || typeof req.body.baseMtimeMs !== 'number') {
+        throw httpError(400, 'content und baseMtimeMs erforderlich');
+      }
+      const features = deps.features.listByProject(project.id);
+      try {
+        const { mtimeMs } = await writePhaseDefinition(project, phase, features, {
+          content: req.body.content,
+          baseMtimeMs: req.body.baseMtimeMs,
+          overwrite: req.body.overwrite ?? false,
+        });
+        return { ok: true, mtimeMs };
+      } catch (e) {
+        if (e instanceof DefinitionError) {
+          if (e.code === 'not_found') throw httpError(404, e.message);
+          void reply.code(409);
+          return e.code === 'conflict'
+            ? { error: 'conflict', message: e.message, current: e.current }
+            : { error: 'locked', message: e.message };
+        }
+        throw e;
+      }
+    },
+  );
+
+  /** Definitionsdatei eines SDD-Schritts im externen Editor öffnen. */
+  app.post<{ Params: { id: string; phase: string } }>(
+    '/api/projects/:id/phases/:phase/definition/open-in-editor',
+    async (req) => {
+      const project = deps.projects.get(req.params.id);
+      if (!project) throw httpError(404, 'Projekt nicht gefunden');
+      const phase = validatePhase(req.params.phase);
+      const file = phaseDefinitionPath(project.path, phase);
+      if (!file) throw httpError(404, 'Keine Definitionsdatei für diesen Schritt.');
+      const template = project.editorCmd?.trim() || 'code -g {file}:{line}';
+      const command = template.replaceAll('{file}', shellQuotePath(file)).replaceAll('{line}', '1');
+      const env = await loginShellEnv();
+      exec(command, { env, cwd: project.path }, () => {});
+      return { ok: true };
+    },
+  );
 
   // ---------- Features ----------
 
