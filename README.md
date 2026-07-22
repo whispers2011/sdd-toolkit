@@ -82,10 +82,16 @@ Verifikations-Kommandos pro Projekt: `PATCH /api/projects/:id` mit
 
 ## Roadmap
 
-- **P1**: Review-Agents (Code/Security mit VERDICT-Gate), Human-Review-Portal (Diff-UI),
-  Grid-View für mehrere Konsolen, Transkript-Fallback für Statuserkennung, PR-Modus
-  (`gh pr create`), Executions-View, Verify-Kommandos-UI
-- **P2**: Multi-Provider (Codex/Gemini), CLI-Fernsteuerung, Routinen, Kosten-Dashboard
+- **P1 (umgesetzt, 2026-07-22)**: Transkript-Fallback (ESC-Abbruch-Erkennung), Snapshots +
+  Resume-Recovery, Cost-/Token-Metering, Review-Gate (Code/Security mit VERDICT),
+  Human-Review-Portal inkl. Konfliktauflösungs-Transparenz, Executions-View, Projekt-
+  Einstellungen-UI, Grid-View (9 Panes, Feed-Drosselung), Notification-Feinschliff,
+  klickbare Links, Projekt-Terminal + spec-kit-Init, Change-Guard, PR-Modus,
+  native Ordnerauswahl, Voice-Eingabe (Web Speech / Whisper / Groq), ⌘K-Switcher,
+  Bild-Paste, Confirm-Dialoge
+- **P2**: Multi-Provider (Codex/Gemini), CLI-Fernsteuerung (`sdd`), Tab-Management,
+  DAG-Ansicht, MCP-Management, Routinen, Kosten-Dashboard — siehe
+  `docs/funktionsuebernahme.md` §3 und `docs/implementation-prompt.md` (P2-Folgeprompt)
 
 ## Entwicklung
 

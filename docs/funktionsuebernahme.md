@@ -24,7 +24,9 @@ bewusst wegbleibt. Quellen-Kürzel: **W** = WhisperM8, **S** = speckit-assistant
 | Exception-Inbox („Braucht dich") | E | `web/src/components/AttentionInbox.tsx` |
 | Automation-Dial (Level 2 ↔ 3) | E | `web/src/components/AutomationDial.tsx` |
 
-## 2. Zu übernehmen — Priorität 1 (macht Level 2 komplett & Level 3 vertrauenswürdig)
+## 2. Priorität 1 — ✅ komplett umgesetzt (2026-07-22, WP1–WP16)
+
+Alle folgenden Punkte inkl. §2b sind implementiert; Details siehe Commits `feat(wp1)`–`feat(wp16)`.
 
 | # | Funktion | Quelle / Vorbild | Warum |
 |---|---|---|---|
