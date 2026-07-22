@@ -11,6 +11,7 @@ import {
 import { loginShellEnv } from './loginShellEnv.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
+import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
 import { bracketedPaste, SUBMIT_DELAY_MS, SUBMIT_KEY } from './commandBuilder.js';
 
 const SCROLLBACK_LIMIT = 2 * 1024 * 1024; // 2 MB Ring-Puffer pro Session
@@ -29,6 +30,8 @@ export interface LiveSession {
   transcriptRetryTimer: NodeJS.Timeout | null;
   claudeSessionId: string | null;
   scrollback: string;
+  /** Snapshot der Vorgänger-Session (Replay nach Server-Neustart). */
+  snapshotPrefix: string | null;
   subscribers: Set<(data: string) => void>;
   exited: boolean;
 }
@@ -45,11 +48,14 @@ export interface SessionCallbacks {
  */
 export class PtySessionManager {
   private sessions = new Map<string, LiveSession>();
+  readonly snapshots: SnapshotStore;
 
   constructor(
     private dataDir: string,
     private callbacks: SessionCallbacks,
-  ) {}
+  ) {
+    this.snapshots = new SnapshotStore(dataDir);
+  }
 
   async spawn(opts: {
     projectId: string;
@@ -96,6 +102,8 @@ export class PtySessionManager {
       transcriptRetryTimer: null,
       claudeSessionId: null,
       scrollback: '',
+      snapshotPrefix:
+        opts.kind === 'feature' && opts.featureId ? this.snapshots.load(opts.featureId) : null,
       subscribers: new Set(),
       exited: false,
     };
@@ -108,6 +116,7 @@ export class PtySessionManager {
 
     pty.onExit(({ exitCode }) => {
       session.exited = true;
+      if (session.featureId) this.snapshots.save(session.featureId, session.scrollback);
       this.dispatch(session, { type: 'process_exited', code: exitCode });
       void session.hookWatcher?.stop();
       this.detachTranscript(session);
@@ -183,9 +192,18 @@ export class PtySessionManager {
   subscribe(id: string, onData: (data: string) => void): (() => void) | null {
     const s = this.sessions.get(id);
     if (!s) return null;
-    if (s.scrollback) onData(s.scrollback); // Replay für Reconnect
+    // Replay: erst Snapshot der Vorgänger-Session (falls vorhanden), dann Live-Scrollback.
+    if (s.snapshotPrefix) onData(s.snapshotPrefix + snapshotReplayBanner());
+    if (s.scrollback) onData(s.scrollback);
     s.subscribers.add(onData);
     return () => s.subscribers.delete(onData);
+  }
+
+  /** Beim Server-Shutdown: alle Feature-Scrollbacks sichern. */
+  saveAllSnapshots(): void {
+    for (const s of this.sessions.values()) {
+      if (s.featureId && !s.exited) this.snapshots.save(s.featureId, s.scrollback);
+    }
   }
 
   write(id: string, data: string): void {

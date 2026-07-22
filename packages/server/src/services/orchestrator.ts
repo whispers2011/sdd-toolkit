@@ -20,6 +20,7 @@ import {
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
+import { locateTranscript } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand } from '../pty/commandBuilder.js';
 import { artifactExists, parseTaskProgress } from './artifacts.js';
 import { bus } from '../events.js';
@@ -109,9 +110,16 @@ export class Orchestrator {
       feature.worktreePath = wt;
     }
 
-    // Resume, wenn eine frühere Claude-Session bekannt ist und ihr Transkript noch existiert.
+    // Resume-Recovery (WP2): nie blind auf eine tote Session-ID resumen —
+    // erst prüfen, ob das Transkript-JSONL noch existiert (Claude räumt nach ~30 Tagen auf).
     const prev = this.deps.sessions.latestForFeature(featureId);
-    const resumeId = prev?.claude_session_id ?? undefined;
+    let resumeId = prev?.claude_session_id ?? undefined;
+    if (resumeId && prev) {
+      if (!locateTranscript(feature.worktreePath ?? project.path, resumeId)) {
+        this.deps.sessions.setClaudeSessionId(prev.id, null);
+        resumeId = undefined;
+      }
+    }
 
     const argv = buildClaudeArgv({
       ...(resumeId ? { resume: resumeId } : {}),

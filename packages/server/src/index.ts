@@ -85,6 +85,7 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     console.log('Fahre herunter — beende Sessions …');
+    ptys.saveAllSnapshots();
     await Promise.allSettled(ptys.list().map((s) => ptys.terminate(s.id)));
     await app.close();
     db.close();

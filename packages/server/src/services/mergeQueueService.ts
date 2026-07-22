@@ -231,6 +231,7 @@ export class MergeQueueService {
     }
     await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
     this.deps.features.setWorktree(featureId, null);
+    this.deps.ptys.snapshots.remove(featureId);
     this.setStage(feature, 'merged');
     this.deps.queue.remove(queueId);
     this.emitQueue(projectId);

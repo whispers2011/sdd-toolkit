@@ -241,7 +241,7 @@ export class SessionRepo {
       .run(s.id, s.featureId, s.projectId, s.kind, s.pid, Date.now());
   }
 
-  setClaudeSessionId(id: string, claudeSessionId: string): void {
+  setClaudeSessionId(id: string, claudeSessionId: string | null): void {
     this.db.prepare('UPDATE sessions SET claude_session_id=? WHERE id=?').run(claudeSessionId, id);
   }
 
