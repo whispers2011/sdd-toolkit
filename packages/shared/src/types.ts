@@ -52,6 +52,8 @@ export interface AutomationSettings {
   autoReviewAgents: boolean;
   /** Approvte Features automatisch in die Merge-Queue geben. */
   autoMerge: boolean;
+  /** Tool-/Kommando-Berechtigungen automatisch erteilen — keine Rückfragen im Feature-Lauf. */
+  autoMode: boolean;
 }
 
 export const LEVEL2_DEFAULTS: AutomationSettings = {
@@ -59,6 +61,7 @@ export const LEVEL2_DEFAULTS: AutomationSettings = {
   autoVerify: false,
   autoReviewAgents: false,
   autoMerge: false,
+  autoMode: true,
 };
 
 export const LEVEL3_DEFAULTS: AutomationSettings = {
@@ -66,6 +69,7 @@ export const LEVEL3_DEFAULTS: AutomationSettings = {
   autoVerify: true,
   autoReviewAgents: true,
   autoMerge: true,
+  autoMode: true,
 };
 
 export interface VerifyCommand {

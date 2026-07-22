@@ -22,7 +22,8 @@ export function App() {
     }
   }, []);
 
-  const openAttention = state.app?.attention.length ?? 0;
+  const openAttention =
+    state.app?.attention.filter((a) => a.kind !== 'permission_request').length ?? 0;
 
   // Titel-Badge (WP9): offene Attention-Items im Browser-Tab sichtbar.
   useEffect(() => {

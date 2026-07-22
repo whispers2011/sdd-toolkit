@@ -73,6 +73,14 @@ export function AutomationDial() {
             checked={a.autoMerge}
             onChange={(v) => void apply({ autoMerge: v })}
           />
+          <Toggle
+            label="Auto-Modus (Berechtigungen automatisch erteilen)"
+            checked={a.autoMode}
+            onChange={(v) => void apply({ autoMode: v })}
+          />
+          <p className="mb-1.5 ml-6 text-xs text-zinc-600">
+            Keine Kommando-Rückfragen; gilt ab dem nächsten Session-Start.
+          </p>
           <div className="mt-2 border-t border-zinc-800 pt-2">
             <SoundToggle />
             <VoiceSettings />

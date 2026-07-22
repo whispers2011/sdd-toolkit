@@ -130,10 +130,13 @@ export class Orchestrator {
       }
     }
 
+    // Auto-Modus (aufgelöst global → Projekt → Feature): an → bypassPermissions
+    // (keine Kommando-/Tool-Rückfragen), aus → acceptEdits (nur Edits, Kommandos fragen nach).
+    const automation = this.automationFor(feature);
     const argv = buildClaudeArgv({
       ...(resumeId ? { resume: resumeId } : {}),
       settingsPath: '__SETTINGS__',
-      permissionMode: 'acceptEdits',
+      permissionMode: automation.autoMode ? 'bypassPermissions' : 'acceptEdits',
     });
 
     const session = await this.deps.ptys.spawn({
@@ -279,18 +282,20 @@ export class Orchestrator {
 
     for (const effect of effects) {
       if (effect.kind === 'input_requested') {
+        // Berechtigungs-Rückfragen erscheinen nicht in der „Braucht dich"-Inbox: Im Auto-Modus
+        // entstehen sie ohnehin nicht; ist er aus, wird in der Feature-Konsole geantwortet.
+        // Der awaiting_input-Status wurde oben via session_status bereits publiziert.
+        if (effect.awaiting === 'permission') continue;
         const feature = session.featureId ? this.deps.features.get(session.featureId) : null;
         const item = this.deps.attention.raise({
-          kind: effect.awaiting === 'permission' ? 'permission_request' : 'awaiting_input',
+          kind: 'awaiting_input',
           projectId: session.projectId,
           featureId: session.featureId,
           sessionId: session.id,
           message:
-            effect.awaiting === 'permission'
-              ? `${feature?.name ?? 'Session'}: wartet auf eine Berechtigung`
-              : effect.awaiting === 'plan_approval'
-                ? `${feature?.name ?? 'Session'}: wartet auf Plan-Freigabe`
-                : `${feature?.name ?? 'Session'}: hat eine Frage`,
+            effect.awaiting === 'plan_approval'
+              ? `${feature?.name ?? 'Session'}: wartet auf Plan-Freigabe`
+              : `${feature?.name ?? 'Session'}: hat eine Frage`,
         });
         bus.emitEvent('attention_raised', item);
         if (this.notifyThrottle.allow(session.id, 'input_requested')) {

@@ -18,8 +18,11 @@ export function AttentionInbox() {
   if (!state.app) return null;
 
   // Kontext-Trennung: Inbox respektiert den Projekt-Scope.
+  // Berechtigungs-Rückfragen (auch Alt-Einträge) gehören nicht in „Braucht dich".
   const items = state.app.attention.filter(
-    (a) => state.selectedProjectId === null || a.projectId === state.selectedProjectId,
+    (a) =>
+      a.kind !== 'permission_request' &&
+      (state.selectedProjectId === null || a.projectId === state.selectedProjectId),
   );
   const projectName = (id: string) => state.app!.projects.find((p) => p.id === id)?.name ?? '?';
 
