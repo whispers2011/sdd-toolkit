@@ -166,8 +166,28 @@ export class MergeQueueService {
       for (;;) {
         const head = this.deps.queue.head(projectId);
         if (!head) break;
-        const done = await this.processItem(head.id, head.featureId, projectId);
-        if (!done) break; // eskaliert → Queue anhalten bis Mensch eingreift
+        try {
+          const done = await this.processItem(head.id, head.featureId, projectId);
+          if (!done) break; // eskaliert → Queue anhalten bis Mensch eingreift
+        } catch (err) {
+          // Unerwarteter Fehler (z. B. Worktree ist kein Git-Repo mehr, weil er
+          // bereits aufgeräumt wurde) darf NIE den Server abschießen — der Worker
+          // läuft als fire-and-forget-Promise, ein ungefangener Reject beendet
+          // den Prozess. Vertrag der Queue: eskalieren statt crashen.
+          const feature = this.deps.features.get(head.featureId);
+          if (!feature) {
+            this.deps.queue.remove(head.id); // toter Eintrag → verwerfen, weiter
+            continue;
+          }
+          this.setStage(feature, 'conflict_escalated');
+          this.deps.queue.setStage(head.id, 'conflict_escalated', String(err));
+          this.escalate(
+            feature,
+            'merge_conflict_escalated',
+            `${feature.name}: Integration abgebrochen (unerwarteter Fehler) — ${String(err)}`,
+          );
+          break; // Queue anhalten bis Mensch eingreift
+        }
       }
     } finally {
       this.working.delete(projectId);
