@@ -3,6 +3,8 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { exec } from 'node:child_process';
+import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
 import type {
@@ -247,6 +249,22 @@ export async function buildServer(deps: ApiDeps) {
     return { ok: true };
   });
 
+  /** Im Editor öffnen (WP10): Editor-Kommando des Projekts mit {file}/{line}. */
+  app.post<{ Body: { featureId: string; file: string; line?: number | null } }>(
+    '/api/open-in-editor',
+    async (req) => {
+      const { feature, project, cwd } = featureCwd(req.body.featureId);
+      void feature;
+      const file = req.body.file.startsWith('/') ? req.body.file : join(cwd, req.body.file);
+      const template = project.editorCmd?.trim() || 'code -g {file}:{line}';
+      const line = req.body.line ?? 1;
+      const command = template.replaceAll('{file}', shellQuotePath(file)).replaceAll('{line}', String(line));
+      const env = await loginShellEnv();
+      exec(command, { env, cwd }, () => {});
+      return { ok: true };
+    },
+  );
+
   // ---------- Personas (WP4) ----------
 
   app.get('/api/personas', () => deps.personas.list());
@@ -334,6 +352,10 @@ export async function buildServer(deps: ApiDeps) {
   });
 
   return app;
+}
+
+function shellQuotePath(p: string): string {
+  return `'${p.replaceAll("'", `'\\''`)}'`;
 }
 
 function validatePhase(phase: string): FeaturePhase {

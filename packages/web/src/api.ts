@@ -84,6 +84,8 @@ export const api = {
   executionLog: (id: string) => request<{ log: string }>('GET', `/api/executions/${id}/log`),
   resolutionDiff: (id: string) =>
     request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
+  openInEditor: (featureId: string, file: string, line: number | null) =>
+    request<unknown>('POST', '/api/open-in-editor', { featureId, file, line }),
 };
 
 export interface DiffSummary {

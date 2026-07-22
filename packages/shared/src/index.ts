@@ -3,3 +3,4 @@ export * from './phaseMachine.js';
 export * from './sessionMachine.js';
 export * from './transcript.js';
 export * from './costMeter.js';
+export * from './linkResolver.js';

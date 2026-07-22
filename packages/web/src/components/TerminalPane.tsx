@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { findPathLinks } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 
@@ -44,8 +46,28 @@ export function TerminalPane({
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // URLs klickbar (WP10); Datei-Pfade über eigenen Provider darunter.
+    term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, '_blank')));
     term.open(containerRef.current);
     fit.fit();
+
+    // Datei-Links: pfad(.ext)(:zeile) → im Editor öffnen (Server führt editorCmd aus).
+    const linkProvider = term.registerLinkProvider({
+      provideLinks(bufferLineNumber, callback) {
+        const line = term.buffer.active.getLine(bufferLineNumber - 1);
+        if (!line) return callback(undefined);
+        const text = line.translateToString(true);
+        const links = findPathLinks(text).map((l) => ({
+          range: {
+            start: { x: l.start + 1, y: bufferLineNumber },
+            end: { x: l.end, y: bufferLineNumber },
+          },
+          text: text.slice(l.start, l.end),
+          activate: () => void api.openInEditor(featureId, l.file, l.line).catch(() => {}),
+        }));
+        callback(links.length ? links : undefined);
+      },
+    });
 
     let disposed = false;
 
@@ -92,6 +114,7 @@ export function TerminalPane({
       disposed = true;
       observer.disconnect();
       dataDisposable.dispose();
+      linkProvider.dispose();
       wsRef.current?.close();
       term.dispose();
     };
