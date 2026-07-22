@@ -3,6 +3,7 @@ import type { Feature } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
+import { VoiceButton } from './VoiceButton.js';
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
@@ -299,13 +300,18 @@ function NewFeatureDialog({ projectId, onClose }: { projectId: string; onClose: 
         placeholder="feature-name"
         className="mb-2 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-500"
       />
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Beschreibung (optional) — startet direkt /speckit.specify mit diesem Text"
-        rows={4}
-        className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-500"
-      />
+      <div className="relative">
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Beschreibung (optional) — startet direkt /speckit.specify mit diesem Text"
+          rows={4}
+          className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 pr-10 text-sm text-zinc-200 outline-none focus:border-zinc-500"
+        />
+        <div className="absolute top-1.5 right-1.5">
+          <VoiceButton onText={(t) => setDescription((cur) => cur + t)} />
+        </div>
+      </div>
       <p className="mt-1 text-xs text-zinc-600">
         Legt Worktree + Branch an und öffnet die Feature-Konsole.
       </p>

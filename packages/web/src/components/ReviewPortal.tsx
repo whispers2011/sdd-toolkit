@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, type DiffSummary, type ExecutionInfo } from '../api.js';
 import { useStore } from '../store.js';
 import { Dialog } from './Sidebar.js';
+import { VoiceButton } from './VoiceButton.js';
 
 type Tab = 'files' | 'commits' | 'resolution';
 
@@ -150,14 +151,19 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
 
       {showReject && (
         <Dialog title="Zurückweisen mit Feedback" onClose={() => setShowReject(false)}>
-          <textarea
-            autoFocus
-            value={rejectComment}
-            onChange={(e) => setRejectComment(e.target.value)}
-            placeholder="Was soll der Agent anders machen? Geht als Prompt in die Feature-Konsole."
-            rows={4}
-            className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-500"
-          />
+          <div className="relative">
+            <textarea
+              autoFocus
+              value={rejectComment}
+              onChange={(e) => setRejectComment(e.target.value)}
+              placeholder="Was soll der Agent anders machen? Geht als Prompt in die Feature-Konsole."
+              rows={4}
+              className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 pr-10 text-sm text-zinc-200 outline-none focus:border-zinc-500"
+            />
+            <div className="absolute top-1.5 right-1.5">
+              <VoiceButton onText={(t) => setRejectComment((cur) => cur + t)} />
+            </div>
+          </div>
           <div className="mt-3 flex justify-end gap-2">
             <button onClick={() => setShowReject(false)} className="rounded px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">
               Abbrechen

@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { TerminalPane } from './TerminalPane.js';
+import { VoiceButton } from './VoiceButton.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
@@ -47,6 +48,41 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       <div className="min-h-0 flex-1 bg-[#09090b] p-2">
         <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
       </div>
+
+      <PromptBar featureId={featureId} />
+    </div>
+  );
+}
+
+/** Prompt-Leiste (WP15): Text/Voice-Eingabe, Senden geht als Prompt in die Session. */
+function PromptBar({ featureId }: { featureId: string }) {
+  const { dispatch } = useStore();
+  const [text, setText] = useState('');
+
+  const send = () => {
+    const t = text.trim();
+    if (!t) return;
+    setText('');
+    void api.sendPrompt(featureId, t).catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+  };
+
+  return (
+    <div className="flex items-center gap-2 border-t border-zinc-800 px-3 py-2">
+      <VoiceButton hotkey onText={(t) => setText((cur) => cur + t)} />
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && send()}
+        placeholder="Prompt an den Agent … (🎙 = Voice, ⌘⇧M) — oder direkt im Terminal tippen"
+        className="flex-1 rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-zinc-600"
+      />
+      <button
+        onClick={send}
+        disabled={!text.trim()}
+        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+      >
+        Senden
+      </button>
     </div>
   );
 }

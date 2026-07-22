@@ -95,6 +95,13 @@ export const api = {
       path ? `/api/fs/dirs?path=${encodeURIComponent(path)}` : '/api/fs/dirs',
     ),
   suggestions: () => request<{ suggestions: string[] }>('GET', '/api/fs/suggestions'),
+  getTranscription: () =>
+    request<{ provider: 'openai' | 'groq' | null; hasKey: boolean; language?: string }>(
+      'GET',
+      '/api/settings/transcription',
+    ),
+  setTranscription: (provider: 'openai' | 'groq', apiKey: string | undefined, language: string) =>
+    request<unknown>('PUT', '/api/settings/transcription', { provider, apiKey, language }),
   initSpeckit: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/init-speckit`),
 };

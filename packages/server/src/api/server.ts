@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import multipart from '@fastify/multipart';
 import { readFile } from 'node:fs/promises';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -49,6 +50,7 @@ export async function buildServer(deps: ApiDeps) {
   const app = Fastify({ logger: { level: 'info' } });
   await app.register(cors, { origin: true });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
+  await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
   // ---------- Bootstrap ----------
 
@@ -388,6 +390,67 @@ export async function buildServer(deps: ApiDeps) {
   app.delete<{ Params: { id: string } }>('/api/personas/:id', (req) => {
     deps.personas.remove(req.params.id);
     return { ok: true };
+  });
+
+  // ---------- Voice-Transkription (WP15) ----------
+
+  interface TranscriptionSettings {
+    provider: 'openai' | 'groq';
+    apiKey: string;
+    language?: string;
+  }
+
+  app.get('/api/settings/transcription', () => {
+    const s = deps.settings.getJson<TranscriptionSettings>('transcription');
+    // Key nie ans Frontend geben — nur maskiert anzeigen.
+    return s ? { provider: s.provider, hasKey: true, language: s.language ?? 'de' } : { provider: null, hasKey: false };
+  });
+
+  app.put<{ Body: { provider: 'openai' | 'groq'; apiKey?: string; language?: string } }>(
+    '/api/settings/transcription',
+    (req) => {
+      const cur = deps.settings.getJson<TranscriptionSettings>('transcription');
+      const apiKey = req.body.apiKey?.trim() || cur?.apiKey;
+      if (!apiKey) throw httpError(400, 'API-Key fehlt');
+      deps.settings.setJson('transcription', {
+        provider: req.body.provider,
+        apiKey,
+        language: req.body.language ?? cur?.language ?? 'de',
+      });
+      return { provider: req.body.provider, hasKey: true };
+    },
+  );
+
+  /** Audio → Text via OpenAI Whisper oder Groq (WhisperM8-Muster, Key bleibt serverseitig). */
+  app.post('/api/transcribe', async (req) => {
+    const s = deps.settings.getJson<TranscriptionSettings>('transcription');
+    if (!s?.apiKey) throw httpError(409, 'Kein Transkriptions-Provider konfiguriert — Web Speech nutzen');
+    const file = await req.file();
+    if (!file) throw httpError(400, 'Audio fehlt');
+    const buffer = await file.toBuffer();
+
+    const url =
+      s.provider === 'groq'
+        ? 'https://api.groq.com/openai/v1/audio/transcriptions'
+        : 'https://api.openai.com/v1/audio/transcriptions';
+    const model = s.provider === 'groq' ? 'whisper-large-v3' : 'whisper-1';
+
+    const form = new FormData();
+    form.append('file', new Blob([new Uint8Array(buffer)], { type: file.mimetype }), file.filename || 'audio.webm');
+    form.append('model', model);
+    if (s.language) form.append('language', s.language);
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${s.apiKey}` },
+      body: form,
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      throw httpError(502, `Transkription fehlgeschlagen (${res.status}): ${text.slice(0, 200)}`);
+    }
+    const json = (await res.json()) as { text?: string };
+    return { text: json.text ?? '' };
   });
 
   app.get('/api/settings/automation', () => deps.settings.getAutomation());

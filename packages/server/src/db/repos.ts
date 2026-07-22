@@ -546,6 +546,17 @@ export class PersonaRepo {
 export class SettingsRepo {
   constructor(private db: DB) {}
 
+  getJson<T>(key: string): T | null {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as { value: string } | undefined;
+    return r ? (JSON.parse(r.value) as T) : null;
+  }
+
+  setJson(key: string, value: unknown): void {
+    this.db
+      .prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(key, JSON.stringify(value));
+  }
+
   getAutomation(): AutomationSettings {
     const r = this.db.prepare(`SELECT value FROM settings WHERE key='automation'`).get() as
       | { value: string }
