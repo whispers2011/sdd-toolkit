@@ -44,7 +44,18 @@ export async function parseTaskProgress(
 }
 
 export function hasSpecKit(repoRoot: string): boolean {
-  return existsSync(join(repoRoot, '.specify')) || existsSync(join(repoRoot, 'specs'));
+  if (existsSync(join(repoRoot, '.specify')) || existsSync(join(repoRoot, 'specs'))) return true;
+  // Slash-Commands/Skills-Installation ohne .specify (neuere spec-kit-Varianten)
+  for (const dir of ['.claude/commands', '.claude/skills']) {
+    const p = join(repoRoot, dir);
+    if (!existsSync(p)) continue;
+    try {
+      if (readdirSync(p).some((f) => f.toLowerCase().startsWith('speckit'))) return true;
+    } catch {
+      /* unlesbar */
+    }
+  }
+  return false;
 }
 
 export function listSpecDirs(repoRoot: string): string[] {

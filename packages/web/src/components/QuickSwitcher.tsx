@@ -45,18 +45,25 @@ export function QuickSwitcher() {
     ];
     for (const p of state.app.projects) {
       list.push({ label: p.name, hint: 'Projekt', view: { kind: 'board' }, projectId: p.id });
-      list.push({ label: `${p.name}: Terminal`, hint: 'Shell', view: { kind: 'shell', projectId: p.id } });
+      list.push({
+        label: `${p.name}: Terminal`,
+        hint: 'Shell',
+        view: { kind: 'shell', projectId: p.id },
+        projectId: p.id,
+      });
     }
     for (const f of state.app.features) {
+      if (!state.showCompleted && f.integration === 'merged') continue;
       const project = state.app.projects.find((p) => p.id === f.projectId);
       list.push({
         label: `${project?.name ?? '?'} / ${f.name}`,
         hint: 'Feature-Konsole',
         view: { kind: 'console', featureId: f.id },
+        projectId: f.projectId, // Kontext wechselt mit
       });
     }
     return list;
-  }, [state.app]);
+  }, [state.app, state.showCompleted]);
 
   const matches = useMemo(() => {
     const q = query.toLowerCase().trim();

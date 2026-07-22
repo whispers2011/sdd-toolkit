@@ -85,16 +85,21 @@ export function Sidebar() {
             </div>
             <ul className="mt-0.5 space-y-0.5 pl-3">
               {state.app!.features
-                .filter((f) => f.projectId === project.id)
+                .filter(
+                  (f) =>
+                    f.projectId === project.id && (state.showCompleted || f.integration !== 'merged'),
+                )
                 .map((feature) => {
                   const session = sessionFor(feature.id);
                   const status = session?.status ?? 'stopped';
                   return (
                     <li key={feature.id}>
                       <button
-                        onClick={() =>
-                          dispatch({ type: 'set_view', view: { kind: 'console', featureId: feature.id } })
-                        }
+                        onClick={() => {
+                          // Kontext-Trennung: Feature-Klick wählt auch das Projekt.
+                          dispatch({ type: 'select_project', projectId: project.id });
+                          dispatch({ type: 'set_view', view: { kind: 'console', featureId: feature.id } });
+                        }}
                         className="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
                       >
                         <span className={`status-dot status-${status}`} />
@@ -116,6 +121,8 @@ export function Sidebar() {
         )}
       </div>
 
+      <CompletedToggle />
+
       {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
       {newFeatureFor && <NewFeatureDialog projectId={newFeatureFor} onClose={() => setNewFeatureFor(null)} />}
       {settingsFor && (() => {
@@ -123,6 +130,23 @@ export function Sidebar() {
         return project ? <ProjectSettings project={project} onClose={() => setSettingsFor(null)} /> : null;
       })()}
     </aside>
+  );
+}
+
+/** Abgeschlossene standardmäßig ausblenden — hier wieder einblendbar. */
+function CompletedToggle() {
+  const { state, dispatch } = useStore();
+  if (!state.app) return null;
+  const completed = state.app.features.filter((f) => f.integration === 'merged').length;
+  if (completed === 0 && !state.showCompleted) return null;
+  return (
+    <button
+      onClick={() => dispatch({ type: 'toggle_completed' })}
+      className="mx-2 mb-2 rounded border border-zinc-800 px-2 py-1.5 text-left text-xs text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
+    >
+      {state.showCompleted ? '▾' : '▸'} Abgeschlossene ({completed}){' '}
+      {state.showCompleted ? 'ausblenden' : 'anzeigen'}
+    </button>
   );
 }
 

@@ -80,10 +80,20 @@ function HeaderIcon({
   );
 }
 
-/** Prompt-Leiste (WP15): Text/Voice-Eingabe, Senden geht als Prompt in die Session. */
+/**
+ * Prompt-Leiste (WP15): optionale Text-/Voice-Eingabe — standardmäßig eingeklappt,
+ * die primäre Interaktion ist das echte Terminal darüber.
+ */
 function PromptBar({ featureId }: { featureId: string }) {
   const { dispatch } = useStore();
   const [text, setText] = useState('');
+  const [open, setOpen] = useState(localStorage.getItem('sdd-promptbar') === 'on');
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    localStorage.setItem('sdd-promptbar', next ? 'on' : 'off');
+  };
 
   const send = () => {
     const t = text.trim();
@@ -92,14 +102,27 @@ function PromptBar({ featureId }: { featureId: string }) {
     void api.sendPrompt(featureId, t).catch((e: Error) => dispatch({ type: 'error', message: e.message }));
   };
 
+  if (!open) {
+    return (
+      <div className="flex items-center border-t border-zinc-800 px-3 py-0.5">
+        <button onClick={toggle} className="text-xs text-zinc-600 hover:text-zinc-400">
+          ▸ Prompt-Leiste (Voice 🎙)
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="flex items-center gap-2 border-t border-zinc-800 px-3 py-2">
+      <button onClick={toggle} className="text-xs text-zinc-600 hover:text-zinc-400" title="Einklappen">
+        ▾
+      </button>
       <VoiceButton hotkey onText={(t) => setText((cur) => cur + t)} />
       <input
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && send()}
-        placeholder="Prompt an den Agent … (🎙 = Voice, ⌘⇧M) — oder direkt im Terminal tippen"
+        placeholder="Prompt an den Agent … (🎙 = Voice, ⌘⇧M)"
         className="flex-1 rounded border border-zinc-800 bg-zinc-900 px-3 py-1.5 text-sm text-zinc-200 outline-none focus:border-zinc-600"
       />
       <button

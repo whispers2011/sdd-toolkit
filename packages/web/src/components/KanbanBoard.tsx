@@ -40,7 +40,9 @@ export function KanbanBoard() {
   if (!state.app) return null;
 
   const features = state.app.features.filter(
-    (f) => state.selectedProjectId === null || f.projectId === state.selectedProjectId,
+    (f) =>
+      (state.selectedProjectId === null || f.projectId === state.selectedProjectId) &&
+      (state.showCompleted || f.integration !== 'merged'),
   );
   const enabledUnion = new Set<FeaturePhase>();
   for (const p of state.app.projects) {
@@ -48,7 +50,8 @@ export function KanbanBoard() {
     for (const phase of p.enabledPhases) enabledUnion.add(phase);
   }
   const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));
-  const columns: Column[] = [...phaseColumns, 'integration', 'done'];
+  // Done-Spalte nur zeigen, wenn Abgeschlossene eingeblendet sind.
+  const columns: Column[] = [...phaseColumns, 'integration', ...(state.showCompleted ? (['done'] as Column[]) : [])];
 
   const call = (fn: () => Promise<unknown>) =>
     fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
@@ -141,25 +144,36 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
       </div>
       <div className="mt-1 text-xs text-zinc-500">{project?.name}</div>
       {showAutomation && (
-        <div className="mt-2 flex gap-1">
-          <PresetChip
-            active={Object.keys(feature.automation).length === 0}
-            onClick={() => void call(() => api.updateFeature(feature.id, { automation: {} }))}
-          >
-            erben
-          </PresetChip>
-          <PresetChip
-            active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL2_DEFAULTS)}
-            onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL2_DEFAULTS }))}
-          >
-            L2
-          </PresetChip>
-          <PresetChip
-            active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL3_DEFAULTS)}
-            onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL3_DEFAULTS }))}
-          >
-            L3
-          </PresetChip>
+        <div className="mt-2 space-y-1">
+          <div className="flex gap-1">
+            <PresetChip
+              active={Object.keys(feature.automation).length === 0}
+              onClick={() => void call(() => api.updateFeature(feature.id, { automation: {} }))}
+            >
+              erben
+            </PresetChip>
+            <PresetChip
+              active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL2_DEFAULTS)}
+              onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL2_DEFAULTS }))}
+            >
+              L2
+            </PresetChip>
+            <PresetChip
+              active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL3_DEFAULTS)}
+              onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL3_DEFAULTS }))}
+            >
+              L3
+            </PresetChip>
+          </div>
+          {feature.integration !== 'merged' && (
+            <button
+              onClick={() => void call(() => api.markDone(feature.id))}
+              className="w-full rounded bg-zinc-800 px-1.5 py-0.5 text-left text-xs text-emerald-400 hover:bg-zinc-700"
+              title="Ohne Merge als erledigt markieren — für Features, die außerhalb des Tools gebaut wurden"
+            >
+              ✓ Als abgeschlossen markieren
+            </button>
+          )}
         </div>
       )}
 

@@ -113,7 +113,8 @@ function SpecKitBanner() {
       {missing.map((p) => (
         <div key={p.id} className="flex items-center gap-2 text-xs text-amber-300">
           <span>
-            ⚠ <strong>{p.name}</strong> hat noch kein spec-kit — Phasen-Kommandos (/speckit.*) fehlen.
+            Hinweis: In <strong>{p.name}</strong> wurde kein spec-kit erkannt (.specify/, specs/ oder
+            .claude/commands/speckit*). Ohne spec-kit fehlen die Phasen-Kommandos.
           </span>
           <button
             onClick={() =>

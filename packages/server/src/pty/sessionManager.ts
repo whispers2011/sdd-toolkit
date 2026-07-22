@@ -8,7 +8,9 @@ import {
   type SessionMachine,
   type SessionSignal,
 } from '@sdd/shared';
+import { existsSync } from 'node:fs';
 import { loginShellEnv } from './loginShellEnv.js';
+import { ensureSpawnHelperExecutable } from './ptyFix.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
@@ -74,6 +76,7 @@ export class PtySessionManager {
     private callbacks: SessionCallbacks,
   ) {
     this.snapshots = new SnapshotStore(dataDir);
+    ensureSpawnHelperExecutable();
   }
 
   async spawn(opts: {
@@ -87,6 +90,9 @@ export class PtySessionManager {
     sessionId?: string;
   }): Promise<LiveSession> {
     const id = opts.sessionId ?? nanoid(10);
+    if (!existsSync(opts.cwd)) {
+      throw new Error(`Arbeitsverzeichnis existiert nicht: ${opts.cwd}`);
+    }
     const env = await loginShellEnv();
 
     let hookSetup: HookSetup | null = null;

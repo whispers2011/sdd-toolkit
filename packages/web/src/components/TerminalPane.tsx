@@ -54,6 +54,7 @@ export function TerminalPane({
     term.loadAddon(new WebLinksAddon((_e, uri) => window.open(uri, '_blank')));
     term.open(containerRef.current);
     fit.fit();
+    if (focusedRef.current) term.focus(); // echte Console: Tastatur landet direkt im Terminal
 
     // Datei-Links: pfad(.ext)(:zeile) → im Editor öffnen (Server führt editorCmd aus).
     const fid = featureId;

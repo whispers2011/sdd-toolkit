@@ -280,6 +280,17 @@ export async function buildServer(deps: ApiDeps) {
     return deps.features.get(req.params.id);
   });
 
+  /** Extern/vorher gebaute Features als abgeschlossen markieren (kein Merge nötig). */
+  app.post<{ Params: { id: string } }>('/api/features/:id/mark-done', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    deps.features.setIntegration(feature.id, 'merged');
+    deps.attention.resolveFor({ featureId: feature.id });
+    const fresh = deps.features.get(feature.id);
+    if (fresh) bus.emitEvent('feature_updated', fresh);
+    return fresh;
+  });
+
   app.post<{ Params: { id: string } }>('/api/features/:id/archive', async (req) => {
     const feature = deps.features.get(req.params.id);
     if (feature) {

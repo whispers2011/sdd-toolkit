@@ -66,6 +66,7 @@ export const api = {
   retryIntegration: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
+  markDone: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/mark-done`),
   updateFeature: (featureId: string, patch: { automation?: Partial<AutomationSettings> }) =>
     request<Feature>('PATCH', `/api/features/${featureId}`, patch),
   ensureSession: (featureId: string) => request<{ sessionId: string }>('POST', `/api/features/${featureId}/session`),

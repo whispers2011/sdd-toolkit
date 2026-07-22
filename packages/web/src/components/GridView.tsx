@@ -2,8 +2,12 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
 
-const STORAGE_KEY = 'sdd-grid-panes';
 const MAX_PANES = 9;
+
+/** Panes pro Projekt-Scope gespeichert — Projektwechsel = eigener Grid-Kontext. */
+function storageKey(projectId: string | null): string {
+  return `sdd-grid-panes:${projectId ?? 'all'}`;
+}
 
 function gridClass(count: number): string {
   if (count <= 1) return 'grid-cols-1 grid-rows-1';
@@ -16,23 +20,33 @@ function gridClass(count: number): string {
 /** Grid-View (WP8): mehrere Feature-Konsolen nebeneinander — der Level-2-Modus. */
 export function GridView() {
   const { state } = useStore();
-  const [panes, setPanes] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as string[];
-    } catch {
-      return [];
-    }
-  });
+  const scope = state.selectedProjectId;
+  const [panes, setPanes] = useState<string[]>([]);
   const [focusedPane, setFocusedPane] = useState<number>(0);
   const [maximized, setMaximized] = useState<number | null>(null);
 
+  // Projekt-Scope wechselt → Panes des neuen Scopes laden.
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(panes));
-  }, [panes]);
+    try {
+      setPanes(JSON.parse(localStorage.getItem(storageKey(scope)) ?? '[]') as string[]);
+    } catch {
+      setPanes([]);
+    }
+    setMaximized(null);
+    setFocusedPane(0);
+  }, [scope]);
+
+  useEffect(() => {
+    localStorage.setItem(storageKey(scope), JSON.stringify(panes));
+  }, [panes, scope]);
 
   if (!state.app) return null;
-  const features = state.app.features;
-  // Panes bereinigen, deren Features nicht mehr existieren (UI-State, kein Domain-State).
+  // Kontext-Trennung: nur Features des gewählten Projekts (bzw. alle bei „Alle Projekte").
+  const features = state.app.features.filter(
+    (f) =>
+      (scope === null || f.projectId === scope) && (state.showCompleted || f.integration !== 'merged'),
+  );
+  // Panes bereinigen, deren Features nicht (mehr) im Scope sind (UI-State, kein Domain-State).
   const validPanes = panes.filter((id) => features.some((f) => f.id === id));
 
   const addPane = (featureId: string) => {

@@ -17,7 +17,10 @@ export function AttentionInbox() {
   const { state, dispatch } = useStore();
   if (!state.app) return null;
 
-  const items = state.app.attention;
+  // Kontext-Trennung: Inbox respektiert den Projekt-Scope.
+  const items = state.app.attention.filter(
+    (a) => state.selectedProjectId === null || a.projectId === state.selectedProjectId,
+  );
   const projectName = (id: string) => state.app!.projects.find((p) => p.id === id)?.name ?? '?';
 
   if (items.length === 0) {

@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import {
   approvePhase,
   discardPhase,
@@ -104,7 +104,10 @@ export class Orchestrator {
     const existing = this.deps.ptys.forFeature(featureId);
     if (existing) return existing;
 
-    if (!feature.worktreePath) {
+    // Worktree sicherstellen — auch wenn ein gespeicherter Pfad auf Disk fehlt
+    // (z. B. manuell gelöscht): worktrees.create ist idempotent.
+    if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
+      if (feature.worktreePath) await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
       const wt = await this.deps.worktrees.create({
         projectId: project.id,
         projectPath: project.path,

@@ -22,6 +22,8 @@ export interface UiState {
   app: AppState | null;
   view: View;
   selectedProjectId: string | null; // null = alle Projekte
+  /** Abgeschlossene (merged) Features anzeigen? Default: ausgeblendet. */
+  showCompleted: boolean;
   error: string | null;
 }
 
@@ -34,6 +36,7 @@ export type Action =
   | { type: 'queue_updated'; payload: { projectId: string; items: MergeQueueItem[] } }
   | { type: 'set_view'; view: View }
   | { type: 'select_project'; projectId: string | null }
+  | { type: 'toggle_completed' }
   | { type: 'error'; message: string | null };
 
 function reducer(state: UiState, action: Action): UiState {
@@ -91,11 +94,38 @@ function reducer(state: UiState, action: Action): UiState {
     }
     case 'set_view':
       return { ...state, view: action.view };
-    case 'select_project':
-      return { ...state, selectedProjectId: action.projectId };
+    case 'select_project': {
+      // Kontext-Trennung: beim Projektwechsel keine fremden Inhalte stehen lassen —
+      // Konsole/Terminal eines anderen Projekts fällt aufs Board zurück.
+      let view = state.view;
+      if (action.projectId !== null && state.app) {
+        if (view.kind === 'console') {
+          const feature = state.app.features.find((f) => f.id === (view as { featureId: string }).featureId);
+          if (feature && feature.projectId !== action.projectId) view = { kind: 'board' };
+        } else if (view.kind === 'shell' && view.projectId !== action.projectId) {
+          view = { kind: 'board' };
+        }
+      }
+      return { ...state, selectedProjectId: action.projectId, view };
+    }
+    case 'toggle_completed': {
+      const next = !state.showCompleted;
+      localStorage.setItem('sdd-show-completed', next ? 'on' : 'off');
+      return { ...state, showCompleted: next };
+    }
     case 'error':
       return { ...state, error: action.message };
   }
+}
+
+/** Sichtbare Features unter Berücksichtigung von Projekt-Scope und Abgeschlossen-Filter. */
+export function visibleFeatures(state: UiState): AppState['features'] {
+  if (!state.app) return [];
+  return state.app.features.filter(
+    (f) =>
+      (state.selectedProjectId === null || f.projectId === state.selectedProjectId) &&
+      (state.showCompleted || f.integration !== 'merged'),
+  );
 }
 
 export function soundEnabled(): boolean {
@@ -137,6 +167,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     app: null,
     view: { kind: 'board' },
     selectedProjectId: null,
+    showCompleted: localStorage.getItem('sdd-show-completed') === 'on',
     error: null,
   });
   const wsRef = useRef<WebSocket | null>(null);
