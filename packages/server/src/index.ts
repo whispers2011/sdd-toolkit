@@ -14,6 +14,7 @@ import {
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { KnowledgeService } from './services/knowledgeService.js';
 import { ChatService } from './services/chatService.js';
+import { ChatWorkService } from './services/chatWorkService.js';
 import { ReviewGateService } from './services/reviewGateService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
@@ -81,6 +82,21 @@ async function main(): Promise<void> {
   const chatRepo = new ChatRepo(db);
   const chat = new ChatService({ projects, chat: chatRepo, executions, dataDir: config.dataDir });
 
+  // Arbeits-Chat („Arbeiten"-Modus): interaktive Session in isolierter Worktree pro Unterhaltung.
+  const chatWork = new ChatWorkService({
+    projects,
+    chat,
+    chatRepo,
+    sessions,
+    attention,
+    executions,
+    settings,
+    worktrees,
+    ptys,
+    dataDir: config.dataDir,
+  });
+  orchestrator.attachChatWork(chatWork);
+
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
   chat.interruptStreamingOnBoot();
@@ -111,6 +127,7 @@ async function main(): Promise<void> {
     mergeQueue,
     onboarding,
     chat,
+    chatWork,
     ptys,
     dataDir: config.dataDir,
   });
@@ -124,6 +141,7 @@ async function main(): Promise<void> {
     await changeGuard.stop();
     ptys.saveAllSnapshots();
     chat.killAll();
+    chatWork.killAll();
     await Promise.allSettled(ptys.list().map((s) => ptys.terminate(s.id)));
     await app.close();
     db.close();

@@ -5,8 +5,8 @@ const SNAPSHOT_LIMIT = 512 * 1024; // letzter Stand reicht — kein volles Scrol
 
 /**
  * Terminal-Snapshots (WP2, WhisperM8 TerminalSnapshotStore-Muster):
- * Plaintext-Endstand pro FEATURE (nicht Session), damit eine neue Session
- * nach Server-Neustart den letzten Kontext replayen kann.
+ * Plaintext-Endstand pro Snapshot-Schlüssel (Feature-Id bzw. `chat-<conversationId>`, nicht
+ * pro Session), damit eine neue Session nach Server-Neustart den letzten Kontext replayen kann.
  */
 export class SnapshotStore {
   private dir: string;
@@ -16,22 +16,23 @@ export class SnapshotStore {
     mkdirSync(this.dir, { recursive: true });
   }
 
-  private pathFor(featureId: string): string {
-    return join(this.dir, `${featureId}.txt`);
+  private pathFor(key: string): string {
+    // Schlüssel kann `chat-<id>` sein → Slashes vermeiden.
+    return join(this.dir, `${key.replaceAll('/', '_')}.txt`);
   }
 
-  save(featureId: string, scrollback: string): void {
+  save(key: string, scrollback: string): void {
     if (!scrollback) return;
     try {
-      writeFileSync(this.pathFor(featureId), scrollback.slice(-SNAPSHOT_LIMIT), { mode: 0o600 });
+      writeFileSync(this.pathFor(key), scrollback.slice(-SNAPSHOT_LIMIT), { mode: 0o600 });
     } catch {
       /* Snapshot ist Komfort, nie fatal */
     }
   }
 
-  load(featureId: string): string | null {
+  load(key: string): string | null {
     try {
-      const p = this.pathFor(featureId);
+      const p = this.pathFor(key);
       if (!existsSync(p)) return null;
       return readFileSync(p, 'utf8');
     } catch {
@@ -39,9 +40,9 @@ export class SnapshotStore {
     }
   }
 
-  remove(featureId: string): void {
+  remove(key: string): void {
     try {
-      unlinkSync(this.pathFor(featureId));
+      unlinkSync(this.pathFor(key));
     } catch {
       /* fehlt schon */
     }

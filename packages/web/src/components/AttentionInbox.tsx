@@ -63,6 +63,14 @@ export function AttentionInbox() {
                 Zur Konsole →
               </button>
             )}
+            {!item.featureId && item.conversationId && (
+              <button
+                onClick={() => dispatch({ type: 'open_chat', projectId: item.projectId })}
+                className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+              >
+                Zum Chat →
+              </button>
+            )}
             <button
               onClick={() =>
                 void api

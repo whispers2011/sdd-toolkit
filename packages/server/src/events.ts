@@ -13,6 +13,8 @@ export interface BusEvents {
   session_status: (payload: {
     sessionId: string;
     featureId: string | null;
+    /** Gesetzt bei Arbeits-Chat-Sessions (kind chat_work) für Chat-Panel-Routing. */
+    conversationId: string | null;
     projectId: string;
     status: SessionDisplayStatus;
     awaitingKind: AwaitingKind | null;
@@ -37,6 +39,13 @@ export interface BusEvents {
   }) => void;
   /** Invalidierungssignal: Turn fertig, Vorschlag entschieden oder Unterhaltung zurückgesetzt. */
   chat_updated: (payload: { projectId: string; conversationId: string }) => void;
+  /** Ergebnis einer Arbeits-Chat-Integration (Übernehmen nach main). */
+  chat_work_integrated: (payload: {
+    projectId: string;
+    conversationId: string;
+    result: 'merged' | 'failed';
+    detail: string;
+  }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -61,4 +70,5 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'knowledge_updated',
   'chat_stream',
   'chat_updated',
+  'chat_work_integrated',
 ];

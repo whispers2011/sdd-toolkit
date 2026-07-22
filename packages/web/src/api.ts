@@ -4,6 +4,8 @@ import type {
   AutomationSettings,
   ChatConversation,
   ChatMessage,
+  ChatMode,
+  ChatWorkSessionInfo,
   Feature,
   FeaturePhase,
   FeatureProposalStatus,
@@ -34,12 +36,14 @@ export class SaveConflictError extends Error {
 export interface ChatState {
   conversation: ChatConversation | null;
   messages: ChatMessage[];
+  workSession?: ChatWorkSessionInfo | null;
 }
 
 export interface LiveSessionInfo {
   id: string;
   projectId: string;
   featureId: string | null;
+  conversationId: string | null;
   kind: string;
   status: 'idle' | 'working' | 'awaiting_input' | 'stopped' | 'errored';
   awaitingKind: string | null;
@@ -204,6 +208,19 @@ export const api = {
     request<{ conversation: null }>('POST', `/api/projects/${projectId}/chat/reset`),
   decideChatProposal: (messageId: string, status: Exclude<FeatureProposalStatus, 'offen'>, featureId?: string) =>
     request<ChatMessage>('PATCH', `/api/chat/messages/${messageId}/proposal`, { status, featureId }),
+  // Arbeits-Chat („Arbeiten"-Modus)
+  setChatMode: (projectId: string, mode: ChatMode) =>
+    request<ChatState>('POST', `/api/projects/${projectId}/chat/mode`, { mode }),
+  ensureChatWorkSession: (projectId: string) =>
+    request<{ sessionId: string }>('POST', `/api/projects/${projectId}/chat/work/session`),
+  sendChatWorkPrompt: (projectId: string, text: string) =>
+    request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/prompt`, { text }),
+  interruptChatWork: (projectId: string) =>
+    request<{ status: string }>('POST', `/api/projects/${projectId}/chat/work/interrupt`),
+  discardChatWork: (projectId: string) =>
+    request<{ conversation: null }>('POST', `/api/projects/${projectId}/chat/work/discard`, { confirm: true }),
+  integrateChatWork: (projectId: string) =>
+    request<{ executionId: string }>('POST', `/api/projects/${projectId}/chat/work/integrate`),
 };
 
 export interface KnowledgeResponse {

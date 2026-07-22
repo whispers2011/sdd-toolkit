@@ -22,7 +22,11 @@ export interface LiveSession {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'feature' | 'shell';
+  /** Bindung an eine Chat-Unterhaltung (nur bei kind==='chat_work'). */
+  conversationId: string | null;
+  kind: 'feature' | 'shell' | 'chat_work';
+  /** Schlüssel für Snapshot-Persistenz (Feature-Id bzw. `chat-<conversationId>`); null = kein Snapshot. */
+  snapshotKey: string | null;
   cwd: string;
   pty: IPty;
   machine: SessionMachine;
@@ -82,7 +86,8 @@ export class PtySessionManager {
   async spawn(opts: {
     projectId: string;
     featureId: string | null;
-    kind: 'feature' | 'shell';
+    conversationId?: string | null;
+    kind: 'feature' | 'shell' | 'chat_work';
     cwd: string;
     argv: string[];
     /** Claude-Session: Hook-Bridge aktivieren. */
@@ -113,11 +118,20 @@ export class PtySessionManager {
       env: { ...env, SDD_SESSION_ID: id },
     });
 
+    const snapshotKey =
+      opts.kind === 'feature' && opts.featureId
+        ? opts.featureId
+        : opts.kind === 'chat_work' && opts.conversationId
+          ? `chat-${opts.conversationId}`
+          : null;
+
     const session: LiveSession = {
       id,
       projectId: opts.projectId,
       featureId: opts.featureId,
+      conversationId: opts.conversationId ?? null,
       kind: opts.kind,
+      snapshotKey,
       cwd: opts.cwd,
       pty,
       machine: initialSession,
@@ -127,8 +141,7 @@ export class PtySessionManager {
       transcriptRetryTimer: null,
       claudeSessionId: null,
       scrollback: '',
-      snapshotPrefix:
-        opts.kind === 'feature' && opts.featureId ? this.snapshots.load(opts.featureId) : null,
+      snapshotPrefix: snapshotKey ? this.snapshots.load(snapshotKey) : null,
       subscribers: new Set(),
       exited: false,
     };
@@ -156,7 +169,7 @@ export class PtySessionManager {
 
     pty.onExit(({ exitCode }) => {
       session.exited = true;
-      if (session.featureId) this.snapshots.save(session.featureId, session.scrollback);
+      if (session.snapshotKey) this.snapshots.save(session.snapshotKey, session.scrollback);
       this.dispatch(session, { type: 'process_exited', code: exitCode });
       void session.hookWatcher?.stop();
       this.detachTranscript(session);
@@ -225,6 +238,13 @@ export class PtySessionManager {
     return undefined;
   }
 
+  forConversation(conversationId: string): LiveSession | undefined {
+    for (const s of this.sessions.values()) {
+      if (s.conversationId === conversationId && !s.exited) return s;
+    }
+    return undefined;
+  }
+
   list(): LiveSession[] {
     return [...this.sessions.values()];
   }
@@ -254,10 +274,10 @@ export class PtySessionManager {
     };
   }
 
-  /** Beim Server-Shutdown: alle Feature-Scrollbacks sichern. */
+  /** Beim Server-Shutdown: alle Scrollbacks mit Snapshot-Schlüssel sichern. */
   saveAllSnapshots(): void {
     for (const s of this.sessions.values()) {
-      if (s.featureId && !s.exited) this.snapshots.save(s.featureId, s.scrollback);
+      if (s.snapshotKey && !s.exited) this.snapshots.save(s.snapshotKey, s.scrollback);
     }
   }
 

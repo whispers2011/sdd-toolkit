@@ -9,6 +9,8 @@ export interface ClaudeLaunchOptions {
   settingsPath: string;
   model?: string;
   permissionMode?: PermissionMode;
+  /** Zusätzlicher System-Prompt (z. B. Verhaltensrahmen des Arbeits-Chats). */
+  appendSystemPrompt?: string;
 }
 
 /** Argv für eine interaktive Feature-Session (läuft im Worktree-cwd). */
@@ -17,6 +19,7 @@ export function buildClaudeArgv(opts: ClaudeLaunchOptions): string[] {
   if (opts.resume) args.push('--resume', opts.resume);
   args.push('--settings', opts.settingsPath);
   if (opts.model) args.push('--model', opts.model);
+  if (opts.appendSystemPrompt) args.push('--append-system-prompt', opts.appendSystemPrompt);
   if (opts.permissionMode && opts.permissionMode !== 'default') {
     args.push('--permission-mode', opts.permissionMode);
   }

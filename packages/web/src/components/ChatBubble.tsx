@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { ChatPanel } from './ChatPanel.js';
 
@@ -11,6 +11,12 @@ export function ChatBubble() {
   const { state } = useStore();
   const [open, setOpen] = useState(false);
   const projectId = state.selectedProjectId;
+
+  // Öffnen-Signal aus der Inbox (Arbeits-Chat-Eintrag) konsumieren.
+  useEffect(() => {
+    if (state.openChat && state.openChat.projectId === projectId) setOpen(true);
+  }, [state.openChat?.ts, projectId]);
+
   if (!projectId) return null;
 
   const busy = Object.values(state.chatStreams).some((s) => s.projectId === projectId && !s.done);

@@ -59,15 +59,27 @@ Aufruf über das 📚-Icon je Projekt (Sidebar) bzw. je Feature (Konsolen-Header
 Speicherung projekt-gescopt in SQLite (`knowledge_*`-Tabellen), Transport on-demand via
 REST + `knowledge_updated`-WS-Event.
 
-## Projekt-Chat (Ask-a-Question)
+## Projekt-Chat (Fragen ↔ Arbeiten)
 
-Die **Sprechblase unten rechts** (sichtbar bei geöffnetem Projekt) öffnet einen Chat,
-um Fragen zu stellen, ohne ein Feature zu bauen — zum Projekt („Wie funktioniert die
-Merge-Queue?") oder projektunabhängig. Jeder Turn läuft als Headless-Claude im
-Projekt-Root, **strikt lesend** (Tool-Whitelist `Read,Grep,Glob`, kein Worktree, kein
-`acceptEdits`) — reines Chatten hinterlässt keinerlei Artefakte. Der Verlauf wird pro
-Projekt in SQLite persistiert und überlebt App-Neustarts (`--resume` hält den
-Gesprächskontext); Turns erscheinen als `chat`-Läufe im Kosten-Audit.
+Die **Sprechblase unten rechts** (sichtbar bei geöffnetem Projekt) öffnet einen Chat mit
+zwei pro Unterhaltung wählbaren Modi (Umschalter im Panel):
+
+- **Fragen** (Standard, strikt lesend): Fragen zum Projekt („Wie funktioniert die
+  Merge-Queue?") oder projektunabhängig. Jeder Turn läuft als Headless-Claude im
+  Projekt-Root (Tool-Whitelist `Read,Grep,Glob`, kein Worktree, kein `acceptEdits`) —
+  reines Chatten hinterlässt **keinerlei Artefakte**. Erkennt der Assistent eine
+  feature-würdige Anforderung, schlägt er per Karte ein Feature vor (siehe unten).
+- **Arbeiten** (eingreifend): eine **vollwertige, interaktive Claude-Code-Session** in einer
+  **isolierten Arbeitskopie** (git-Worktree auf Branch `chat/<id>`) — sie ändert Dateien,
+  führt Kommandos aus und löst Probleme. Angezeigt als echte Konsole (xterm) samt Prompt-Leiste.
+  Freigaben laufen über denselben Permission-/„Braucht dich"-Fluss und erben den
+  **Automation-Dial** wie Feature-Sessions. Über die Steuerleiste: **Unterbrechen** (Turn
+  abbrechen), **Verwerfen** (Worktree/Branch restlos entfernen — Haupt-Arbeitskopie bleibt
+  unberührt) und **Übernehmen** (commit → Verifikation → Merge nach `main`, nie blind).
+  Große, mehrteilige Vorhaben schlägt der Assistent weiterhin als eigenes Feature vor.
+
+Der Verlauf wird pro Projekt in SQLite persistiert und überlebt App-Neustarts (`--resume` +
+Snapshot-Replay); Turns erscheinen als `chat`- bzw. `chat_work`-Läufe im Kosten-Audit.
 
 Beschreibt eine Nachricht eine **feature-würdige Anforderung**, weist der Assistent
 darauf hin und schlägt per Karte ein Feature vor. „Feature anlegen …" öffnet den

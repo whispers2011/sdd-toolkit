@@ -186,6 +186,13 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX idx_chat_messages_conv ON chat_messages(conversation_id, created_at);
   `,
+  // Feature "projekt-chat-vollsession": Arbeits-Modus (Fragen/Arbeiten), Session- und
+  // Attention-Bindung an eine Unterhaltung (additive, nullable — feature-Pfade bleiben intakt).
+  `
+  ALTER TABLE chat_conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'ask' CHECK (mode IN ('ask','work'));
+  ALTER TABLE sessions ADD COLUMN conversation_id TEXT REFERENCES chat_conversations(id) ON DELETE SET NULL;
+  ALTER TABLE attention ADD COLUMN conversation_id TEXT;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

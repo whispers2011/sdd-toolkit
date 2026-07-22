@@ -43,12 +43,14 @@ export interface UiState {
    */
   chatStreams: Record<string, ChatStreamState>;
   chatUpdated: { projectId: string; conversationId: string; ts: number } | null;
+  /** Signal „Chat-Panel öffnen" (z. B. aus der Inbox) — von ChatBubble konsumiert. */
+  openChat: { projectId: string; ts: number } | null;
 }
 
 export type Action =
   | { type: 'bootstrap'; state: AppState }
   | { type: 'feature_updated'; feature: Feature }
-  | { type: 'session_status'; payload: { sessionId: string; featureId: string | null; projectId: string; status: LiveSessionInfo['status']; awaitingKind: string | null } }
+  | { type: 'session_status'; payload: { sessionId: string; featureId: string | null; conversationId: string | null; projectId: string; status: LiveSessionInfo['status']; awaitingKind: string | null } }
   | { type: 'attention_raised'; item: AttentionItem }
   | { type: 'attention_resolved'; id: string }
   | { type: 'queue_updated'; payload: { projectId: string; items: MergeQueueItem[] } }
@@ -58,7 +60,8 @@ export type Action =
   | { type: 'knowledge_updated'; projectId: string }
   | { type: 'error'; message: string | null }
   | { type: 'chat_stream'; payload: { projectId: string; conversationId: string; messageId: string; text: string; done: boolean } }
-  | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } };
+  | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } }
+  | { type: 'open_chat'; projectId: string };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -85,7 +88,8 @@ function reducer(state: UiState, action: Action): UiState {
         id: p.sessionId,
         projectId: p.projectId,
         featureId: p.featureId,
-        kind: prev?.kind ?? 'feature',
+        conversationId: p.conversationId,
+        kind: prev?.kind ?? (p.conversationId ? 'chat_work' : 'feature'),
         status: p.status,
         awaitingKind: p.awaitingKind,
         exited: p.status === 'stopped' || p.status === 'errored',
@@ -159,6 +163,10 @@ function reducer(state: UiState, action: Action): UiState {
     }
     case 'error':
       return { ...state, error: action.message };
+    case 'open_chat': {
+      persistSelectedProject(action.projectId);
+      return { ...state, selectedProjectId: action.projectId, openChat: { projectId: action.projectId, ts: Date.now() } };
+    }
     case 'chat_stream': {
       const { messageId, ...stream } = action.payload;
       return { ...state, chatStreams: { ...state.chatStreams, [messageId]: stream } };
@@ -250,6 +258,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     error: null,
     chatStreams: {},
     chatUpdated: null,
+    openChat: null,
   });
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -306,6 +315,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 payload: msg.payload as Extract<Action, { type: 'chat_updated' }>['payload'],
               });
               break;
+            case 'chat_work_integrated': {
+              // Ergebnis der Übernahme → Panel neu laden (merged: Unterhaltung beendet).
+              const p = msg.payload as { projectId: string; conversationId: string; result: string };
+              dispatch({ type: 'chat_updated', payload: { projectId: p.projectId, conversationId: p.conversationId } });
+              break;
+            }
             case 'notification': {
               const n = msg.payload as {
                 title: string;

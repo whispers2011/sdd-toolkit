@@ -6,6 +6,7 @@ import type {
   ChatConversation,
   ChatMessage,
   ChatMessageStatus,
+  ChatMode,
   ExecutionRecord,
   Feature,
   FeaturePhase,
@@ -238,6 +239,7 @@ export class FeatureRepo {
 export interface SessionRow {
   id: string;
   feature_id: string | null;
+  conversation_id: string | null;
   project_id: string;
   kind: string;
   claude_session_id: string | null;
@@ -249,12 +251,19 @@ export interface SessionRow {
 export class SessionRepo {
   constructor(private db: DB) {}
 
-  create(s: { id: string; featureId: string | null; projectId: string; kind: string; pid: number | null }): void {
+  create(s: {
+    id: string;
+    featureId: string | null;
+    conversationId?: string | null;
+    projectId: string;
+    kind: string;
+    pid: number | null;
+  }): void {
     this.db
       .prepare(
-        'INSERT INTO sessions (id, feature_id, project_id, kind, pid, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO sessions (id, feature_id, conversation_id, project_id, kind, pid, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(s.id, s.featureId, s.projectId, s.kind, s.pid, Date.now());
+      .run(s.id, s.featureId, s.conversationId ?? null, s.projectId, s.kind, s.pid, Date.now());
   }
 
   setClaudeSessionId(id: string, claudeSessionId: string | null): void {
@@ -282,6 +291,14 @@ export class SessionRepo {
       (this.db
         .prepare('SELECT * FROM sessions WHERE feature_id=? ORDER BY created_at DESC LIMIT 1')
         .get(featureId) as SessionRow | undefined) ?? null
+    );
+  }
+
+  latestForConversation(conversationId: string): SessionRow | null {
+    return (
+      (this.db
+        .prepare('SELECT * FROM sessions WHERE conversation_id=? ORDER BY created_at DESC LIMIT 1')
+        .get(conversationId) as SessionRow | undefined) ?? null
     );
   }
 }
@@ -419,15 +436,19 @@ export class AttentionRepo {
     projectId: string;
     featureId?: string | null;
     sessionId?: string | null;
+    conversationId?: string | null;
     message: string;
   }): AttentionItem {
-    // Dedup: gleiche offene Meldung (kind+feature/session) nicht doppelt anlegen.
+    // Dedup: gleiche offene Meldung (kind+feature/session/conversation) nicht doppelt anlegen.
     const existing = this.db
       .prepare(
         `SELECT id FROM attention WHERE resolved_at IS NULL AND kind=? AND project_id=?
-         AND COALESCE(feature_id,'')=COALESCE(?,'') AND COALESCE(session_id,'')=COALESCE(?,'')`,
+         AND COALESCE(feature_id,'')=COALESCE(?,'') AND COALESCE(session_id,'')=COALESCE(?,'')
+         AND COALESCE(conversation_id,'')=COALESCE(?,'')`,
       )
-      .get(a.kind, a.projectId, a.featureId ?? null, a.sessionId ?? null) as { id: string } | undefined;
+      .get(a.kind, a.projectId, a.featureId ?? null, a.sessionId ?? null, a.conversationId ?? null) as
+      | { id: string }
+      | undefined;
     if (existing) return this.get(existing.id)!;
 
     const item: AttentionItem = {
@@ -436,16 +457,26 @@ export class AttentionRepo {
       projectId: a.projectId,
       featureId: a.featureId ?? null,
       sessionId: a.sessionId ?? null,
+      conversationId: a.conversationId ?? null,
       message: a.message,
       createdAt: Date.now(),
       resolvedAt: null,
     };
     this.db
       .prepare(
-        `INSERT INTO attention (id, kind, project_id, feature_id, session_id, message, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attention (id, kind, project_id, feature_id, session_id, conversation_id, message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(item.id, item.kind, item.projectId, item.featureId, item.sessionId, item.message, item.createdAt);
+      .run(
+        item.id,
+        item.kind,
+        item.projectId,
+        item.featureId,
+        item.sessionId,
+        item.conversationId,
+        item.message,
+        item.createdAt,
+      );
     return item;
   }
 
@@ -453,8 +484,8 @@ export class AttentionRepo {
     this.db.prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(Date.now(), id);
   }
 
-  /** Offene Items einer Session/eines Features auflösen (z.B. Input wurde gegeben). */
-  resolveFor(filter: { sessionId?: string; featureId?: string; kinds?: AttentionKind[] }): void {
+  /** Offene Items einer Session/eines Features/einer Unterhaltung auflösen (z.B. Input wurde gegeben). */
+  resolveFor(filter: { sessionId?: string; featureId?: string; conversationId?: string; kinds?: AttentionKind[] }): void {
     const conds: string[] = ['resolved_at IS NULL'];
     const params: unknown[] = [];
     if (filter.sessionId) {
@@ -464,6 +495,10 @@ export class AttentionRepo {
     if (filter.featureId) {
       conds.push('feature_id=?');
       params.push(filter.featureId);
+    }
+    if (filter.conversationId) {
+      conds.push('conversation_id=?');
+      params.push(filter.conversationId);
     }
     if (filter.kinds?.length) {
       conds.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
@@ -494,6 +529,7 @@ function toAttention(r: Record<string, unknown>): AttentionItem {
     projectId: r.project_id as string,
     featureId: r.feature_id as string | null,
     sessionId: r.session_id as string | null,
+    conversationId: (r.conversation_id as string | null) ?? null,
     message: r.message as string,
     createdAt: r.created_at as number,
     resolvedAt: r.resolved_at as number | null,
@@ -505,6 +541,7 @@ function toAttention(r: Record<string, unknown>): AttentionItem {
 interface ChatConversationRow {
   id: string;
   project_id: string;
+  mode: string;
   claude_session_id: string | null;
   created_at: number;
   updated_at: number;
@@ -528,6 +565,7 @@ function toConversation(r: ChatConversationRow): ChatConversation {
   return {
     id: r.id,
     projectId: r.project_id,
+    mode: (r.mode === 'work' ? 'work' : 'ask') as ChatMode,
     claudeSessionId: r.claude_session_id,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -553,9 +591,9 @@ function toChatMessage(r: ChatMessageRow): ChatMessage {
 export class ChatRepo {
   constructor(private db: DB) {}
 
-  /** Aktive Unterhaltung des Projekts; legt bei Bedarf lazy eine an. */
-  ensureActive(projectId: string): ChatConversation {
-    return this.getActive(projectId) ?? this.createConversation(projectId);
+  /** Aktive Unterhaltung des Projekts; legt bei Bedarf lazy eine an (im gewünschten Modus). */
+  ensureActive(projectId: string, mode: ChatMode = 'ask'): ChatConversation {
+    return this.getActive(projectId) ?? this.createConversation(projectId, mode);
   }
 
   getActive(projectId: string): ChatConversation | null {
@@ -573,11 +611,12 @@ export class ChatRepo {
     return r ? toConversation(r) : null;
   }
 
-  createConversation(projectId: string): ChatConversation {
+  createConversation(projectId: string, mode: ChatMode = 'ask'): ChatConversation {
     const now = Date.now();
     const conv: ChatConversation = {
       id: nanoid(10),
       projectId,
+      mode,
       claudeSessionId: null,
       createdAt: now,
       updatedAt: now,
@@ -585,10 +624,14 @@ export class ChatRepo {
     };
     this.db
       .prepare(
-        'INSERT INTO chat_conversations (id, project_id, claude_session_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?)',
+        'INSERT INTO chat_conversations (id, project_id, mode, claude_session_id, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?)',
       )
-      .run(conv.id, projectId, now, now);
+      .run(conv.id, projectId, mode, now, now);
     return conv;
+  }
+
+  setMode(id: string, mode: ChatMode): void {
+    this.db.prepare('UPDATE chat_conversations SET mode=? WHERE id=?').run(mode, id);
   }
 
   endConversation(id: string): void {

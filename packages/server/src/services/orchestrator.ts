@@ -28,6 +28,7 @@ import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artif
 import { bus } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
+import type { ChatWorkService } from './chatWorkService.js';
 
 export interface OrchestratorDeps {
   projects: ProjectRepo;
@@ -54,12 +55,18 @@ interface RunningPhase {
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private mergeQueue: MergeQueueService | null = null;
+  private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
 
   constructor(private deps: OrchestratorDeps) {}
 
   attachMergeQueue(q: MergeQueueService): void {
     this.mergeQueue = q;
+  }
+
+  /** Arbeits-Chat-Sessions (kind chat_work) werden vom ChatWorkService behandelt. */
+  attachChatWork(svc: ChatWorkService): void {
+    this.chatWork = svc;
   }
 
   // ---------- Feature-Lifecycle ----------
@@ -281,12 +288,17 @@ export class Orchestrator {
   // ---------- Session-Callbacks (von PtySessionManager) ----------
 
   handleStatusChange(session: LiveSession, effects: SessionEffect[]): void {
+    if (session.kind === 'chat_work' && this.chatWork) {
+      this.chatWork.handleStatusChange(session, effects);
+      return;
+    }
     const status = displayStatus(session.machine.state);
     const awaiting = session.machine.state.kind === 'awaiting_input' ? session.machine.state.awaiting : null;
 
     bus.emitEvent('session_status', {
       sessionId: session.id,
       featureId: session.featureId,
+      conversationId: session.conversationId,
       projectId: session.projectId,
       status,
       awaitingKind: awaiting,
@@ -388,6 +400,10 @@ export class Orchestrator {
   }
 
   handleExit(session: LiveSession, exitCode: number): void {
+    if (session.kind === 'chat_work' && this.chatWork) {
+      this.chatWork.handleExit(session, exitCode);
+      return;
+    }
     this.deps.sessions.end(session.id);
     if (session.featureId) {
       const running = this.runningPhases.get(session.featureId);

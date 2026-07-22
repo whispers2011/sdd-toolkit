@@ -88,6 +88,9 @@ export class ChatService {
     if (!project) throw new ChatError(404, 'Projekt nicht gefunden');
 
     const conversation = this.deps.chat.ensureActive(projectId);
+    if (conversation.mode === 'work') {
+      throw new ChatError(409, 'Unterhaltung ist im Arbeits-Modus — Nachrichten laufen über die Arbeits-Session');
+    }
     if (this.running.has(conversation.id)) throw new ChatError(409, 'Antwort läuft bereits');
 
     const userMessage = this.deps.chat.createMessage({

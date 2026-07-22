@@ -123,7 +123,7 @@ export interface SessionInfo {
   id: string;
   featureId: string | null;
   projectId: string;
-  kind: 'feature' | 'shell' | 'headless';
+  kind: 'feature' | 'shell' | 'headless' | 'chat_work';
   /** Externe Claude-Session-ID (für --resume), sobald bekannt. */
   claudeSessionId: string | null;
   status: SessionDisplayStatus;
@@ -148,6 +148,8 @@ export interface AttentionItem {
   projectId: string;
   featureId: string | null;
   sessionId: string | null;
+  /** Gesetzt bei Arbeits-Chat-Sessions: Routing-Ziel ist der Chat-Panel des Projekts. */
+  conversationId: string | null;
   message: string;
   createdAt: number;
   resolvedAt: number | null;
@@ -168,7 +170,7 @@ export interface ExecutionRecord {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
   phase: WorkflowPhase | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
@@ -211,16 +213,34 @@ export interface SavePhaseDefinitionResult {
 
 // ---------- Projekt-Chat (Ask-a-Question) ----------
 
+/**
+ * Modus einer Chat-Unterhaltung: `ask` = strikt lesend (heutiges Verhalten, keine Artefakte),
+ * `work` = vollwertige, eingreifende Claude-Code-Session in isolierter Worktree. Der Modus ist
+ * pro Unterhaltung fix; ein Wechsel startet eine neue Unterhaltung.
+ */
+export type ChatMode = 'ask' | 'work';
+
 /** Fortlaufende Q&A-Unterhaltung eines Projekts; höchstens eine aktive (endedAt = null) pro Projekt. */
 export interface ChatConversation {
   id: string;
   projectId: string;
+  /** Modus der Unterhaltung (siehe {@link ChatMode}). */
+  mode: ChatMode;
   /** Externe Claude-Session-ID (für --resume über App-Neustarts hinweg). */
   claudeSessionId: string | null;
   createdAt: number;
   updatedAt: number;
   /** Gesetzt durch „Neue Unterhaltung" — beendete Unterhaltungen werden nicht mehr angezeigt. */
   endedAt: number | null;
+}
+
+/** Laufzeit-Info der Arbeits-Session einer work-Unterhaltung (DTO für den Chat-Panel). */
+export interface ChatWorkSessionInfo {
+  sessionId: string;
+  status: SessionDisplayStatus;
+  awaitingKind: AwaitingKind | null;
+  /** Branch der isolierten Arbeitskopie (`chat/<conversationId>`). */
+  branch: string;
 }
 
 export type ChatMessageStatus = 'complete' | 'streaming' | 'error' | 'interrupted';

@@ -27,7 +27,9 @@ import type { Orchestrator } from '../services/orchestrator.js';
 import type { MergeQueueService } from '../services/mergeQueueService.js';
 import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
+import type { ChatWorkService } from '../services/chatWorkService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
+import { isChatMode } from '@sdd/shared';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
@@ -50,6 +52,7 @@ export interface ApiDeps {
   mergeQueue: MergeQueueService;
   onboarding: OnboardingService;
   chat: ChatService;
+  chatWork: ChatWorkService;
   ptys: PtySessionManager;
   dataDir: string;
 }
@@ -69,6 +72,7 @@ export async function buildServer(deps: ApiDeps) {
       id: s.id,
       projectId: s.projectId,
       featureId: s.featureId,
+      conversationId: s.conversationId,
       kind: s.kind,
       status: displayStatus(s.machine.state),
       awaitingKind: s.machine.state.kind === 'awaiting_input' ? s.machine.state.awaiting : null,
@@ -281,10 +285,59 @@ export async function buildServer(deps: ApiDeps) {
 
   // ---------- Projekt-Chat (Ask-a-Question) ----------
 
-  /** Aktive Unterhaltung samt Nachrichten; conversation: null = noch nie gechattet/Reset. */
+  /** Aktive Unterhaltung samt Nachrichten (+ Arbeits-Session-Info bei work-Modus). */
   app.get<{ Params: { id: string } }>('/api/projects/:id/chat', (req) => {
     if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
-    return deps.chat.getState(req.params.id);
+    const base = deps.chat.getState(req.params.id);
+    const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
+    return { ...base, workSession };
+  });
+
+  /** Modus wählen (ask ⇄ work); ein Wechsel startet eine neue Unterhaltung. */
+  app.post<{ Params: { id: string }; Body: { mode?: string } }>('/api/projects/:id/chat/mode', (req) => {
+    if (!isChatMode(req.body?.mode)) throw httpError(400, 'mode muss ask oder work sein');
+    const conversation = deps.chatWork.setMode(req.params.id, req.body.mode);
+    const workSession = deps.chatWork.workSessionInfo(conversation);
+    return { conversation, messages: [], workSession };
+  });
+
+  /** Arbeits-Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/session', async (req) => {
+    return deps.chatWork.ensure(req.params.id);
+  });
+
+  /** Prompt in die Arbeits-Session senden. */
+  app.post<{ Params: { id: string }; Body: { text?: string } }>(
+    '/api/projects/:id/chat/work/prompt',
+    async (req, reply) => {
+      const text = req.body?.text?.trim();
+      if (!text) throw httpError(400, 'text fehlt');
+      await deps.chatWork.sendPrompt(req.params.id, text);
+      void reply.code(202);
+      return { ok: true };
+    },
+  );
+
+  /** Laufenden Turn abbrechen (Session bleibt). */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/interrupt', (req) => {
+    return deps.chatWork.interrupt(req.params.id);
+  });
+
+  /** Arbeit verwerfen: Worktree/Branch/Snapshot restlos entfernen, Unterhaltung beenden. */
+  app.post<{ Params: { id: string }; Body: { confirm?: boolean } }>(
+    '/api/projects/:id/chat/work/discard',
+    async (req) => {
+      if (req.body?.confirm !== true) throw httpError(400, 'confirm erforderlich');
+      await deps.chatWork.discard(req.params.id);
+      return { conversation: null };
+    },
+  );
+
+  /** Arbeit nach main übernehmen (commit → verify → merge). Läuft asynchron. */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/integrate', (req, reply) => {
+    const result = deps.chatWork.integrate(req.params.id);
+    void reply.code(202);
+    return result;
   });
 
   /** Nutzer-Nachricht senden — startet den Assistenten-Turn asynchron (202). */

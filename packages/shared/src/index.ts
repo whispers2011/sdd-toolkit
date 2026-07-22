@@ -7,3 +7,4 @@ export * from './linkResolver.js';
 export * from './knowledge.js';
 export * from './chatStream.js';
 export * from './chatProposal.js';
+export * from './chatMode.js';
