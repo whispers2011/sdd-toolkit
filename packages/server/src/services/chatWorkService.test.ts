@@ -1,51 +1,34 @@
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { Feature } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
-import { WorktreeManager } from '../git/worktrees.js';
-import type { PtySessionManager } from '../pty/sessionManager.js';
-import type { ChatService } from './chatService.js';
+import type { WorktreeManager } from '../git/worktrees.js';
+import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
+import type { Orchestrator } from './orchestrator.js';
 import { ChatWorkService } from './chatWorkService.js';
-import { bus } from '../events.js';
 
-function sh(cwd: string, args: string[]): void {
-  execFileSync('git', args, { cwd, encoding: 'utf8' });
-}
+const marker = (feats: { name: string; description: string }[]) =>
+  `Klingt nach eigenen Features.\n<sdd:features>${JSON.stringify(feats)}</sdd:features>`;
 
-/** Minimaler PTY-Stub: keine echte Claude-Session — nur was discard/integrate berühren. */
-const ptyStub = {
-  forConversation: () => undefined,
-  terminate: async () => {},
-  snapshots: { remove: () => {} },
-} as unknown as PtySessionManager;
-
-describe('ChatWorkService (Integration, ohne Claude)', () => {
-  let repo: string;
-  let dataDir: string;
+describe('ChatWorkService — Feature-Vorschläge aus der Session', () => {
   let db: DB;
-  let svc: ChatWorkService;
   let chat: ChatRepo;
+  let dataDir: string;
   let projectId: string;
+  let convId: string;
+  let svc: ChatWorkService;
+  let created: { name: string; description: string }[];
 
   beforeEach(() => {
-    repo = mkdtempSync(join(tmpdir(), 'sdd-cw-repo-'));
-    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-data-'));
-    sh(repo, ['init', '-b', 'main']);
-    sh(repo, ['config', 'user.email', 'test@test.local']);
-    sh(repo, ['config', 'user.name', 'Test']);
-    writeFileSync(join(repo, 'app.txt'), 'zeile1\n');
-    sh(repo, ['add', '-A']);
-    sh(repo, ['commit', '-m', 'init']);
-
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-'));
     db = openMemoryDatabase();
     chat = new ChatRepo(db);
-    const worktrees = new WorktreeManager(dataDir);
     projectId = new ProjectRepo(db).create({
       name: 'Demo',
-      path: repo,
+      path: '/tmp/demo',
       defaultBranch: 'main',
       color: null,
       enabledPhases: [],
@@ -55,71 +38,74 @@ describe('ChatWorkService (Integration, ohne Claude)', () => {
       editorCmd: null,
       integrationMode: 'local',
     }).id;
+    convId = chat.createConversation(projectId, 'work').id;
+    created = [];
+
+    const orchestrator = {
+      createFeature: async (pid: string, name: string, description?: string) => {
+        created.push({ name, description: description ?? '' });
+        return { id: `f-${name}`, projectId: pid, name } as unknown as Feature;
+      },
+    } as unknown as Orchestrator;
 
     svc = new ChatWorkService({
       projects: new ProjectRepo(db),
-      chat: {} as unknown as ChatService,
       chatRepo: chat,
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
       settings: new SettingsRepo(db),
-      worktrees,
-      ptys: ptyStub,
+      worktrees: {} as unknown as WorktreeManager,
+      ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
+      orchestrator,
       dataDir,
     });
   });
 
   afterEach(() => {
     db.close();
-    rmSync(repo, { recursive: true, force: true });
     rmSync(dataDir, { recursive: true, force: true });
   });
 
-  /** Legt Worktree/Branch an wie ensure() es täte + eine uncommittete Änderung. */
-  async function seedWorktree(): Promise<{ convId: string; worktreePath: string; branch: string }> {
-    const conv = chat.createConversation(projectId, 'work');
-    const worktrees = new WorktreeManager(dataDir);
-    const worktreePath = await worktrees.create({
-      projectId,
-      projectPath: repo,
-      featureName: `chat-${conv.id}`,
-      branch: `chat/${conv.id}`,
-      defaultBranch: 'main',
-    });
-    writeFileSync(join(worktreePath, 'neu.txt'), 'aus dem Chat\n');
-    return { convId: conv.id, worktreePath, branch: `chat/${conv.id}` };
-  }
+  const fakeSession = () => ({ id: 's1', conversationId: convId, projectId } as unknown as LiveSession);
 
-  it('discard entfernt Worktree + Branch restlos und beendet die Unterhaltung', async () => {
-    const { convId, worktreePath, branch } = await seedWorktree();
-    expect(existsSync(worktreePath)).toBe(true);
-
-    await svc.discard(projectId);
-
-    expect(existsSync(worktreePath)).toBe(false);
-    const branches = execFileSync('git', ['branch', '--list', branch], { cwd: repo, encoding: 'utf8' });
-    expect(branches.trim()).toBe('');
-    expect(chat.getActive(projectId)).toBeNull();
-    // Haupt-Arbeitskopie unberührt (nur die init-Datei).
-    expect(existsSync(join(repo, 'neu.txt'))).toBe(false);
+  it('ohne Marker entsteht kein Vorschlag', () => {
+    svc.onAssistantText(fakeSession(), 'Nur eine ganz normale Antwort ohne Marker.');
+    expect(svc.proposalForProject(projectId)).toBeNull();
   });
 
-  it('integrate committet, merged nach main und räumt auf', async () => {
-    const { worktreePath } = await seedWorktree();
+  it('Marker erzeugt einen Vorschlag; identischer Marker dedupliziert', () => {
+    const feats = [
+      { name: 'pdf-export', description: 'Alle Features als PDF exportieren' },
+      { name: 'csv-import', description: 'Aufgaben aus CSV importieren' },
+    ];
+    svc.onAssistantText(fakeSession(), marker(feats));
+    const p1 = svc.proposalForProject(projectId);
+    expect(p1?.features.map((f) => f.name)).toEqual(['pdf-export', 'csv-import']);
 
-    const integrated = new Promise<{ result: string }>((resolve) => {
-      bus.once('chat_work_integrated', (p: { result: string }) => resolve(p));
-    });
-    svc.integrate(projectId);
-    const result = (await Promise.race([
-      integrated,
-      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
-    ])) as { result: string };
+    svc.onAssistantText(fakeSession(), marker(feats)); // gleicher Marker erneut
+    expect(svc.proposalForProject(projectId)?.id).toBe(p1?.id); // kein neuer Vorschlag
+  });
 
-    expect(result.result).toBe('merged');
-    expect(existsSync(join(repo, 'neu.txt'))).toBe(true); // nach main übernommen
-    expect(existsSync(worktreePath)).toBe(false); // Cleanup
-    expect(chat.getActive(projectId)).toBeNull();
+  it('createFeatures legt nur die ausgewählten an und löscht den Vorschlag', async () => {
+    svc.onAssistantText(
+      fakeSession(),
+      marker([
+        { name: 'pdf-export', description: 'PDF' },
+        { name: 'csv-import', description: 'CSV' },
+      ]),
+    );
+    const features = await svc.createFeatures(projectId, ['pdf-export']);
+    expect(features).toHaveLength(1);
+    expect(created).toEqual([{ name: 'pdf-export', description: 'PDF' }]);
+    expect(svc.proposalForProject(projectId)).toBeNull();
+  });
+
+  it('dismissProposal verwirft ohne Anlage', () => {
+    svc.onAssistantText(fakeSession(), marker([{ name: 'x', description: 'y' }]));
+    expect(svc.proposalForProject(projectId)).not.toBeNull();
+    svc.dismissProposal(projectId);
+    expect(svc.proposalForProject(projectId)).toBeNull();
+    expect(created).toEqual([]);
   });
 });

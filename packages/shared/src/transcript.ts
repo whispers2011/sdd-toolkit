@@ -67,6 +67,28 @@ export function parseClaudeTranscriptLine(line: string): TranscriptEvent | null 
   return { kind: 'meta' };
 }
 
+/**
+ * Extrahiert den zusammengesetzten Text einer Assistant-Transkriptzeile (text-Blöcke),
+ * sonst null. Für Marker-Erkennung aus der Session (Feature-Vorschläge).
+ */
+export function assistantTextFromTranscriptLine(line: string): string | null {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (obj.type !== 'assistant') return null;
+  const message = obj.message as Record<string, unknown> | undefined;
+  const content = message?.content;
+  if (!Array.isArray(content)) return null;
+  const text = (content as Record<string, unknown>[])
+    .filter((b) => b.type === 'text' && typeof b.text === 'string')
+    .map((b) => b.text as string)
+    .join('');
+  return text || null;
+}
+
 /** Übersetzt das letzte statusrelevante Event in ein Session-Signal. */
 export function decideTranscriptSignal(event: TranscriptEvent): TranscriptSignal | null {
   switch (event.kind) {

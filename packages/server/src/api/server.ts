@@ -29,7 +29,6 @@ import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
-import { isChatMode } from '@sdd/shared';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
@@ -285,59 +284,34 @@ export async function buildServer(deps: ApiDeps) {
 
   // ---------- Projekt-Chat (Ask-a-Question) ----------
 
-  /** Aktive Unterhaltung samt Nachrichten (+ Arbeits-Session-Info bei work-Modus). */
+  /** Aktive Unterhaltung + Arbeits-Session-Info + offener Feature-Vorschlag (Karte). */
   app.get<{ Params: { id: string } }>('/api/projects/:id/chat', (req) => {
     if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
     const base = deps.chat.getState(req.params.id);
     const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
-    return { ...base, workSession };
+    const pendingFeatures = deps.chatWork.proposalForProject(req.params.id);
+    return { ...base, workSession, pendingFeatures };
   });
 
-  /** Modus wählen (ask ⇄ work); ein Wechsel startet eine neue Unterhaltung. */
-  app.post<{ Params: { id: string }; Body: { mode?: string } }>('/api/projects/:id/chat/mode', (req) => {
-    if (!isChatMode(req.body?.mode)) throw httpError(400, 'mode muss ask oder work sein');
-    const conversation = deps.chatWork.setMode(req.params.id, req.body.mode);
-    const workSession = deps.chatWork.workSessionInfo(conversation);
-    return { conversation, messages: [], workSession };
-  });
-
-  /** Arbeits-Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
+  /** Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
   app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/session', async (req) => {
     return deps.chatWork.ensure(req.params.id);
   });
 
-  /** Prompt in die Arbeits-Session senden. */
-  app.post<{ Params: { id: string }; Body: { text?: string } }>(
-    '/api/projects/:id/chat/work/prompt',
-    async (req, reply) => {
-      const text = req.body?.text?.trim();
-      if (!text) throw httpError(400, 'text fehlt');
-      await deps.chatWork.sendPrompt(req.params.id, text);
-      void reply.code(202);
-      return { ok: true };
-    },
-  );
-
-  /** Laufenden Turn abbrechen (Session bleibt). */
-  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/interrupt', (req) => {
-    return deps.chatWork.interrupt(req.params.id);
-  });
-
-  /** Arbeit verwerfen: Worktree/Branch/Snapshot restlos entfernen, Unterhaltung beenden. */
-  app.post<{ Params: { id: string }; Body: { confirm?: boolean } }>(
-    '/api/projects/:id/chat/work/discard',
+  /** Bestätigte Feature(s) aus dem Vorschlag anlegen (Teilmenge per Name). */
+  app.post<{ Params: { id: string }; Body: { names?: string[] } }>(
+    '/api/projects/:id/chat/work/features/create',
     async (req) => {
-      if (req.body?.confirm !== true) throw httpError(400, 'confirm erforderlich');
-      await deps.chatWork.discard(req.params.id);
-      return { conversation: null };
+      const names = Array.isArray(req.body?.names) ? req.body!.names : [];
+      const features = await deps.chatWork.createFeatures(req.params.id, names);
+      return { features };
     },
   );
 
-  /** Arbeit nach main übernehmen (commit → verify → merge). Läuft asynchron. */
-  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/integrate', (req, reply) => {
-    const result = deps.chatWork.integrate(req.params.id);
-    void reply.code(202);
-    return result;
+  /** Feature-Vorschlag verwerfen. */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/features/dismiss', (req) => {
+    deps.chatWork.dismissProposal(req.params.id);
+    return { ok: true };
   });
 
   /** Nutzer-Nachricht senden — startet den Assistenten-Turn asynchron (202). */

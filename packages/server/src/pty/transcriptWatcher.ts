@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import {
   WORKING_STALL_SECONDS,
+  assistantTextFromTranscriptLine,
   decideTranscriptSignal,
   encodeClaudeCwd,
   parseClaudeTranscriptLine,
@@ -50,6 +51,8 @@ export class TranscriptWatcher {
   constructor(
     private transcriptPath: string,
     private onSignal: (signal: SessionSignal) => void,
+    /** Optional: Volltext jeder Assistant-Zeile (für Marker-Erkennung, z. B. Feature-Vorschläge). */
+    private onAssistantText?: (text: string) => void,
   ) {}
 
   start(): void {
@@ -101,6 +104,10 @@ export class TranscriptWatcher {
       if (!event) continue;
       const s = decideTranscriptSignal(event);
       if (s !== null) signal = s;
+      if (this.onAssistantText && event.kind === 'assistant_stopped') {
+        const text = assistantTextFromTranscriptLine(raw);
+        if (text) this.onAssistantText(text);
+      }
     }
     if (signal !== null) {
       this.lastSignalWasWorking = signal === 'working';

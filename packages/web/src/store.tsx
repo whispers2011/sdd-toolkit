@@ -315,12 +315,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 payload: msg.payload as Extract<Action, { type: 'chat_updated' }>['payload'],
               });
               break;
-            case 'chat_work_integrated': {
-              // Ergebnis der Übernahme → Panel neu laden (merged: Unterhaltung beendet).
-              const p = msg.payload as { projectId: string; conversationId: string; result: string };
-              dispatch({ type: 'chat_updated', payload: { projectId: p.projectId, conversationId: p.conversationId } });
-              break;
-            }
             case 'notification': {
               const n = msg.payload as {
                 title: string;

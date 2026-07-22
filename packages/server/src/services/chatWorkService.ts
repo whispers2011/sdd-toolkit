@@ -1,38 +1,31 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { nanoid } from 'nanoid';
 import {
   displayStatus,
   meter,
+  parseSessionFeatures,
   resolveAutomation,
   type ChatConversation,
-  type ChatMode,
+  type ChatFeatureProposal,
   type ChatWorkSessionInfo,
+  type Feature,
   type Project,
   type SessionEffect,
 } from '@sdd/shared';
 import type { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import { MergeEngine } from '../git/mergeEngine.js';
-import { git, isCleanWorkingTree } from '../git/git.js';
-import { runVerification } from './verifyService.js';
+import type { Orchestrator } from './orchestrator.js';
 import { locateTranscript } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
-import { ChatError, type ChatService } from './chatService.js';
+import { ChatError } from './chatService.js';
 import { bus } from '../events.js';
-
-interface RunningTurn {
-  executionId: string;
-  scrollbackStart: number;
-  promptText: string;
-}
 
 export interface ChatWorkDeps {
   projects: ProjectRepo;
-  /** Nur-Lese-Chat — für sauberes Beenden eines ask-Turns beim Moduswechsel. */
-  chat: ChatService;
   chatRepo: ChatRepo;
   sessions: SessionRepo;
   attention: AttentionRepo;
@@ -40,72 +33,38 @@ export interface ChatWorkDeps {
   settings: SettingsRepo;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
+  /** Feature-Anlage läuft über den kanonischen Pfad (Worktree, optional /speckit-specify). */
+  orchestrator: Orchestrator;
   dataDir: string;
   model?: string;
 }
 
 /**
- * Arbeits-Chat („Arbeiten"-Modus): eine vollwertige, interaktive Claude-Code-Session in einer
- * isolierten Worktree/Branch pro Unterhaltung. Spiegelt Orchestrator.ensureSession statt den
- * headless-lesenden ChatService. Verwendet die Session-/Worktree-/Merge-Infrastruktur wieder.
+ * Projekt-Chat als vollwertige Claude-Code-Session: eine interaktive, persistente Session pro
+ * Projekt in einer isolierten Worktree/Branch. Der Nutzer tippt direkt in die Konsole. Erkennt
+ * die Session, dass sich aus der Unterhaltung Feature(s) herauskristallisieren, gibt sie einen
+ * `<sdd:features>`-Marker aus — das Toolkit zeigt eine Bestätigungskarte, und bestätigte Features
+ * werden über den normalen Weg (Orchestrator.createFeature) angelegt.
  */
 export class ChatWorkService {
-  private mergeEngine = new MergeEngine();
   private notify = new NotificationThrottle();
-  private runningTurns = new Map<string, RunningTurn>(); // sessionId → Turn
-  private integrating = new Set<string>(); // conversationId gerade in Integration
-  private terminating = new Set<string>(); // sessionId absichtlich beendet (kein Fehler-Item)
+  /** Scrollback-Länge an der letzten Turn-Grenze — für Kosten-Metering pro Turn. */
+  private turnStart = new Map<string, number>(); // sessionId → scrollback-Offset
+  /** Offener Feature-Vorschlag je Unterhaltung (im Speicher; überlebt Panel-Öffnen). */
+  private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
+  /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
+  private lastMarker = new Map<string, string>();
 
   constructor(private deps: ChatWorkDeps) {
     mkdirSync(join(deps.dataDir, 'logs'), { recursive: true });
   }
 
-  // ---------- Modus ----------
-
-  /** Modus der aktiven Unterhaltung wählen; ein Wechsel startet eine neue Unterhaltung. */
-  setMode(projectId: string, mode: ChatMode): ChatConversation {
-    this.mustProject(projectId);
-    const active = this.deps.chatRepo.getActive(projectId);
-    if (active && active.mode === mode) return active;
-
-    if (active && active.mode === 'work') {
-      // Laufende Arbeit nicht stillschweigend verwerfen.
-      const live = this.deps.ptys.forConversation(active.id);
-      if (live || existsSync(this.worktreePath(projectId, active.id))) {
-        throw new ChatError(409, 'Arbeits-Session aktiv — bitte zuerst übernehmen oder verwerfen');
-      }
-      this.deps.chatRepo.endConversation(active.id);
-    } else if (active) {
-      // ask-Unterhaltung: laufenden Turn beenden + Unterhaltung schließen.
-      this.deps.chat.reset(projectId);
-    }
-
-    const created = this.deps.chatRepo.createConversation(projectId, mode);
-    bus.emitEvent('chat_updated', { projectId, conversationId: created.id });
-    return created;
-  }
-
-  /** Laufzeit-Info der Arbeits-Session (null, wenn keine läuft). */
-  workSessionInfo(conversation: ChatConversation): ChatWorkSessionInfo | null {
-    if (conversation.mode !== 'work') return null;
-    const live = this.deps.ptys.forConversation(conversation.id);
-    if (!live) return null;
-    return {
-      sessionId: live.id,
-      status: displayStatus(live.machine.state),
-      awaitingKind: live.machine.state.kind === 'awaiting_input' ? live.machine.state.awaiting : null,
-      branch: this.branchFor(conversation.id),
-    };
-  }
-
   // ---------- Session-Lifecycle ----------
 
-  /** Arbeits-Session sicherstellen (idempotent): Worktree anlegen + PTY spawnen/rehydrieren. */
+  /** Session sicherstellen (idempotent): Worktree anlegen + interaktive Claude-Session spawnen. */
   async ensure(projectId: string): Promise<{ sessionId: string }> {
     const project = this.mustProject(projectId);
-    const conv = this.deps.chatRepo.getActive(projectId);
-    if (!conv) throw new ChatError(404, 'Keine aktive Unterhaltung');
-    if (conv.mode !== 'work') throw new ChatError(409, 'Unterhaltung ist nicht im Arbeits-Modus');
+    const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
 
     const existing = this.deps.ptys.forConversation(conv.id);
     if (existing) return { sessionId: existing.id };
@@ -156,6 +115,7 @@ export class ChatWorkService {
     } catch (err) {
       throw new ChatError(503, `Session konnte nicht gestartet werden: ${(err as Error).message}`);
     }
+    this.turnStart.set(session.id, 0);
     this.deps.sessions.create({
       id: session.id,
       featureId: null,
@@ -167,164 +127,82 @@ export class ChatWorkService {
     return { sessionId: session.id };
   }
 
-  /** Prompt in die Arbeits-Session senden (startet Kosten-Metering für den Turn). */
-  async sendPrompt(projectId: string, text: string): Promise<void> {
-    const { sessionId } = await this.ensure(projectId);
-    const live = this.deps.ptys.get(sessionId);
-    if (!live) throw new ChatError(404, 'Arbeits-Session nicht gefunden');
-    const executionId = this.deps.executions.start({
-      projectId: live.projectId,
-      featureId: null,
-      kind: 'chat_work',
-      phase: null,
-      logPath: null,
-    });
-    this.runningTurns.set(sessionId, { executionId, scrollbackStart: live.scrollback.length, promptText: text });
-    this.deps.ptys.sendPrompt(sessionId, text);
+  /** Laufzeit-Info der Session (null, wenn keine läuft) — für den Status-Indikator. */
+  workSessionInfo(conversation: ChatConversation): ChatWorkSessionInfo | null {
+    const live = this.deps.ptys.forConversation(conversation.id);
+    if (!live) return null;
+    return {
+      sessionId: live.id,
+      status: displayStatus(live.machine.state),
+      awaitingKind: live.machine.state.kind === 'awaiting_input' ? live.machine.state.awaiting : null,
+      branch: this.branchFor(conversation.id),
+    };
   }
 
-  /** Laufenden Turn abbrechen (ESC), Session bleibt bestehen. */
-  interrupt(projectId: string): { status: string } {
-    const conv = this.activeWork(projectId);
-    const live = this.deps.ptys.forConversation(conv.id);
-    if (!live) throw new ChatError(404, 'Keine laufende Arbeits-Session');
-    this.deps.ptys.write(live.id, '\x1b'); // ESC bricht die aktuelle Generierung ab
-    return { status: 'stopped' };
+  // ---------- Feature-Vorschläge ----------
+
+  /** Offener Vorschlag der aktiven Unterhaltung (für GET /chat). */
+  proposalForProject(projectId: string): ChatFeatureProposal | null {
+    const conv = this.deps.chatRepo.getActive(projectId);
+    return conv ? (this.proposals.get(conv.id) ?? null) : null;
   }
 
-  /** Arbeit restlos verwerfen: Session beenden, Worktree/Branch/Snapshot entfernen. */
-  async discard(projectId: string): Promise<void> {
-    const project = this.mustProject(projectId);
-    const conv = this.activeWork(projectId);
-    await this.teardown(project, conv.id);
-    this.deps.chatRepo.endConversation(conv.id);
+  /** Bestätigte Features anlegen (Teilmenge per Name); löscht den Vorschlag. */
+  async createFeatures(projectId: string, names: string[]): Promise<Feature[]> {
+    const conv = this.deps.chatRepo.getActive(projectId);
+    if (!conv) throw new ChatError(404, 'Keine aktive Unterhaltung');
+    const proposal = this.proposals.get(conv.id);
+    if (!proposal) throw new ChatError(404, 'Kein offener Feature-Vorschlag');
+
+    const wanted = new Set(names);
+    const selected = proposal.features.filter((f) => wanted.has(f.name));
+    if (selected.length === 0) throw new ChatError(400, 'Kein Feature ausgewählt');
+
+    const created: Feature[] = [];
+    const errors: string[] = [];
+    for (const f of selected) {
+      try {
+        created.push(await this.deps.orchestrator.createFeature(projectId, f.name, f.description));
+      } catch (err) {
+        errors.push(`${f.name}: ${(err as Error).message}`);
+      }
+    }
+    this.proposals.delete(conv.id);
+    bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
+    if (created.length === 0) throw new ChatError(409, `Feature-Anlage fehlgeschlagen — ${errors.join('; ')}`);
+    return created;
+  }
+
+  /** Vorschlag verwerfen (kein Feature anlegen). */
+  dismissProposal(projectId: string): void {
+    const conv = this.deps.chatRepo.getActive(projectId);
+    if (!conv) return;
+    this.proposals.delete(conv.id);
     bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
   }
 
-  /** Arbeit nach main übernehmen: commit → verify → rebase → merge → Cleanup (async). */
-  integrate(projectId: string): { executionId: string } {
-    const project = this.mustProject(projectId);
-    const conv = this.activeWork(projectId);
-    if (this.integrating.has(conv.id)) throw new ChatError(409, 'Integration läuft bereits');
-    this.integrating.add(conv.id);
-    const executionId = this.deps.executions.start({
-      projectId: project.id,
-      featureId: null,
-      kind: 'chat_work',
-      phase: null,
-      logPath: null,
-    });
-    void this.runIntegration(project, conv, executionId).finally(() => this.integrating.delete(conv.id));
-    return { executionId };
-  }
+  // ---------- Session-Callbacks (delegiert vom Orchestrator / PtySessionManager) ----------
 
-  private async runIntegration(project: Project, conv: ChatConversation, executionId: string): Promise<void> {
-    const branch = this.branchFor(conv.id);
-    const worktreePath = this.worktreePath(project.id, conv.id);
-    const fail = (detail: string, raise = true): void => {
-      if (raise) {
-        const item = this.deps.attention.raise({
-          kind: 'verify_failed',
-          projectId: project.id,
-          conversationId: conv.id,
-          message: `Projekt-Chat: Übernahme fehlgeschlagen — ${detail}`,
-        });
-        bus.emitEvent('attention_raised', item);
-      }
-      this.deps.executions.finish(executionId, 1);
-      bus.emitEvent('chat_work_integrated', { projectId: project.id, conversationId: conv.id, result: 'failed', detail });
-    };
-
-    try {
-      const live = this.deps.ptys.forConversation(conv.id);
-      if (live) {
-        this.terminating.add(live.id);
-        await this.deps.ptys.terminate(live.id);
-      }
-      if (!existsSync(worktreePath)) return fail('Arbeitskopie fehlt');
-
-      // Committen (falls Änderungen). Keine Änderungen → nichts zu übernehmen: sauber verwerfen.
-      if (await isCleanWorkingTree(worktreePath)) {
-        await this.teardown(project, conv.id);
-        this.deps.chatRepo.endConversation(conv.id);
-        this.deps.executions.finish(executionId, 0);
-        bus.emitEvent('chat_work_integrated', {
-          projectId: project.id,
-          conversationId: conv.id,
-          result: 'merged',
-          detail: 'Keine Änderungen zum Übernehmen',
-        });
-        bus.emitEvent('chat_updated', { projectId: project.id, conversationId: conv.id });
-        return;
-      }
-      await git(worktreePath, ['add', '-A']);
-      const committed = await git(worktreePath, ['commit', '-m', 'chat: Änderungen aus dem Projekt-Chat']);
-      if (committed.code !== 0) return fail(committed.stderr.trim() || 'commit fehlgeschlagen');
-
-      // Verifikation (falls konfiguriert) — nie blind mergen.
-      if (project.verifyCommands.length > 0) {
-        const outcome = await runVerification({
-          commands: project.verifyCommands,
-          cwd: worktreePath,
-          logDir: join(this.deps.dataDir, 'logs'),
-          executionId,
-        });
-        if (!outcome.ok) {
-          const failed = outcome.results.find((r) => r.exitCode !== 0);
-          return fail(`Verifikation fehlgeschlagen (${failed?.name ?? 'unbekannt'})`);
-        }
-      }
-
-      // Rebase auf default, dann mergen.
-      const rb = await this.mergeEngine.rebaseOntoDefault(worktreePath, project.defaultBranch);
-      if (!rb.ok) {
-        if (rb.kind === 'conflict') await this.mergeEngine.abortRebase(worktreePath).catch(() => {});
-        const item = this.deps.attention.raise({
-          kind: rb.kind === 'conflict' ? 'merge_conflict_escalated' : 'verify_failed',
-          projectId: project.id,
-          conversationId: conv.id,
-          message:
-            rb.kind === 'conflict'
-              ? `Projekt-Chat: Merge-Konflikt beim Rebase (${rb.files.join(', ')})`
-              : `Projekt-Chat: Rebase fehlgeschlagen — ${rb.message}`,
-        });
-        bus.emitEvent('attention_raised', item);
-        this.deps.executions.finish(executionId, 1);
-        bus.emitEvent('chat_work_integrated', {
-          projectId: project.id,
-          conversationId: conv.id,
-          result: 'failed',
-          detail: rb.kind === 'conflict' ? 'Merge-Konflikt' : rb.message,
-        });
-        return;
-      }
-
-      const merged = await this.mergeEngine.mergeFeature({
-        projectPath: project.path,
-        branch,
-        defaultBranch: project.defaultBranch,
-        mode: project.mergeMode,
-        message: 'chat: Änderungen aus dem Projekt-Chat übernehmen',
+  /** Marker-Erkennung: Assistant-Text der Session auf Feature-Vorschläge prüfen. */
+  onAssistantText(session: LiveSession, text: string): void {
+    const conversationId = session.conversationId;
+    if (!conversationId) return;
+    const features = parseSessionFeatures(text);
+    if (!features) return;
+    const key = JSON.stringify(features);
+    if (this.lastMarker.get(conversationId) === key) return; // Dedup (gleicher Marker erneut)
+    this.lastMarker.set(conversationId, key);
+    this.proposals.set(conversationId, { id: nanoid(10), features });
+    bus.emitEvent('chat_updated', { projectId: session.projectId, conversationId });
+    if (this.notify.allow(session.id, 'input_requested')) {
+      bus.emitEvent('notification', {
+        title: 'Projekt-Chat: Feature-Vorschlag',
+        body: features.length === 1 ? features[0]!.name : `${features.length} Features vorgeschlagen`,
+        featureId: null,
+        kind: 'input_requested',
       });
-      if (!merged.ok) return fail(merged.message);
-
-      // Erfolg → Cleanup + Unterhaltung beenden.
-      await this.teardown(project, conv.id);
-      this.deps.chatRepo.endConversation(conv.id);
-      this.deps.executions.finish(executionId, 0);
-      bus.emitEvent('chat_work_integrated', {
-        projectId: project.id,
-        conversationId: conv.id,
-        result: 'merged',
-        detail: `nach ${project.defaultBranch} übernommen`,
-      });
-      bus.emitEvent('chat_updated', { projectId: project.id, conversationId: conv.id });
-    } catch (err) {
-      fail((err as Error).message);
     }
   }
-
-  // ---------- Session-Callbacks (delegiert vom Orchestrator) ----------
 
   handleStatusChange(session: LiveSession, effects: SessionEffect[]): void {
     const status = displayStatus(session.machine.state);
@@ -366,44 +244,37 @@ export class ChatWorkService {
           });
         }
       } else if (effect.kind === 'turn_completed') {
-        this.handleTurnCompleted(session);
+        this.meterTurn(session);
       }
     }
   }
 
-  private handleTurnCompleted(session: LiveSession): void {
-    const running = this.runningTurns.get(session.id);
-    if (running) {
-      this.runningTurns.delete(session.id);
-      const outputText = session.scrollback.slice(running.scrollbackStart);
-      const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: running.promptText, outputText });
-      this.deps.executions.finish(running.executionId, 0, cost.costUsd, cost.totalTokens);
-    }
-    if (this.notify.allow(session.id, 'turn_completed')) {
-      bus.emitEvent('notification', {
-        title: 'Projekt-Chat ist fertig',
-        body: 'Turn abgeschlossen',
-        featureId: null,
-        kind: 'turn_completed',
-      });
-    }
+  private meterTurn(session: LiveSession): void {
+    const start = this.turnStart.get(session.id) ?? 0;
+    const outputText = session.scrollback.slice(start);
+    this.turnStart.set(session.id, session.scrollback.length);
+    if (!outputText.trim()) return;
+    const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: '', outputText });
+    const execId = this.deps.executions.start({
+      projectId: session.projectId,
+      featureId: null,
+      kind: 'chat_work',
+      phase: null,
+      logPath: null,
+    });
+    this.deps.executions.finish(execId, 0, cost.costUsd, cost.totalTokens);
   }
 
   handleExit(session: LiveSession, exitCode: number): void {
     this.deps.sessions.end(session.id);
-    const running = this.runningTurns.get(session.id);
-    if (running) {
-      this.runningTurns.delete(session.id);
-      this.deps.executions.finish(running.executionId, exitCode || 1);
-    }
-    const intentional = this.terminating.delete(session.id);
-    if (exitCode !== 0 && !intentional) {
+    this.turnStart.delete(session.id);
+    if (exitCode !== 0) {
       const item = this.deps.attention.raise({
         kind: 'agent_errored',
         projectId: session.projectId,
         sessionId: session.id,
         conversationId: session.conversationId,
-        message: `Arbeits-Chat-Session beendet (exit ${exitCode})`,
+        message: `Projekt-Chat-Session beendet (exit ${exitCode})`,
       });
       bus.emitEvent('attention_raised', item);
     }
@@ -411,36 +282,13 @@ export class ChatWorkService {
   }
 
   killAll(): void {
-    this.runningTurns.clear();
+    this.turnStart.clear();
   }
 
   // ---------- Helpers ----------
 
-  /** Session beenden + Worktree/Branch/Snapshot restlos entfernen (Verwerfen & Merge-Cleanup). */
-  private async teardown(project: Project, conversationId: string): Promise<void> {
-    const live = this.deps.ptys.forConversation(conversationId);
-    if (live) {
-      this.terminating.add(live.id);
-      await this.deps.ptys.terminate(live.id);
-    }
-    const worktreePath = this.worktreePath(project.id, conversationId);
-    await this.deps.worktrees.remove(project.path, worktreePath, { force: true }).catch(() => {});
-    await this.mergeEngine.deleteBranch(project.path, this.branchFor(conversationId)).catch(() => {});
-    this.deps.ptys.snapshots.remove(`chat-${conversationId}`);
-  }
-
-  private activeWork(projectId: string): ChatConversation {
-    const conv = this.deps.chatRepo.getActive(projectId);
-    if (!conv || conv.mode !== 'work') throw new ChatError(409, 'Keine aktive Arbeits-Unterhaltung');
-    return conv;
-  }
-
   private branchFor(conversationId: string): string {
     return `chat/${conversationId}`;
-  }
-
-  private worktreePath(projectId: string, conversationId: string): string {
-    return this.deps.worktrees.pathFor(projectId, `chat-${conversationId}`);
   }
 
   private mustProject(id: string): Project {

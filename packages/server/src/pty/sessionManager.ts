@@ -65,6 +65,8 @@ export interface SessionCallbacks {
   onStatusChange: (session: LiveSession, effects: SessionEffect[]) => void;
   onExit: (session: LiveSession, exitCode: number) => void;
   onClaudeSessionId: (session: LiveSession, claudeSessionId: string) => void;
+  /** Volltext einer abgeschlossenen Assistant-Nachricht (Marker-Erkennung, nur Chat-Work). */
+  onAssistantText?: (session: LiveSession, text: string) => void;
 }
 
 /**
@@ -207,7 +209,11 @@ export class PtySessionManager {
       }
       return;
     }
-    session.transcriptWatcher = new TranscriptWatcher(path, (signal) => this.dispatch(session, signal));
+    session.transcriptWatcher = new TranscriptWatcher(
+      path,
+      (signal) => this.dispatch(session, signal),
+      this.callbacks.onAssistantText ? (text) => this.callbacks.onAssistantText!(session, text) : undefined,
+    );
     session.transcriptWatcher.start();
   }
 

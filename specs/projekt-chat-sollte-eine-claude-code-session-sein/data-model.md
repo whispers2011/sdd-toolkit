@@ -14,12 +14,10 @@ Bestehend: `id`, `projectId`, `claudeSessionId`, `createdAt`, `updatedAt`, `ende
 
 | Feld | Typ | Neu? | Beschreibung |
 |---|---|---|---|
-| `mode` | `'ask' \| 'work'` | **neu** | Modus der Unterhaltung (FR-011). Default `'ask'`. Bei `endConversation` beginnt eine neue Unterhaltung wieder mit dem gewählten Modus. |
+| `mode` | `'ask' \| 'work'` | **neu** | Spalte bleibt (Migration), wird aber nach der Überarbeitung nicht mehr als Umschalter genutzt: der Chat erstellt seine Unterhaltung immer als `'work'`. |
 
 - **Invariante (unverändert)**: höchstens eine aktive Unterhaltung pro Projekt
-  (`idx_chat_active`).
-- **Invariante (neu)**: `mode` ist nach Anlage der Unterhaltung fix. Ein Moduswechsel = neue
-  Unterhaltung (Reset).
+  (`idx_chat_active`) → genau eine Chat-Session + Worktree pro Projekt.
 - **Migration**: `ALTER TABLE chat_conversations ADD COLUMN mode TEXT NOT NULL DEFAULT 'ask'
   CHECK(mode IN ('ask','work'))`.
 

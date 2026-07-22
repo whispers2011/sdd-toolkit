@@ -42,12 +42,16 @@ async function main(): Promise<void> {
 
   const knowledgeService = new KnowledgeService({ knowledge, projects, features });
 
-  // PTY-Callbacks delegieren an den (danach konstruierten) Orchestrator.
+  // PTY-Callbacks delegieren an den (danach konstruierten) Orchestrator bzw. ChatWorkService.
   let orchestrator: Orchestrator;
+  let chatWork: ChatWorkService;
   const ptys = new PtySessionManager(config.dataDir, {
     onStatusChange: (s, effects) => orchestrator.handleStatusChange(s, effects),
     onExit: (s, code) => orchestrator.handleExit(s, code),
     onClaudeSessionId: (s, id) => sessions.setClaudeSessionId(s.id, id),
+    onAssistantText: (s, text) => {
+      if (s.kind === 'chat_work') chatWork.onAssistantText(s, text);
+    },
   });
 
   orchestrator = new Orchestrator({
@@ -82,10 +86,10 @@ async function main(): Promise<void> {
   const chatRepo = new ChatRepo(db);
   const chat = new ChatService({ projects, chat: chatRepo, executions, dataDir: config.dataDir });
 
-  // Arbeits-Chat („Arbeiten"-Modus): interaktive Session in isolierter Worktree pro Unterhaltung.
-  const chatWork = new ChatWorkService({
+  // Projekt-Chat als vollwertige Session: interaktive Claude-Session in isolierter Worktree
+  // pro Projekt; kristallisiert sich ein Feature heraus, wird es über den Orchestrator angelegt.
+  chatWork = new ChatWorkService({
     projects,
-    chat,
     chatRepo,
     sessions,
     attention,
@@ -93,6 +97,7 @@ async function main(): Promise<void> {
     settings,
     worktrees,
     ptys,
+    orchestrator,
     dataDir: config.dataDir,
   });
   orchestrator.attachChatWork(chatWork);

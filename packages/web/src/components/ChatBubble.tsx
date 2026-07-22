@@ -19,7 +19,9 @@ export function ChatBubble() {
 
   if (!projectId) return null;
 
-  const busy = Object.values(state.chatStreams).some((s) => s.projectId === projectId && !s.done);
+  const busy = (state.app?.sessions ?? []).some(
+    (s) => s.projectId === projectId && s.conversationId && (s.status === 'working' || s.status === 'awaiting_input'),
+  );
 
   return (
     <>

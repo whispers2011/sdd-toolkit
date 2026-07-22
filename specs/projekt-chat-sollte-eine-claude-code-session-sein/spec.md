@@ -26,6 +26,22 @@ zwingend den vollen Feature-Workflow (Spec → Plan → Tasks → Implement) dur
 - Q: Ersetzt die Arbeits-Session den bisherigen Nur-Lese-Chat, oder bleiben beide erhalten? → A: Beide erhalten — der Nutzer wählt pro Unterhaltung explizit zwischen „Fragen (lesend, im Projekt-Root, keine Artefakte)" und „Arbeiten (eingreifend, in isolierter Arbeitskopie)".
 - Q: Nach welcher Freigabe-/Autonomie-Regel handelt die Arbeits-Session? → A: Sie nutzt denselben Freigabe-/Inbox-Fluss und erbt den Automation-Dial (Level 2 ↔ 3) wie Feature-Sessions; kein separates Modell.
 
+### Session 2026-07-22 (Überarbeitung)
+
+Vereinfachung nach Rücksprache — der Chat ist **nur noch eine einzige, vollwertige Claude-Session**:
+
+- Q: Zwei Modi (Fragen/Arbeiten)? → A: Nein. Der „Fragen"-Modus entfällt; es wird **immer** eine
+  vollwertige Claude-Session gespawnt (kein Modus-Umschalter mehr).
+- Q: Prompt-Eingabefeld? → A: Nein — man tippt **direkt in die Konsole**.
+- Q: Steuerbuttons Unterbrechen/Übernehmen/Verwerfen? → A: Entfallen alle. Es ist einfach eine
+  Session; ihre Änderungen liegen isoliert in der Worktree und werden nicht über Chat-Buttons
+  gemergt/verworfen.
+- Q: Fenstergröße? → A: Das Panel ist **frei vergrößer-/verkleinerbar**.
+- Q: Feature-Anlage? → A: Erkennt die Session, dass sich ein oder mehrere Features
+  herauskristallisieren, weist sie darauf hin und gibt einen Marker aus; das Toolkit zeigt eine
+  **Bestätigungskarte**, über die der Nutzer die Anlage (Teilmenge wählbar) bestätigt. Angelegt
+  wird über den normalen Feature-Weg.
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Änderungen direkt aus dem Chat umsetzen lassen (Priority: P1)
@@ -190,10 +206,13 @@ Feature-Anlage vorschlägt statt sie unstrukturiert im Chat umzusetzen.
   Feature-Sessions** behandeln und den **Automation-Dial (Level 2 ↔ 3)** des Projekts erben
   (nachfragen bzw. automatisch je nach gewähltem Grad) — kein separates Freigabemodell —, sodass
   der Nutzer nicht von unbeaufsichtigten Änderungen überrascht wird.
-- **FR-006**: Der Nutzer MUSS beobachten können, was die Session tut (ausgeführte Aktionen/
-  Fortschritt), und eine laufende Session unterbrechen können.
-- **FR-007**: Der Nutzer MUSS einen nachvollziehbaren Weg haben, ein von der Session erzeugtes
-  Ergebnis zu prüfen und bei Bedarf zu verwerfen bzw. rückgängig zu machen.
+- **FR-006**: Der Nutzer MUSS beobachten können, was die Session tut — die Interaktion erfolgt
+  **direkt in der eingebetteten Konsole** (kein separates Eingabefeld). Das Chat-Fenster MUSS
+  frei vergrößer- und verkleinerbar sein. *(Überarbeitung: kein „Unterbrechen"-Button — Abbruch
+  erfolgt wie in jeder Claude-Konsole per ESC direkt in der Konsole.)*
+- **FR-007**: Die Änderungen der Session bleiben in der isolierten Arbeitskopie (FR-004); es gibt
+  **keine Chat-Steuerbuttons** zum Übernehmen/Verwerfen. Das durable Ergebnis der Unterhaltung
+  sind die daraus **angelegten Features** (FR-013), die ihren eigenen Workflow durchlaufen.
 - **FR-008**: Der Gesprächsverlauf und der Sitzungskontext MÜSSEN einen App-Neustart überleben
   und nahtlos fortgesetzt werden (wie beim heutigen Projekt-Chat).
 - **FR-009**: Die Aktivität jeder Session (Turns, durchgeführte Änderungen/Kommandos, Kosten/
@@ -202,14 +221,16 @@ Feature-Anlage vorschlägt statt sie unstrukturiert im Chat umzusetzen.
 - **FR-010**: Beschreibt eine Anfrage eine Anforderung, deren Umfang den strukturierten
   Feature-Workflow rechtfertigt, MUSS der Assistent weiterhin vorschlagen können, dafür ein
   eigenes Feature anzulegen (bestehender Übergabe-Weg), statt sie zwingend ad hoc umzusetzen.
-- **FR-011**: Der Chat MUSS zwei Modi anbieten, die der Nutzer **pro Unterhaltung explizit
-  wählt**: „**Fragen**" (lesend, ohne Nebeneffekte — heutiges Verhalten) und „**Arbeiten**"
-  (vollwertige, eingreifende Session gemäß FR-001–FR-007). Der gewählte Modus MUSS jederzeit
-  erkennbar sein; der Nur-Lese-Modus bleibt vollständig erhalten (reines Chatten hinterlässt
-  keinerlei Artefakte).
+- **FR-011**: Der Chat ist **immer** eine einzige, vollwertige Claude-Session (kein Modus-
+  Umschalter, kein separater „Fragen"-Modus). Fragen beantwortet dieselbe Session direkt in der
+  Konsole.
 - **FR-012**: Kann die Session eine angeforderte Änderung oder ein Kommando nicht abschließen
   (Fehler, verweigerte Freigabe, ungelöstes Problem), MUSS sie dies klar melden und das Projekt
   in einem konsistenten, verständlichen Zustand hinterlassen.
+- **FR-013**: Kristallisiert sich in der Unterhaltung ein oder mehrere Features heraus, MUSS die
+  Session darauf hinweisen und dem Nutzer eine **Bestätigungskarte** anbieten (Features
+  einzeln auswählbar). Bestätigte Features werden über den bestehenden Feature-Anlage-Weg
+  angelegt (eigener Worktree/Branch, optional direkt `/speckit-specify`); Ablehnen legt nichts an.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -223,8 +244,9 @@ Feature-Anlage vorschlägt statt sie unstrukturiert im Chat umzusetzen.
   (abhängig vom Autonomiegrad).
 - **Arbeitsort**: die isolierte Arbeitskopie (Worktree) + Branch einer Arbeits-Session, in der
   Änderungen wirksam werden; getrennt von der Haupt-Arbeitskopie (FR-004).
-- **Modus der Unterhaltung**: „Fragen" (lesend) oder „Arbeiten" (eingreifend) — pro Unterhaltung
-  gewählt und erkennbar (FR-011).
+- **Feature-Vorschlag**: pro Unterhaltung höchstens ein offener Vorschlag mit einem oder mehreren
+  vorgeschlagenen Features (Name + Beschreibung), aus dem Gespräch erkannt; über eine
+  Bestätigungskarte anlegbar oder verwerfbar (FR-013).
 - **Kosten-/Ausführungseintrag**: Erfassung von Turns/Läufen inkl. Kosten und Tokens im Audit.
 
 ## Success Criteria *(mandatory)*
