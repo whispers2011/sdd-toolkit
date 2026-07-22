@@ -2,8 +2,10 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { exec } from 'node:child_process';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
@@ -70,6 +72,73 @@ export async function buildServer(deps: ApiDeps) {
       queues: Object.fromEntries(projects.map((p) => [p.id, deps.queue.listByProject(p.id)])),
       automation: deps.settings.getAutomation(),
     };
+  });
+
+  // ---------- Dateisystem (WP14: Ordnerauswahl) ----------
+
+  /** Nativer Finder-Dialog (macOS). Abbruch ist kein Fehler. */
+  app.post('/api/fs/pick-folder', async () => {
+    if (process.platform !== 'darwin') return { cancelled: true, unsupported: true };
+    return new Promise((resolve) => {
+      execFile(
+        'osascript',
+        ['-e', 'POSIX path of (choose folder with prompt "Projekt-Repository wählen")'],
+        { timeout: 120_000 },
+        (err, stdout) => {
+          if (err) resolve({ cancelled: true });
+          else resolve({ cancelled: false, path: stdout.trim().replace(/\/$/, '') });
+        },
+      );
+    });
+  });
+
+  /** Verzeichnis-Browser (Fallback): Unterordner mit Git-Repo-Flag. */
+  app.get<{ Querystring: { path?: string } }>('/api/fs/dirs', (req) => {
+    const base = req.query.path?.trim() || homedir();
+    if (!base.startsWith('/')) throw httpError(400, 'Absoluter Pfad erwartet');
+    let entries: string[];
+    try {
+      entries = readdirSync(base);
+    } catch {
+      throw httpError(404, `Verzeichnis nicht lesbar: ${base}`);
+    }
+    const dirs = entries
+      .filter((name) => !name.startsWith('.'))
+      .map((name) => join(base, name))
+      .filter((p) => {
+        try {
+          return statSync(p).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .map((p) => ({ path: p, name: p.split('/').at(-1)!, isGitRepo: existsSync(join(p, '.git')) }))
+      .sort((a, b) => Number(b.isGitRepo) - Number(a.isGitRepo) || a.name.localeCompare(b.name));
+    return { base, parent: dirname(base) === base ? null : dirname(base), dirs };
+  });
+
+  /** Vorschläge: Geschwister-Repos bereits registrierter Projekte. */
+  app.get('/api/fs/suggestions', () => {
+    const registered = new Set(deps.projects.list().map((p) => p.path));
+    const suggestions = new Set<string>();
+    for (const project of deps.projects.list()) {
+      const parent = dirname(project.path);
+      try {
+        for (const name of readdirSync(parent)) {
+          if (name.startsWith('.')) continue;
+          const p = join(parent, name);
+          if (registered.has(p) || suggestions.has(p)) continue;
+          try {
+            if (statSync(p).isDirectory() && existsSync(join(p, '.git'))) suggestions.add(p);
+          } catch {
+            /* unlesbar */
+          }
+        }
+      } catch {
+        /* Parent unlesbar */
+      }
+    }
+    return { suggestions: [...suggestions].slice(0, 20) };
   });
 
   // ---------- Projekte ----------

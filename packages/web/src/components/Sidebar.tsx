@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Feature } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
@@ -142,16 +142,28 @@ function FeatureBadge({ feature }: { feature: Feature }) {
   return null;
 }
 
+/** Projekt hinzufügen (WP14): nativer Ordner-Dialog, Vorschläge, FS-Browser. */
 function NewProjectDialog({ onClose }: { onClose: () => void }) {
   const { dispatch } = useStore();
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [browser, setBrowser] = useState<{
+    base: string;
+    parent: string | null;
+    dirs: { path: string; name: string; isGitRepo: boolean }[];
+  } | null>(null);
 
-  const submit = async () => {
-    if (!path.trim()) return;
+  useEffect(() => {
+    void api.suggestions().then((r) => setSuggestions(r.suggestions)).catch(() => {});
+  }, []);
+
+  const submit = async (p?: string) => {
+    const target = (p ?? path).trim();
+    if (!target) return;
     setBusy(true);
     try {
-      await api.addProject(path.trim());
+      await api.addProject(target);
       const fresh = await api.state();
       dispatch({ type: 'bootstrap', state: fresh });
       onClose();
@@ -162,19 +174,96 @@ function NewProjectDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const pickNative = async () => {
+    const r = await api.pickFolder().catch(() => ({ cancelled: true }) as const);
+    if (!r.cancelled && r.path) setPath(r.path);
+  };
+
+  const openBrowser = (p?: string) =>
+    void api
+      .listDirs(p)
+      .then(setBrowser)
+      .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+
   return (
     <Dialog title="Projekt hinzufügen" onClose={onClose}>
       <p className="mb-2 text-xs text-zinc-500">
-        Absoluter Pfad zu einem Git-Repo. Vorhandene <code>specs/</code>-Features werden importiert.
+        Git-Repo wählen — vorhandene <code>specs/</code>-Features werden importiert.
       </p>
-      <input
-        autoFocus
-        value={path}
-        onChange={(e) => setPath(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && void submit()}
-        placeholder="/Users/…/mein-projekt"
-        className="w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-200 outline-none focus:border-zinc-500"
-      />
+
+      <div className="mb-2 flex gap-2">
+        <button
+          onClick={() => void pickNative()}
+          className="rounded bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:bg-zinc-700"
+        >
+          📁 Ordner wählen …
+        </button>
+        <button
+          onClick={() => (browser ? setBrowser(null) : openBrowser())}
+          className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800"
+        >
+          {browser ? 'Browser schließen' : 'Durchsuchen'}
+        </button>
+      </div>
+
+      {path && (
+        <div className="mb-2 truncate rounded border border-emerald-900 bg-emerald-950/40 px-3 py-1.5 text-sm text-emerald-300">
+          {path}
+        </div>
+      )}
+
+      {suggestions.length > 0 && !browser && (
+        <div className="mb-2">
+          <p className="mb-1 text-xs text-zinc-600">Vorschläge (Repos neben deinen Projekten):</p>
+          <ul className="max-h-32 space-y-0.5 overflow-y-auto">
+            {suggestions.map((s) => (
+              <li key={s}>
+                <button
+                  onClick={() => setPath(s)}
+                  className="w-full truncate rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                >
+                  {s}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {browser && (
+        <div className="mb-2 rounded border border-zinc-800">
+          <div className="flex items-center gap-2 border-b border-zinc-800 px-2 py-1">
+            {browser.parent && (
+              <button onClick={() => openBrowser(browser.parent!)} className="rounded px-1.5 text-xs text-zinc-400 hover:bg-zinc-800">
+                ↑
+              </button>
+            )}
+            <span className="truncate text-xs text-zinc-500">{browser.base}</span>
+          </div>
+          <ul className="max-h-40 overflow-y-auto p-1">
+            {browser.dirs.map((d) => (
+              <li key={d.path} className="flex items-center">
+                <button
+                  onClick={() => openBrowser(d.path)}
+                  className="flex-1 truncate rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-zinc-800"
+                >
+                  {d.isGitRepo ? '● ' : '○ '}
+                  {d.name}
+                </button>
+                {d.isGitRepo && (
+                  <button
+                    onClick={() => setPath(d.path)}
+                    className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400 hover:bg-zinc-700"
+                  >
+                    wählen
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <DialogActions busy={busy} onCancel={onClose} onSubmit={() => void submit()} submitLabel="Hinzufügen" />
     </Dialog>
   );

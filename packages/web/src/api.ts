@@ -88,6 +88,13 @@ export const api = {
     request<unknown>('POST', '/api/open-in-editor', { featureId, file, line }),
   projectTerminal: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/terminal`),
+  pickFolder: () => request<{ cancelled: boolean; path?: string }>('POST', '/api/fs/pick-folder'),
+  listDirs: (path?: string) =>
+    request<{ base: string; parent: string | null; dirs: { path: string; name: string; isGitRepo: boolean }[] }>(
+      'GET',
+      path ? `/api/fs/dirs?path=${encodeURIComponent(path)}` : '/api/fs/dirs',
+    ),
+  suggestions: () => request<{ suggestions: string[] }>('GET', '/api/fs/suggestions'),
   initSpeckit: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/init-speckit`),
 };
