@@ -1,6 +1,7 @@
 import { join } from 'node:path';
+import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import type { Feature, Project } from '@sdd/shared';
+import type { Feature, IntegrationStage, Project } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
@@ -36,6 +37,38 @@ export class MergeQueueService {
   private working = new Set<string>(); // projectIds mit aktivem Worker
 
   constructor(private deps: MergeQueueDeps) {}
+
+  /**
+   * Nach Server-Neustart: unterbrochene Queue-Items wieder aufnehmen. Ein Worker,
+   * der mitten in `merging`/`conflict_resolving` stirbt (Server-Neustart, Crash),
+   * würde das Item sonst für immer in dieser Stufe hängen lassen — es gibt keinen
+   * anderen Auslöser als `enqueue()`. Eskalierte Items (Mensch muss ran) bleiben
+   * unangetastet.
+   */
+  async resumeInterruptedOnBoot(): Promise<void> {
+    const resumable: IntegrationStage[] = ['queued', 'merging', 'conflict_resolving'];
+    for (const project of this.deps.projects.list()) {
+      const items = this.deps.queue.listByProject(project.id);
+      let hasWork = false;
+      for (const item of items) {
+        if (!resumable.includes(item.stage)) continue;
+        hasWork = true;
+        const feature = this.deps.features.get(item.featureId);
+        if (item.stage !== 'queued') {
+          // Halb erledigten Rebase abräumen, damit rebaseOntoDefault sauber neu startet.
+          if (feature?.worktreePath && existsSync(feature.worktreePath)) {
+            await this.engine.abortRebase(feature.worktreePath).catch(() => {});
+          }
+          this.deps.queue.setStage(item.id, 'queued');
+          if (feature) this.setStage(feature, 'queued');
+        }
+      }
+      if (hasWork) {
+        this.emitQueue(project.id);
+        void this.processProject(project.id);
+      }
+    }
+  }
 
   /**
    * Integration eines Features beginnen: Worktree committen, verifizieren,

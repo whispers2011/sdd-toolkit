@@ -115,6 +115,44 @@ describe('git-Layer (Integration)', () => {
     expect(readFileSync(join(repo, 'app.txt'), 'utf8')).toContain('MAIN+FEATURE');
   });
 
+  it('continueRebase committet KEINE unaufgelösten Konfliktmarker (Regression)', async () => {
+    const wt = await worktrees.create({
+      projectId: 'p1',
+      projectPath: repo,
+      featureName: 'feat-marker',
+      branch: 'feature/feat-marker',
+      defaultBranch: 'main',
+    });
+
+    writeFileSync(join(wt, 'app.txt'), 'zeile1-FEATURE\nzeile2\nzeile3\n');
+    sh(wt, ['add', '-A']);
+    sh(wt, ['commit', '-m', 'feature edit']);
+
+    writeFileSync(join(repo, 'app.txt'), 'zeile1-MAIN\nzeile2\nzeile3\n');
+    sh(repo, ['add', '-A']);
+    sh(repo, ['commit', '-m', 'main edit']);
+
+    const rebase = await engine.rebaseOntoDefault(wt, 'main');
+    expect(rebase.ok).toBe(false);
+
+    // Fehlerhafte „Auflösung": Marker bleiben im Quelltext stehen (Agent exit 0, aber unvollständig).
+    writeFileSync(
+      join(wt, 'app.txt'),
+      '<<<<<<< HEAD\nzeile1-MAIN\n=======\nzeile1-FEATURE\n>>>>>>> feature\nzeile2\nzeile3\n',
+    );
+    const cont = await engine.continueRebase(wt);
+    expect(cont).toEqual({ ok: false, kind: 'conflict', files: ['app.txt'] });
+
+    // Nichts wurde committet: der Rebase läuft noch, HEAD trägt keine Marker.
+    expect(sh(wt, ['log', '-1', '--pretty=%s'])).not.toContain('feature edit');
+
+    // Saubere Auflösung → continue klappt und der committete Stand ist markerfrei.
+    writeFileSync(join(wt, 'app.txt'), 'zeile1-MAIN+FEATURE\nzeile2\nzeile3\n');
+    const cont2 = await engine.continueRebase(wt);
+    expect(cont2).toEqual({ ok: true });
+    expect(sh(wt, ['show', 'HEAD:app.txt'])).not.toMatch(/<<<<<<<|>>>>>>>/);
+  });
+
   it('Merge verweigert bei dreckigem Haupt-Checkout', async () => {
     const wt = await worktrees.create({
       projectId: 'p1',

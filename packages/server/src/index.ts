@@ -104,6 +104,8 @@ async function main(): Promise<void> {
 
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
+  // Merge-Queue-Recovery: bei merging/conflict_resolving abgebrochene Items wieder aufnehmen.
+  void mergeQueue.resumeInterruptedOnBoot();
   chat.interruptStreamingOnBoot();
 
   // Change-Guard (WP12): specs/** beobachten, Watcher-Menge bei Änderungen angleichen.

@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 export interface GitResult {
   code: number;
@@ -65,4 +67,22 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
 export async function conflictedFiles(cwd: string): Promise<string[]> {
   const r = await gitOk(cwd, ['diff', '--name-only', '--diff-filter=U']);
   return r.split('\n').filter(Boolean);
+}
+
+/** Von git erzeugte Konfliktmarker (jeweils genau 7 Zeichen am Zeilenanfang). */
+const CONFLICT_MARKER = /^(<{7} |={7}\s*$|>{7} |\|{7} )/m;
+
+/**
+ * Prüft, welche der übergebenen Dateien im Arbeitsbaum noch unaufgelöste
+ * Konfliktmarker enthalten. Sicherheitsnetz gegen ein `rebase --continue`, das
+ * einen halb aufgelösten Konflikt (Marker im Quelltext) blind committen würde —
+ * die agentische Auflösung kann exit 0 liefern, ohne alle Marker entfernt zu haben.
+ */
+export async function filesWithConflictMarkers(cwd: string, files: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of files) {
+    const content = await readFile(join(cwd, f), 'utf8').catch(() => '');
+    if (CONFLICT_MARKER.test(content)) out.push(f);
+  }
+  return out;
 }

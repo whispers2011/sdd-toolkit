@@ -1,4 +1,4 @@
-import { conflictedFiles, currentBranch, git, gitOk, isCleanWorkingTree } from './git.js';
+import { conflictedFiles, currentBranch, filesWithConflictMarkers, git, gitOk, isCleanWorkingTree } from './git.js';
 
 export type RebaseResult =
   | { ok: true }
@@ -30,6 +30,14 @@ export class MergeEngine {
 
   /** Nach manueller/agentischer Konfliktauflösung: add + continue. */
   async continueRebase(worktreePath: string): Promise<RebaseResult> {
+    // Sicherheitsnetz: NIE unaufgelöste Konfliktmarker committen. Der Auflöser kann
+    // exit 0 melden, ohne alle Marker entfernt zu haben; `git add -A` würde den
+    // kaputten Stand als „gelöst" markieren und `rebase --continue` ihn festschreiben
+    // (Build-Bruch, der erst im Review/Verify auffällt).
+    const stillConflicted = await filesWithConflictMarkers(worktreePath, await conflictedFiles(worktreePath));
+    if (stillConflicted.length > 0) {
+      return { ok: false, kind: 'conflict', files: stillConflicted };
+    }
     await gitOk(worktreePath, ['add', '-A']);
     const r = await git(worktreePath, ['-c', 'core.editor=true', 'rebase', '--continue']);
     if (r.code === 0) return { ok: true };

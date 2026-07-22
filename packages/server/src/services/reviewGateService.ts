@@ -7,6 +7,7 @@ import type { Feature, Project } from '@sdd/shared';
 import type { ExecutionRepo, PersonaRepo } from '../db/repos.js';
 import { buildHeadlessArgv } from '../pty/commandBuilder.js';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
+import { isGitRepo } from '../git/git.js';
 
 export interface GateResult {
   ok: boolean;
@@ -37,6 +38,14 @@ export class ReviewGateService {
 
   async run(feature: Feature, project: Project): Promise<GateResult> {
     if (!feature.worktreePath) return { ok: true, failedPersona: null };
+    // Infrastruktur-Guard: Ist der Worktree verschwunden (z. B. mitten in der Session
+    // gelöscht), darf das Gate KEIN dauerhaftes VERDICT: FAIL in die Repo schreiben.
+    // Stattdessen als behebbaren Fehler eskalieren (Aufrufer fängt und retryt).
+    if (!existsSync(feature.worktreePath) || !(await isGitRepo(feature.worktreePath))) {
+      throw new Error(
+        `Review-Gate übersprungen: Worktree fehlt oder ist kein Git-Repo (${feature.worktreePath}) — Integration erneut anstoßen.`,
+      );
+    }
     const reviewDir = join(feature.worktreePath, 'specs', feature.name, 'reviews');
     mkdirSync(reviewDir, { recursive: true });
 
