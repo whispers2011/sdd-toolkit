@@ -5,6 +5,7 @@ import { KanbanBoard } from './components/KanbanBoard.js';
 import { FeatureConsole } from './components/FeatureConsole.js';
 import { AttentionInbox } from './components/AttentionInbox.js';
 import { AutomationDial } from './components/AutomationDial.js';
+import { ExecutionsView } from './components/ExecutionsView.js';
 
 export function App() {
   const { state, dispatch } = useStore();
@@ -40,6 +41,12 @@ export function App() {
               Board
             </TabButton>
             <TabButton
+              active={state.view.kind === 'executions'}
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
+            >
+              Läufe
+            </TabButton>
+            <TabButton
               active={state.view.kind === 'inbox'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'inbox' } })}
             >
@@ -66,6 +73,7 @@ export function App() {
         <main className="min-h-0 flex-1 overflow-auto">
           {state.view.kind === 'board' && <KanbanBoard />}
           {state.view.kind === 'inbox' && <AttentionInbox />}
+          {state.view.kind === 'executions' && <ExecutionsView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
         </main>
       </div>

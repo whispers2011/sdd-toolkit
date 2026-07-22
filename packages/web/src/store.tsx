@@ -13,6 +13,7 @@ import { api, type AppState, type LiveSessionInfo } from './api.js';
 export type View =
   | { kind: 'board' }
   | { kind: 'inbox' }
+  | { kind: 'executions' }
   | { kind: 'console'; featureId: string };
 
 export interface UiState {
