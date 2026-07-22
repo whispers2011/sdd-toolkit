@@ -64,6 +64,16 @@ export function Sidebar() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  dispatch({ type: 'set_view', view: { kind: 'shell', projectId: project.id } });
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Projekt-Terminal"
+              >
+                &gt;_
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   setSettingsFor(project.id);
                 }}
                 className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"

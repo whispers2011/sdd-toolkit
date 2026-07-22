@@ -45,7 +45,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 
       <div className="min-h-0 flex-1 bg-[#09090b] p-2">
-        <TerminalPane featureId={featureId} focused onConnectionChange={setConnected} />
+        <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
       </div>
     </div>
   );

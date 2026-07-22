@@ -11,12 +11,16 @@ import { useStore } from '../store.js';
  * Focus-Drosselung (WP8): unfokussierte Panes erhalten gebündelten Output.
  */
 export function TerminalPane({
-  featureId,
+  featureId = null,
+  getSession,
   focused = true,
   fontSize = 13,
   onConnectionChange,
 }: {
-  featureId: string;
+  /** Für Editor-Links; null bei Shell-Sessions. WICHTIG: Parent muss `key` setzen. */
+  featureId?: string | null;
+  /** Liefert die Session-ID (Feature-Session oder Projekt-Shell). */
+  getSession?: () => Promise<{ sessionId: string }>;
   focused?: boolean;
   fontSize?: number;
   onConnectionChange?: (connected: boolean) => void;
@@ -52,28 +56,32 @@ export function TerminalPane({
     fit.fit();
 
     // Datei-Links: pfad(.ext)(:zeile) → im Editor öffnen (Server führt editorCmd aus).
-    const linkProvider = term.registerLinkProvider({
-      provideLinks(bufferLineNumber, callback) {
-        const line = term.buffer.active.getLine(bufferLineNumber - 1);
-        if (!line) return callback(undefined);
-        const text = line.translateToString(true);
-        const links = findPathLinks(text).map((l) => ({
-          range: {
-            start: { x: l.start + 1, y: bufferLineNumber },
-            end: { x: l.end, y: bufferLineNumber },
+    const fid = featureId;
+    const linkProvider = fid
+      ? term.registerLinkProvider({
+          provideLinks(bufferLineNumber, callback) {
+            const line = term.buffer.active.getLine(bufferLineNumber - 1);
+            if (!line) return callback(undefined);
+            const text = line.translateToString(true);
+            const links = findPathLinks(text).map((l) => ({
+              range: {
+                start: { x: l.start + 1, y: bufferLineNumber },
+                end: { x: l.end, y: bufferLineNumber },
+              },
+              text: text.slice(l.start, l.end),
+              activate: () => void api.openInEditor(fid, l.file, l.line).catch(() => {}),
+            }));
+            callback(links.length ? links : undefined);
           },
-          text: text.slice(l.start, l.end),
-          activate: () => void api.openInEditor(featureId, l.file, l.line).catch(() => {}),
-        }));
-        callback(links.length ? links : undefined);
-      },
-    });
+        })
+      : null;
 
     let disposed = false;
 
     const connect = async () => {
       try {
-        const { sessionId } = await api.ensureSession(featureId);
+        const resolve = getSession ?? (() => api.ensureSession(featureId!));
+        const { sessionId } = await resolve();
         if (disposed) return;
         const proto = location.protocol === 'https:' ? 'wss' : 'ws';
         const ws = new WebSocket(`${proto}://${location.host}/ws/terminal/${sessionId}`);
@@ -114,12 +122,13 @@ export function TerminalPane({
       disposed = true;
       observer.disconnect();
       dataDisposable.dispose();
-      linkProvider.dispose();
+      linkProvider?.dispose();
       wsRef.current?.close();
       term.dispose();
     };
+    // Bewusst nur beim Mount — Parent steuert Re-Init über `key`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [featureId]);
+  }, []);
 
   return <div ref={containerRef} className="h-full w-full" />;
 }

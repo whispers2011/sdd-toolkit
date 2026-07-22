@@ -18,7 +18,7 @@ export interface LiveSessionInfo {
 }
 
 export interface AppState {
-  projects: (Project & { currentBranch: string | null })[];
+  projects: (Project & { currentBranch: string | null; specKit: boolean })[];
   features: Feature[];
   sessions: LiveSessionInfo[];
   attention: AttentionItem[];
@@ -86,6 +86,10 @@ export const api = {
     request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
   openInEditor: (featureId: string, file: string, line: number | null) =>
     request<unknown>('POST', '/api/open-in-editor', { featureId, file, line }),
+  projectTerminal: (projectId: string) =>
+    request<{ sessionId: string }>('POST', `/api/projects/${projectId}/terminal`),
+  initSpeckit: (projectId: string) =>
+    request<{ sessionId: string }>('POST', `/api/projects/${projectId}/init-speckit`),
 };
 
 export interface DiffSummary {

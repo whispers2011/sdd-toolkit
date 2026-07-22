@@ -15,7 +15,8 @@ export type View =
   | { kind: 'inbox' }
   | { kind: 'executions' }
   | { kind: 'grid' }
-  | { kind: 'console'; featureId: string };
+  | { kind: 'console'; featureId: string }
+  | { kind: 'shell'; projectId: string };
 
 export interface UiState {
   app: AppState | null;

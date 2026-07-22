@@ -23,6 +23,7 @@ import type { OnboardingService } from '../services/onboardingService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
+import { hasSpecKit } from '../services/artifacts.js';
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 
@@ -62,7 +63,7 @@ export async function buildServer(deps: ApiDeps) {
       exited: s.exited,
     }));
     return {
-      projects: projects.map((p) => ({ ...p, currentBranch: readBranch(p.path) })),
+      projects: projects.map((p) => ({ ...p, currentBranch: readBranch(p.path), specKit: hasSpecKit(p.path) })),
       features,
       sessions: liveSessions,
       attention: deps.attention.listOpen(),
@@ -90,6 +91,49 @@ export async function buildServer(deps: ApiDeps) {
   app.delete<{ Params: { id: string } }>('/api/projects/:id', (req) => {
     deps.projects.remove(req.params.id);
     return { ok: true };
+  });
+
+  /** Projekt-Terminal (WP11): persistente Login-Shell im Projekt-cwd. */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/terminal', async (req) => {
+    const project = deps.projects.get(req.params.id);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+    const existing = deps.ptys
+      .list()
+      .find((s) => s.kind === 'shell' && s.projectId === project.id && !s.exited);
+    if (existing) return { sessionId: existing.id };
+    const env = await loginShellEnv();
+    const session = await deps.ptys.spawn({
+      projectId: project.id,
+      featureId: null,
+      kind: 'shell',
+      cwd: project.path,
+      argv: [env.SHELL ?? '/bin/zsh', '-i'],
+      withHooks: false,
+    });
+    deps.sessions.create({
+      id: session.id,
+      featureId: null,
+      projectId: project.id,
+      kind: 'shell',
+      pid: session.pty.pid,
+    });
+    return { sessionId: session.id };
+  });
+
+  /**
+   * spec-kit-Init (WP11): Befehl vorbereitet ins Projekt-Terminal schreiben —
+   * OHNE Submit, der User bestätigt bewusst mit Enter.
+   */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/init-speckit', async (req) => {
+    const res = (await app.inject({
+      method: 'POST',
+      url: `/api/projects/${req.params.id}/terminal`,
+    }).then((r) => r.json())) as { sessionId: string };
+    deps.ptys.write(
+      res.sessionId,
+      'uvx --from git+https://github.com/github/spec-kit.git specify init --here --ai claude',
+    );
+    return res;
   });
 
   // ---------- Features ----------
