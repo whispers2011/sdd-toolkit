@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './phaseMachine.js';
 export * from './sessionMachine.js';
 export * from './transcript.js';
+export * from './transcriptLog.js';
 export * from './costMeter.js';
 export * from './optimization.js';
 export * from './transcriptUsage.js';

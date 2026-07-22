@@ -402,6 +402,8 @@ export class Orchestrator {
       this.runningPhases.delete(featureId);
       // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
       this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
+      // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
+      this.persistTranscriptRange(session, running.executionId);
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
@@ -476,6 +478,19 @@ export class Orchestrator {
     };
   }
 
+  /**
+   * Transkriptpfad + End-Offset eines abgeschlossenen Phasen-Laufs persistieren, damit
+   * der Lauf-Log-Endpoint den Ausschnitt [start, end) auch nach Server-Neustart rendern
+   * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null.
+   */
+  private persistTranscriptRange(session: LiveSession, executionId: string): void {
+    const path = session.claudeSessionId
+      ? locateTranscript(session.cwd, session.claudeSessionId)
+      : null;
+    const offsetEnd = path ? transcriptSize(path) : 0;
+    this.deps.executions.recordTranscriptEnd(executionId, path, offsetEnd);
+  }
+
   handleExit(session: LiveSession, exitCode: number): void {
     if (session.kind === 'chat_work' && this.chatWork) {
       this.chatWork.handleExit(session, exitCode);
@@ -488,6 +503,8 @@ export class Orchestrator {
         // Session starb mitten in einer Phase → Phase zurücksetzen.
         this.runningPhases.delete(session.featureId);
         this.deps.executions.finish(running.executionId, exitCode || 1);
+        // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
+        this.persistTranscriptRange(session, running.executionId);
         const feature = this.deps.features.get(session.featureId);
         if (feature) {
           const t = finishPhase(feature.phases, running.phase, exitCode || 1, Date.now());

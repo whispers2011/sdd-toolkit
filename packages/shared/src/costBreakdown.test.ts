@@ -21,6 +21,8 @@ function exec(partial: Partial<ExecutionRecord>): ExecutionRecord {
     cacheCreationTokens: null,
     tokensSource: null,
     transcriptOffsetStart: null,
+    transcriptOffsetEnd: null,
+    transcriptPath: null,
     optContextStrategy: null,
     optCompression: null,
     logPath: null,

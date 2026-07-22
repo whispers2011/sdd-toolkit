@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES, aggregateBreakdown, detectCycle } from '@sdd/shared';
+import { FEATURE_PHASES, aggregateBreakdown, detectCycle, renderTranscriptLog } from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
@@ -29,6 +29,7 @@ import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
+import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
@@ -888,13 +889,38 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
-  /** Lauf-Log (WP5/WP6): Logs liegen per Konvention unter <dataDir>/logs/<id>.log. */
+  /**
+   * Lauf-Log (WP5/WP6): datei-basierte Arten (verify/review/conflict/chat/chat_work) liegen
+   * unter <dataDir>/logs/<id>.log. Phasen-Läufe haben keine Datei — ihr Log wird aus dem
+   * Claude-Transkript-Ausschnitt [transcript_offset_start, transcript_offset_end) gerendert
+   * (Feature "laeufe-haben-kein-log"); bei laufendem Lauf bis zur aktuellen Transkriptgröße.
+   */
   app.get<{ Params: { id: string } }>('/api/executions/:id/log', async (req) => {
     if (!/^[A-Za-z0-9_-]+$/.test(req.params.id)) throw httpError(400, 'Ungültige ID');
+
+    // Fall A: physische Log-Datei — unverändertes Verhalten der Nicht-Phasen-Arten.
     const p = join(deps.dataDir, 'logs', `${req.params.id}.log`);
-    const content = await readFile(p, 'utf8').catch(() => null);
-    if (content === null) throw httpError(404, 'Kein Log vorhanden');
-    return { log: content };
+    const fileContent = await readFile(p, 'utf8').catch(() => null);
+    if (fileContent !== null) return { log: fileContent };
+
+    // Fall B/C: Phasen-Lauf → aus dem Transkript rendern.
+    const exec = deps.executions.get(req.params.id);
+    if (exec?.kind === 'phase' && exec.transcriptOffsetStart !== null) {
+      let path = exec.transcriptPath;
+      let end = exec.transcriptOffsetEnd;
+      if (!path) {
+        // Fall C: Lauf läuft noch → Pfad aus der Live-Session ableiten.
+        const session = exec.featureId ? deps.ptys.forFeature(exec.featureId) : undefined;
+        if (session?.claudeSessionId) path = locateTranscript(session.cwd, session.claudeSessionId);
+      }
+      if (path) {
+        if (end === null) end = transcriptSize(path); // laufender Lauf: bis jetzt
+        return { log: renderTranscriptLog(readTranscriptRange(path, exec.transcriptOffsetStart, end)) };
+      }
+    }
+
+    // Fall D: kein Log rekonstruierbar (Vor-Fix-Altbestand / Transkript nicht auffindbar).
+    throw httpError(404, 'Kein Log vorhanden');
   });
 
   /** Diff der Auto-Konfliktauflösung (WP5): vorher (mit Markern) / nachher. */

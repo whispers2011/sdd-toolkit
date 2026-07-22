@@ -68,6 +68,32 @@ export function readTranscriptDelta(path: string, startOffset: number): string[]
   }
 }
 
+/**
+ * JSONL-Zeilen im Byte-Bereich `[start, min(end, size))` lesen — der Transkript-
+ * Ausschnitt genau eines Laufs (Lauf-Log). Robust gegen fehlende/gekürzte Datei;
+ * `end <= start` (nach Kappung) → leeres Array.
+ */
+export function readTranscriptRange(path: string, start: number, end: number): string[] {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return [];
+  }
+  const from = start < 0 || start > size ? 0 : start;
+  const to = end > size ? size : end;
+  if (to <= from) return [];
+  const fd = openSync(path, 'r');
+  try {
+    const len = to - from;
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, from);
+    return buf.toString('utf8').split('\n').filter((l) => l.trim().length > 0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 const STALL_CHECK_INTERVAL_MS = 30_000;
 
 /**

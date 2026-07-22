@@ -207,6 +207,12 @@ const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN optimization TEXT NOT NULL DEFAULT '{}';
   ALTER TABLE features ADD COLUMN optimization TEXT NOT NULL DEFAULT '{}';
   `,
+  // Feature "laeufe-haben-kein-log": Phasen-Läufe rendern ihr Log aus dem Transkript.
+  // transcript_path + transcript_offset_end grenzen den Lauf-Ausschnitt ab (additiv/nullable).
+  `
+  ALTER TABLE executions ADD COLUMN transcript_path TEXT;
+  ALTER TABLE executions ADD COLUMN transcript_offset_end INTEGER;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

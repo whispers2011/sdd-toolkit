@@ -43,14 +43,44 @@ export function ExecutionsView() {
     return () => clearInterval(t);
   }, []);
 
+  // Status des gerade geöffneten Laufs (steuert das Live-Nachladen des Logs).
+  const openStatus = logFor ? executions.find((e) => e.id === logFor)?.status : undefined;
+
+  // Initiales Laden beim Öffnen eines Logs (mit „Lade …"-Zustand).
   useEffect(() => {
     if (!logFor) return;
     setLog(null);
+    let cancelled = false;
     api
       .executionLog(logFor)
-      .then((r) => setLog(r.log))
-      .catch((e: Error) => setLog(`(kein Log: ${e.message})`));
+      .then((r) => !cancelled && setLog(r.log))
+      .catch((e: Error) => !cancelled && setLog(`(kein Log: ${e.message})`));
+    return () => {
+      cancelled = true;
+    };
   }, [logFor]);
+
+  // Laufende Läufe: Log periodisch nachladen; bei Übergang zu „fertig" einmal final laden (FR-005).
+  useEffect(() => {
+    if (!logFor) return;
+    let cancelled = false;
+    const fetchLog = () =>
+      void api
+        .executionLog(logFor)
+        .then((r) => !cancelled && setLog(r.log))
+        .catch(() => {});
+    if (openStatus === 'running') {
+      const t = setInterval(fetchLog, 3000);
+      return () => {
+        cancelled = true;
+        clearInterval(t);
+      };
+    }
+    fetchLog();
+    return () => {
+      cancelled = true;
+    };
+  }, [logFor, openStatus]);
 
   const rows = useMemo(() => {
     const projectFilter = state.selectedProjectId;
@@ -177,7 +207,13 @@ export function ExecutionsView() {
             <button onClick={() => setLogFor(null)} className="rounded px-2 text-zinc-500 hover:bg-zinc-800">✕</button>
           </div>
           <pre className="min-h-0 flex-1 overflow-auto bg-[#0a0a0c] p-3 font-mono text-xs whitespace-pre-wrap text-zinc-400">
-            {log ?? 'Lade …'}
+            {log === null
+              ? 'Lade …'
+              : log === ''
+                ? openStatus === 'running'
+                  ? '(läuft – noch keine Ausgabe)'
+                  : '(leer)'
+                : log}
           </pre>
         </div>
       )}

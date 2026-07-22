@@ -207,6 +207,10 @@ export interface ExecutionRecord {
   tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
   /** Byte-Offset des Transkripts beim Phasenstart (Attribution der Usage). */
   transcriptOffsetStart: number | null;
+  /** Byte-Offset des Transkripts beim Phasenabschluss (Ende des Lauf-Ausschnitts, nur kind='phase'). */
+  transcriptOffsetEnd: number | null;
+  /** Aufgelöster Transkriptpfad des Laufs (beim Abschluss persistiert, neustartfest; nur kind='phase'). */
+  transcriptPath: string | null;
   /** Snapshot der aktiven Optimierungs-Settings beim Lauf (nur kind='phase'). */
   optContextStrategy: ContextStrategy | null;
   optCompression: CompressionMode | null;

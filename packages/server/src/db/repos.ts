@@ -405,6 +405,13 @@ export class ExecutionRepo {
       );
   }
 
+  /** Transkript-Endkoordinaten eines Phasen-Laufs festhalten (Lauf-Log-Attribution). */
+  recordTranscriptEnd(id: string, path: string | null, offsetEnd: number): void {
+    this.db
+      .prepare('UPDATE executions SET transcript_path=?, transcript_offset_end=? WHERE id=?')
+      .run(path, offsetEnd, id);
+  }
+
   /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
   reapOrphans(): number {
     return this.db
@@ -412,11 +419,22 @@ export class ExecutionRepo {
       .run(Date.now()).changes;
   }
 
+  get(id: string): ExecutionRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM executions WHERE id=?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return row ? this.map(row) : undefined;
+  }
+
   list(featureId?: string): ExecutionRecord[] {
     const rows = featureId
       ? this.db.prepare('SELECT * FROM executions WHERE feature_id=? ORDER BY started_at DESC').all(featureId)
       : this.db.prepare('SELECT * FROM executions ORDER BY started_at DESC LIMIT 500').all();
-    return (rows as Record<string, unknown>[]).map((r) => ({
+    return (rows as Record<string, unknown>[]).map((r) => this.map(r));
+  }
+
+  private map(r: Record<string, unknown>): ExecutionRecord {
+    return {
       id: r.id as string,
       projectId: r.project_id as string,
       featureId: r.feature_id as string | null,
@@ -434,10 +452,12 @@ export class ExecutionRepo {
       cacheCreationTokens: (r.cache_creation_tokens as number | null) ?? null,
       tokensSource: (r.tokens_source as ExecutionRecord['tokensSource']) ?? null,
       transcriptOffsetStart: (r.transcript_offset_start as number | null) ?? null,
+      transcriptOffsetEnd: (r.transcript_offset_end as number | null) ?? null,
+      transcriptPath: (r.transcript_path as string | null) ?? null,
       optContextStrategy: (r.opt_context_strategy as ContextStrategy | null) ?? null,
       optCompression: (r.opt_compression as CompressionMode | null) ?? null,
       logPath: r.log_path as string | null,
-    }));
+    };
   }
 }
 
