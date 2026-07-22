@@ -6,6 +6,7 @@ import { ReviewPortal } from './ReviewPortal.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
+import { KnowledgeIcon } from './icons.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
@@ -38,7 +39,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <div className="ml-auto flex items-center gap-1">
           <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>📂</HeaderIcon>
           <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>⌨</HeaderIcon>
-          <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}>📚</HeaderIcon>
+          <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}><KnowledgeIcon /></HeaderIcon>
           <HeaderIcon
             title="Worktree-Pfad kopieren"
             onClick={() => feature.worktreePath && void navigator.clipboard.writeText(feature.worktreePath)}

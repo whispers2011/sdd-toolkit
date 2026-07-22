@@ -3,6 +3,7 @@ import type { KnowledgeBundle, KnowledgeEntry, KnowledgeTreeNode } from '@sdd/sh
 import { api, type KnowledgeResponse } from '../api.js';
 import { useStore } from '../store.js';
 import { ConfirmDialog, Dialog, DialogActions } from './Sidebar.js';
+import { BundleIcon, EntryIcon, BundlePlusIcon, EntryPlusIcon, EditIcon, DeleteIcon, RefreshIcon } from './icons.js';
 
 type Editor =
   | { kind: 'bundle'; parentId: string | null; existing?: KnowledgeBundle }
@@ -115,13 +116,13 @@ function BundleNode({
         className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-zinc-900"
         style={{ paddingLeft: depth * 16 + 8 }}
       >
-        <span className="text-zinc-500">📦</span>
+        <span className="text-zinc-500"><BundleIcon /></span>
         <span className="text-sm font-medium text-zinc-200">{b.name}</span>
         <Applicability text={b.applicability.text} tags={b.applicability.tags} />
         <div className="ml-auto hidden gap-1 group-hover:flex">
-          <IconBtn title="Unter-Bundle" onClick={() => onEdit({ kind: 'bundle', parentId: b.id })}>+📦</IconBtn>
-          <IconBtn title="Eintrag" onClick={() => onEdit({ kind: 'entry', bundleId: b.id })}>+📄</IconBtn>
-          <IconBtn title="Bearbeiten" onClick={() => onEdit({ kind: 'bundle', parentId: b.parentId, existing: b })}>✎</IconBtn>
+          <IconBtn title="Unter-Bundle" onClick={() => onEdit({ kind: 'bundle', parentId: b.id })}><BundlePlusIcon /></IconBtn>
+          <IconBtn title="Eintrag" onClick={() => onEdit({ kind: 'entry', bundleId: b.id })}><EntryPlusIcon /></IconBtn>
+          <IconBtn title="Bearbeiten" onClick={() => onEdit({ kind: 'bundle', parentId: b.parentId, existing: b })}><EditIcon /></IconBtn>
           <IconBtn
             title="Löschen"
             onClick={() =>
@@ -132,7 +133,7 @@ function BundleNode({
               })
             }
           >
-            🗑
+            <DeleteIcon />
           </IconBtn>
         </div>
       </div>
@@ -159,7 +160,7 @@ function EntryRow({
 }) {
   return (
     <div className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-zinc-900" style={{ paddingLeft: depth * 16 + 8 }}>
-      <span className="text-zinc-600">📄</span>
+      <span className="text-zinc-600"><EntryIcon /></span>
       <span className="truncate text-sm text-zinc-300">{entry.title}</span>
       {entry.source === 'file' && (
         <span className="rounded bg-zinc-800 px-1 text-[10px] text-zinc-400" title={entry.sourcePath ?? ''}>
@@ -169,9 +170,9 @@ function EntryRow({
       <Applicability text={entry.applicability.text} tags={entry.applicability.tags} />
       <div className="ml-auto hidden gap-1 group-hover:flex">
         {entry.source === 'file' && (
-          <IconBtn title="Aus Datei neu laden" onClick={() => void api.refreshEntry(entry.id)}>⟳</IconBtn>
+          <IconBtn title="Aus Datei neu laden" onClick={() => void api.refreshEntry(entry.id)}><RefreshIcon /></IconBtn>
         )}
-        <IconBtn title="Bearbeiten" onClick={() => onEdit({ kind: 'entry', bundleId: entry.bundleId, existing: entry })}>✎</IconBtn>
+        <IconBtn title="Bearbeiten" onClick={() => onEdit({ kind: 'entry', bundleId: entry.bundleId, existing: entry })}><EditIcon /></IconBtn>
         <IconBtn
           title="Löschen"
           onClick={() =>
@@ -182,7 +183,7 @@ function EntryRow({
             })
           }
         >
-          🗑
+          <DeleteIcon />
         </IconBtn>
       </div>
     </div>
@@ -195,7 +196,7 @@ function IndexView({ items }: { items: { id: string; kind: 'bundle' | 'entry'; l
     <ul className="space-y-0.5 text-sm">
       {items.map((i) => (
         <li key={i.id} className="flex items-center gap-2 rounded px-2 py-1 text-zinc-300">
-          <span className="text-zinc-600">{i.kind === 'bundle' ? '📦' : '📄'}</span>
+          <span className="text-zinc-600">{i.kind === 'bundle' ? <BundleIcon /> : <EntryIcon />}</span>
           <span>{i.label}</span>
           <Applicability text={i.applicability.text} tags={i.applicability.tags} />
         </li>
@@ -302,7 +303,7 @@ function EntryEditor({
     <Dialog title={existing ? 'Eintrag bearbeiten' : 'Neuer Eintrag'} onClose={onClose}>
       <TextField label="Titel" value={title} onChange={setTitle} autoFocus />
       <div className="mb-3">
-        <label className="mb-1 block text-xs text-zinc-500">Inhalt (Markdown){isFile ? ' — aus Datei, via ⟳ aktualisieren' : ''}</label>
+        <label className="mb-1 block text-xs text-zinc-500">Inhalt (Markdown){isFile ? ' — aus Datei, über Aktualisieren neu laden' : ''}</label>
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}

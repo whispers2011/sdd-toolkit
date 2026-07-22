@@ -1,3 +1,7 @@
 {
+<<<<<<< HEAD
   "feature_directory": "specs/projekt-chat-sollte-eine-claude-code-session-sein"
+=======
+  "feature_directory": "specs/emojis-im-projekt-immer-als-svg-icon-hinterlegen"
+>>>>>>> 41e46a3 (feat(emojis-im-projekt-immer-als-svg-icon-hinterlegen): implementation)
 }

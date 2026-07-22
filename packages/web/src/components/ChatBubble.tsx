@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../store.js';
 import { ChatPanel } from './ChatPanel.js';
+import { ChatIcon, CloseIcon } from './icons.js';
 
 /**
  * Sprechblase des Projekt-Chats (Ask-a-Question): schwebt unten rechts,
@@ -31,7 +32,7 @@ export function ChatBubble() {
         title={open ? 'Projekt-Chat schließen' : 'Projekt-Chat öffnen'}
         className="fixed right-4 bottom-4 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-xl shadow-lg transition-colors hover:bg-zinc-700"
       >
-        {open ? '✕' : '💬'}
+        {open ? <CloseIcon className="h-6 w-6" /> : <ChatIcon className="h-6 w-6" />}
         {busy && (
           <span className="absolute -top-0.5 -right-0.5 h-3 w-3 animate-pulse rounded-full bg-emerald-500" />
         )}

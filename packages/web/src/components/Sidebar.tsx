@@ -4,6 +4,7 @@ import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
+import { KnowledgeIcon } from './icons.js';
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
@@ -76,7 +77,7 @@ export function Sidebar() {
                 className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
                 title="Projektspezifisches Wissen"
               >
-                📚
+                <KnowledgeIcon />
               </button>
               <button
                 onClick={(e) => {

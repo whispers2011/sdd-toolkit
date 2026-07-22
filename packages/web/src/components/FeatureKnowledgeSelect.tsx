@@ -3,6 +3,7 @@ import type { KnowledgeIndexItem } from '@sdd/shared';
 import { api, type FeatureKnowledgeResponse } from '../api.js';
 import { useStore } from '../store.js';
 import { Dialog } from './Sidebar.js';
+import { BundleIcon, EntryIcon } from './icons.js';
 
 /**
  * Pro-Feature: welche Bundles/Einträge sind relevant (auto), Übersteuerung
@@ -53,7 +54,7 @@ export function FeatureKnowledgeSelect({ featureId, onClose }: { featureId: stri
               return (
                 <li key={item.id} className="flex items-center gap-2 rounded border border-zinc-800 px-2 py-1.5">
                   <span className={`h-2 w-2 shrink-0 rounded-full ${effective ? 'bg-emerald-500' : 'bg-zinc-700'}`} />
-                  <span className="text-zinc-600">{item.kind === 'bundle' ? '📦' : '📄'}</span>
+                  <span className="text-zinc-600">{item.kind === 'bundle' ? <BundleIcon /> : <EntryIcon />}</span>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm text-zinc-200">{item.label}</div>
                     <div className="truncate text-xs text-zinc-500">

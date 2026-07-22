@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type ChatState } from '../api.js';
 import { useStore } from '../store.js';
+<<<<<<< HEAD
 import { TerminalPane } from './TerminalPane.js';
 
 const MIN_W = 340;
@@ -20,6 +21,11 @@ function loadSize(): { w: number; h: number } {
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+=======
+import { ConfirmDialog } from './Sidebar.js';
+import { NewFeatureDialog } from './NewFeatureDialog.js';
+import { CloseIcon, RestartIcon, IdeaIcon, CheckIcon, WarningIcon, PauseIcon } from './icons.js';
+>>>>>>> 41e46a3 (feat(emojis-im-projekt-immer-als-svg-icon-hinterlegen): implementation)
 
 /**
  * Projekt-Chat: eine vollwertige, interaktive Claude-Code-Session (echte Konsole). Man tippt
@@ -147,6 +153,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         <span className={`h-2 w-2 rounded-full ${statusTone}`} title={status} />
         <span className="text-sm font-semibold text-zinc-100">Projekt-Chat</span>
         <span className="truncate text-xs text-zinc-500">{projectName}</span>
+<<<<<<< HEAD
         <button
           onClick={onClose}
           title="Schließen (Session läuft weiter)"
@@ -161,6 +168,55 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           <span className="truncate">{error}</span>
           <button onClick={() => setError(null)} className="ml-2 text-red-400 hover:text-red-200">
             ✕
+=======
+        <div className="ml-auto flex items-center gap-1">
+          {messages.length > 0 && (
+            <button
+              onClick={() => setConfirmReset(true)}
+              title="Neue Unterhaltung beginnen"
+              className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+            >
+              <RestartIcon /> Neu
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            title="Schließen"
+            className="rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          >
+            <CloseIcon />
+          </button>
+        </div>
+      </header>
+
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+        {messages.length === 0 && (
+          <p className="px-2 py-8 text-center text-xs text-zinc-600">
+            Frag etwas zum Projekt — oder auch nicht. Der Chat ist rein lesend;
+            Features entstehen nur, wenn du es ausdrücklich bestätigst.
+          </p>
+        )}
+        {messages.map((m) => (
+          <div key={m.id}>
+            <MessageBubble message={m} text={liveText(m)} streaming={m.status === 'streaming' && busy} />
+            {m.proposal && (
+              <ProposalCard
+                proposal={m.proposal}
+                onAccept={() => setProposalDialog({ messageId: m.id, proposal: m.proposal! })}
+                onDecline={() => declineProposal(m.id)}
+                onOpenFeature={openFeature}
+              />
+            )}
+          </div>
+        ))}
+      </div>
+
+      {sendError && (
+        <div className="flex items-center justify-between border-t border-red-900 bg-red-950/60 px-3 py-1.5 text-xs text-red-300">
+          <span className="truncate">{sendError}</span>
+          <button onClick={() => setSendError(null)} title="Fehler ausblenden" className="ml-2 text-red-400 hover:text-red-200">
+            <CloseIcon />
+>>>>>>> 41e46a3 (feat(emojis-im-projekt-immer-als-svg-icon-hinterlegen): implementation)
           </button>
         </div>
       )}
@@ -221,6 +277,125 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
             </button>
           </div>
         </div>
+<<<<<<< HEAD
+=======
+      </footer>
+
+      {confirmReset && (
+        <ConfirmDialog
+          title="Neue Unterhaltung"
+          message="Die bisherige Unterhaltung wird beendet und nicht mehr angezeigt. Eine laufende Antwort wird abgebrochen."
+          confirmLabel="Neue Unterhaltung"
+          onConfirm={() => void reset()}
+          onClose={() => setConfirmReset(false)}
+        />
+      )}
+
+      {/* Dialog-Abbruch lässt den Vorschlag offen — erneut aufrufbar (Edge Case). */}
+      {proposalDialog && (
+        <NewFeatureDialog
+          projectId={projectId}
+          initialName={proposalDialog.proposal.name}
+          initialDescription={proposalDialog.proposal.description}
+          onCreated={(featureId) => proposalCreated(proposalDialog.messageId, featureId)}
+          onClose={() => setProposalDialog(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Feature-Vorschlag des Assistenten: Karte mit Entscheidung (FR-005–FR-008, FR-011). */
+function ProposalCard({
+  proposal,
+  onAccept,
+  onDecline,
+  onOpenFeature,
+}: {
+  proposal: FeatureProposal;
+  onAccept: () => void;
+  onDecline: () => void;
+  onOpenFeature: (featureId: string) => void;
+}) {
+  return (
+    <div className="mt-1 max-w-[90%] rounded-lg border border-sky-900 bg-sky-950/40 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="inline-flex items-center gap-1 text-xs font-semibold text-sky-300"><IdeaIcon /> Feature-Vorschlag</span>
+        <code className="truncate rounded bg-zinc-900 px-1.5 py-0.5 text-xs text-zinc-300">{proposal.name}</code>
+        {proposal.status !== 'offen' && (
+          <span
+            className={`ml-auto text-xs font-medium ${
+              proposal.status === 'angenommen' ? 'text-emerald-400' : 'text-zinc-500'
+            }`}
+          >
+            {proposal.status === 'angenommen' ? (
+              <span className="inline-flex items-center gap-1">
+                <CheckIcon /> angenommen
+              </span>
+            ) : (
+              'abgelehnt'
+            )}
+          </span>
+        )}
+      </div>
+      <p className="mt-1 text-xs whitespace-pre-wrap text-zinc-400">{proposal.description}</p>
+      {proposal.status === 'offen' && (
+        <div className="mt-2 flex gap-2">
+          <button
+            onClick={onAccept}
+            className="rounded bg-emerald-700 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-600"
+          >
+            Feature anlegen …
+          </button>
+          <button
+            onClick={onDecline}
+            className="rounded border border-zinc-700 px-2.5 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
+          >
+            Ablehnen
+          </button>
+        </div>
+      )}
+      {proposal.status === 'angenommen' && proposal.featureId && (
+        <button
+          onClick={() => onOpenFeature(proposal.featureId!)}
+          className="mt-2 rounded border border-emerald-800 px-2.5 py-1 text-xs text-emerald-300 hover:bg-emerald-950"
+        >
+          Zur Feature-Konsole →
+        </button>
+      )}
+    </div>
+  );
+}
+
+function MessageBubble({ message, text, streaming }: { message: ChatMessage; text: string; streaming: boolean }) {
+  if (message.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] rounded-lg rounded-br-sm bg-emerald-900/50 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-100">
+          {text}
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col items-start gap-1">
+      <div className="max-w-[90%] rounded-lg rounded-bl-sm bg-zinc-800 px-3 py-2 text-sm whitespace-pre-wrap text-zinc-200">
+        {text}
+        {streaming && <span className="ml-0.5 animate-pulse text-zinc-400">▍</span>}
+        {message.status === 'error' && (
+          <p className="mt-1 flex items-center gap-1 text-xs text-red-400"><WarningIcon /> {message.error ?? 'Antwort fehlgeschlagen'}</p>
+        )}
+        {message.status === 'interrupted' && (
+          <p className="mt-1 flex items-center gap-1 text-xs text-amber-400"><PauseIcon /> Antwort unterbrochen (z. B. durch Neustart)</p>
+        )}
+      </div>
+      {message.status === 'complete' && (message.tokens !== null || message.costUsd !== null) && (
+        <span className="px-1 text-[10px] text-zinc-600">
+          {message.tokens !== null && `${message.tokens.toLocaleString('de-DE')} Tokens`}
+          {message.tokens !== null && message.costUsd !== null && ' · '}
+          {message.costUsd !== null && `$${message.costUsd.toFixed(4)}`}
+        </span>
+>>>>>>> 41e46a3 (feat(emojis-im-projekt-immer-als-svg-icon-hinterlegen): implementation)
       )}
     </div>
   );
