@@ -259,6 +259,7 @@ export class MergeQueueService {
       title: 'Feature gemergt',
       body: `${feature.name} → ${project.defaultBranch}`,
       featureId,
+      kind: 'merged',
     });
     return true;
   }
@@ -305,7 +306,7 @@ export class MergeQueueService {
       message,
     });
     bus.emitEvent('attention_raised', item);
-    bus.emitEvent('notification', { title: 'Aufmerksamkeit nötig', body: message, featureId: feature.id });
+    bus.emitEvent('notification', { title: 'Aufmerksamkeit nötig', body: message, featureId: feature.id, kind: 'escalation' });
   }
 
   private emitQueue(projectId: string): void {

@@ -20,7 +20,12 @@ export interface BusEvents {
   attention_raised: (item: AttentionItem) => void;
   attention_resolved: (id: string) => void;
   queue_updated: (payload: { projectId: string; items: MergeQueueItem[] }) => void;
-  notification: (payload: { title: string; body: string; featureId: string | null }) => void;
+  notification: (payload: {
+    title: string;
+    body: string;
+    featureId: string | null;
+    kind: 'turn_completed' | 'input_requested' | 'escalation' | 'merged';
+  }) => void;
 }
 
 class TypedBus extends EventEmitter {

@@ -25,6 +25,7 @@ import { locateTranscript } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand } from '../pty/commandBuilder.js';
 import { artifactExists, parseTaskProgress } from './artifacts.js';
 import { bus } from '../events.js';
+import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 
 export interface OrchestratorDeps {
@@ -51,6 +52,7 @@ interface RunningPhase {
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private mergeQueue: MergeQueueService | null = null;
+  private notifyThrottle = new NotificationThrottle();
 
   constructor(private deps: OrchestratorDeps) {}
 
@@ -288,11 +290,14 @@ export class Orchestrator {
                 : `${feature?.name ?? 'Session'}: hat eine Frage`,
         });
         bus.emitEvent('attention_raised', item);
-        bus.emitEvent('notification', {
-          title: 'Agent wartet auf dich',
-          body: item.message,
-          featureId: session.featureId,
-        });
+        if (this.notifyThrottle.allow(session.id, 'input_requested')) {
+          bus.emitEvent('notification', {
+            title: 'Agent wartet auf dich',
+            body: item.message,
+            featureId: session.featureId,
+            kind: 'input_requested',
+          });
+        }
       } else if (effect.kind === 'turn_completed') {
         void this.handleTurnCompleted(session);
       }
@@ -332,18 +337,24 @@ export class Orchestrator {
       } else if (next === null && automation.autoVerify) {
         this.approve(featureId, running.phase);
       } else {
-        bus.emitEvent('notification', {
-          title: `Phase ${running.phase} fertig`,
-          body: `${feature.name}: wartet auf dein Review`,
-          featureId,
-        });
+        if (this.notifyThrottle.allow(session.id, 'turn_completed')) {
+          bus.emitEvent('notification', {
+            title: `Phase ${running.phase} fertig`,
+            body: `${feature.name}: wartet auf dein Review`,
+            featureId,
+            kind: 'turn_completed',
+          });
+        }
       }
     } else {
-      bus.emitEvent('notification', {
-        title: 'Agent ist fertig',
-        body: `${feature.name}: Turn abgeschlossen`,
-        featureId,
-      });
+      if (this.notifyThrottle.allow(session.id, 'turn_completed')) {
+        bus.emitEvent('notification', {
+          title: 'Agent ist fertig',
+          body: `${feature.name}: Turn abgeschlossen`,
+          featureId,
+          kind: 'turn_completed',
+        });
+      }
     }
   }
 

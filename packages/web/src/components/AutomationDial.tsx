@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { FEATURE_PHASES, LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, type AutomationSettings } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { setSoundEnabled, soundEnabled, useStore } from '../store.js';
 
 /** Automation-Dial: Level 2 ↔ Level 3, jede Automation einzeln schaltbar. */
 export function AutomationDial() {
@@ -72,8 +72,11 @@ export function AutomationDial() {
             checked={a.autoMerge}
             onChange={(v) => void apply({ autoMerge: v })}
           />
+          <div className="mt-2 border-t border-zinc-800 pt-2">
+            <SoundToggle />
+          </div>
           <p className="mt-2 text-xs text-zinc-600">
-            Gilt global; pro Projekt/Feature überschreibbar (API: automation-Feld).
+            Gilt global; pro Projekt/Feature überschreibbar (⚙ am Projekt / an der Karte).
           </p>
         </div>
       )}
@@ -99,6 +102,20 @@ function PresetButton({
     >
       {children}
     </button>
+  );
+}
+
+function SoundToggle() {
+  const [on, setOn] = useState(soundEnabled());
+  return (
+    <Toggle
+      label="Sound wenn ein Agent fertig ist"
+      checked={on}
+      onChange={(v) => {
+        setSoundEnabled(v);
+        setOn(v);
+      }}
+    />
   );
 }
 

@@ -97,6 +97,38 @@ function reducer(state: UiState, action: Action): UiState {
   }
 }
 
+export function soundEnabled(): boolean {
+  return localStorage.getItem('sdd-sound') !== 'off';
+}
+
+export function setSoundEnabled(on: boolean): void {
+  localStorage.setItem('sdd-sound', on ? 'on' : 'off');
+}
+
+/** Dezenter Zwei-Ton-Beep via WebAudio — kein Asset nötig. */
+function playCompletionSound(): void {
+  try {
+    const ctx = new AudioContext();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.06;
+    gain.connect(ctx.destination);
+    for (const [freq, start] of [
+      [880, 0],
+      [1174, 0.12],
+    ] as const) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + 0.15);
+    }
+    setTimeout(() => void ctx.close(), 600);
+  } catch {
+    /* Audio blockiert → egal */
+  }
+}
+
 const StoreContext = createContext<{ state: UiState; dispatch: Dispatch<Action> } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -147,9 +179,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               dispatch({ type: 'queue_updated', payload: msg.payload as { projectId: string; items: MergeQueueItem[] } });
               break;
             case 'notification': {
-              const n = msg.payload as { title: string; body: string };
+              const n = msg.payload as {
+                title: string;
+                body: string;
+                featureId: string | null;
+                kind: 'turn_completed' | 'input_requested' | 'escalation' | 'merged';
+              };
               if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-                new Notification(n.title, { body: n.body });
+                const note = new Notification(n.title, { body: n.body, tag: `${n.kind}:${n.featureId ?? ''}` });
+                // Klick fokussiert das Fenster und springt zur Feature-Konsole (WP9).
+                note.onclick = () => {
+                  window.focus();
+                  if (n.featureId) {
+                    dispatch({ type: 'set_view', view: { kind: 'console', featureId: n.featureId } });
+                  }
+                };
+              }
+              // Sound nur bei „fertig"/„gemergt" — Rückfragen bewusst lautlos (WhisperM8-Regel).
+              if ((n.kind === 'turn_completed' || n.kind === 'merged') && soundEnabled()) {
+                playCompletionSound();
               }
               break;
             }

@@ -19,6 +19,13 @@ export function App() {
     }
   }, []);
 
+  const openAttention = state.app?.attention.length ?? 0;
+
+  // Titel-Badge (WP9): offene Attention-Items im Browser-Tab sichtbar.
+  useEffect(() => {
+    document.title = openAttention > 0 ? `(${openAttention}) SDD Toolkit` : 'SDD Toolkit';
+  }, [openAttention]);
+
   if (!state.app) {
     return (
       <div className="flex h-screen items-center justify-center text-zinc-500">
@@ -26,8 +33,6 @@ export function App() {
       </div>
     );
   }
-
-  const openAttention = state.app.attention.length;
 
   return (
     <div className="flex h-screen">
