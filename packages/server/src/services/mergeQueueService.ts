@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 import type { Feature, Project } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
@@ -170,6 +171,8 @@ export class MergeQueueService {
         phase: null,
         logPath: null,
       });
+      // Konflikt-Transparenz (WP5): Zustand vor/nach der Auto-Auflösung festhalten.
+      await this.captureDiff(feature.worktreePath, execId, 'pre');
       const res = await resolveConflicts({
         worktreePath: feature.worktreePath,
         featureName: feature.name,
@@ -178,6 +181,7 @@ export class MergeQueueService {
         logDir: join(this.deps.dataDir, 'logs'),
         executionId: execId,
       });
+      await this.captureDiff(feature.worktreePath, execId, 'post');
       this.deps.executions.finish(execId, res.exitCode, res.costUsd, res.tokens);
       if (res.exitCode !== 0) break;
 
@@ -257,6 +261,12 @@ export class MergeQueueService {
       featureId,
     });
     return true;
+  }
+
+  /** Diff-Schnappschuss (Konfliktzustand bzw. Auflösung) neben dem Lauf-Log ablegen. */
+  private async captureDiff(worktreePath: string, execId: string, phase: 'pre' | 'post'): Promise<void> {
+    const r = await git(worktreePath, ['diff']);
+    await writeFile(join(this.deps.dataDir, 'logs', `${execId}.${phase}.diff`), r.stdout).catch(() => {});
   }
 
   /** Uncommittete Änderungen im Worktree committen. */

@@ -72,5 +72,34 @@ export const api = {
   resolveAttention: (id: string) => request<unknown>('POST', `/api/attention/${id}/resolve`),
   setAutomation: (patch: Partial<AutomationSettings>) =>
     request<AutomationSettings>('PUT', '/api/settings/automation', patch),
-  diff: (featureId: string) => request<{ numstat: string; diff: string }>('GET', `/api/features/${featureId}/diff`),
+  diff: (featureId: string) => request<DiffSummary>('GET', `/api/features/${featureId}/diff`),
+  fileDiff: (featureId: string, path: string) =>
+    request<{ diff: string }>('GET', `/api/features/${featureId}/diff/file?path=${encodeURIComponent(path)}`),
+  rejectReview: (featureId: string, comment: string) =>
+    request<Feature>('POST', `/api/features/${featureId}/reject-review`, { comment }),
+  executions: (featureId?: string) =>
+    request<ExecutionInfo[]>('GET', featureId ? `/api/executions?featureId=${featureId}` : '/api/executions'),
+  executionLog: (id: string) => request<{ log: string }>('GET', `/api/executions/${id}/log`),
+  resolutionDiff: (id: string) =>
+    request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
 };
+
+export interface DiffSummary {
+  files: { path: string; additions: number; deletions: number; binary: boolean }[];
+  commits: { sha: string; date: number; subject: string }[];
+}
+
+export interface ExecutionInfo {
+  id: string;
+  projectId: string;
+  featureId: string | null;
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution';
+  phase: string | null;
+  status: 'running' | 'succeeded' | 'failed' | 'orphaned';
+  startedAt: number;
+  finishedAt: number | null;
+  exitCode: number | null;
+  costUsd: number | null;
+  tokens: number | null;
+  logPath: string | null;
+}

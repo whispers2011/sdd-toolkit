@@ -84,6 +84,7 @@ async function main(): Promise<void> {
     mergeQueue,
     onboarding,
     ptys,
+    dataDir: config.dataDir,
   });
 
   await app.listen({ port: config.port, host: config.host });

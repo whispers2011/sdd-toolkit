@@ -4,12 +4,14 @@ import { FitAddon } from '@xterm/addon-fit';
 import { FEATURE_PHASES, type FeaturePhase } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
+import { ReviewPortal } from './ReviewPortal.js';
 
 /** Konsole pro Feature: xterm.js ⇄ WebSocket ⇄ Server-PTY (mit Reconnect). */
 export function FeatureConsole({ featureId }: { featureId: string }) {
   const { state, dispatch } = useStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const [connected, setConnected] = useState(false);
+  const [showReview, setShowReview] = useState(false);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
@@ -92,8 +94,15 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
             {feature.worktreePath}
           </span>
         )}
-        <span className="ml-auto text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
+        <button
+          onClick={() => setShowReview(true)}
+          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+        >
+          Diff / Review
+        </button>
+        <span className="text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
       </div>
+      {showReview && <ReviewPortal featureId={featureId} onClose={() => setShowReview(false)} />}
 
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 

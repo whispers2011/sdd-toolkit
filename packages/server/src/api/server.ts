@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
 import type {
@@ -35,6 +37,7 @@ export interface ApiDeps {
   mergeQueue: MergeQueueService;
   onboarding: OnboardingService;
   ptys: PtySessionManager;
+  dataDir: string;
 }
 
 export async function buildServer(deps: ApiDeps) {
@@ -156,17 +159,70 @@ export async function buildServer(deps: ApiDeps) {
     return { ok: true };
   });
 
-  /** Diff des Feature-Branches gegen den Default-Branch (Review-Portal). */
+  /** Strukturierter Diff des Feature-Branches gegen den Default-Branch (Review-Portal, WP5). */
   app.get<{ Params: { id: string } }>('/api/features/:id/diff', async (req) => {
-    const feature = deps.features.get(req.params.id);
+    const { cwd, project } = featureCwd(req.params.id);
+    const range = `${project.defaultBranch}...HEAD`;
+    const numstat = await git(cwd, ['diff', range, '--numstat']);
+    const files = numstat.stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [additions, deletions, ...path] = line.split('\t');
+        return {
+          path: path.join('\t'),
+          additions: additions === '-' ? 0 : Number(additions),
+          deletions: deletions === '-' ? 0 : Number(deletions),
+          binary: additions === '-',
+        };
+      });
+    const log = await git(cwd, ['log', '--format=%H%x09%ct%x09%s', `${project.defaultBranch}..HEAD`]);
+    const commits = log.stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [sha, ts, ...subject] = line.split('\t');
+        return { sha, date: Number(ts) * 1000, subject: subject.join('\t') };
+      });
+    return { files, commits };
+  });
+
+  /** Einzeldiff einer Datei (Review-Portal). */
+  app.get<{ Params: { id: string }; Querystring: { path: string } }>(
+    '/api/features/:id/diff/file',
+    async (req) => {
+      const { cwd, project } = featureCwd(req.params.id);
+      if (!req.query.path || req.query.path.includes('..')) throw httpError(400, 'Ungültiger Pfad');
+      const r = await git(cwd, ['diff', `${project.defaultBranch}...HEAD`, '--', req.query.path]);
+      return { diff: r.stdout };
+    },
+  );
+
+  /** Zurückweisen im Review: Kommentar geht als Prompt in die Feature-Konsole. */
+  app.post<{ Params: { id: string }; Body: { comment?: string } }>(
+    '/api/features/:id/reject-review',
+    async (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      deps.features.setIntegration(feature.id, 'none');
+      deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] });
+      if (req.body?.comment) {
+        const session = await deps.orchestrator.ensureSession(feature.id);
+        deps.ptys.sendPrompt(session.id, `Review-Feedback (bitte umsetzen): ${req.body.comment}`);
+      }
+      const fresh = deps.features.get(feature.id);
+      if (fresh) bus.emitEvent('feature_updated', fresh);
+      return fresh;
+    },
+  );
+
+  function featureCwd(featureId: string) {
+    const feature = deps.features.get(featureId);
     if (!feature) throw httpError(404, 'Feature nicht gefunden');
     const project = deps.projects.get(feature.projectId);
     if (!project) throw httpError(404, 'Projekt nicht gefunden');
-    const cwd = feature.worktreePath ?? project.path;
-    const stat = await git(cwd, ['diff', `${project.defaultBranch}...HEAD`, '--numstat']);
-    const full = await git(cwd, ['diff', `${project.defaultBranch}...HEAD`]);
-    return { numstat: stat.stdout, diff: full.stdout };
-  });
+    return { feature, project, cwd: feature.worktreePath ?? project.path };
+  }
 
   // ---------- Attention / Queue / Settings / Executions ----------
 
@@ -198,6 +254,24 @@ export async function buildServer(deps: ApiDeps) {
   app.get<{ Querystring: { featureId?: string } }>('/api/executions', (req) =>
     deps.executions.list(req.query.featureId),
   );
+
+  /** Lauf-Log (WP5/WP6): Logs liegen per Konvention unter <dataDir>/logs/<id>.log. */
+  app.get<{ Params: { id: string } }>('/api/executions/:id/log', async (req) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(req.params.id)) throw httpError(400, 'Ungültige ID');
+    const p = join(deps.dataDir, 'logs', `${req.params.id}.log`);
+    const content = await readFile(p, 'utf8').catch(() => null);
+    if (content === null) throw httpError(404, 'Kein Log vorhanden');
+    return { log: content };
+  });
+
+  /** Diff der Auto-Konfliktauflösung (WP5): vorher (mit Markern) / nachher. */
+  app.get<{ Params: { id: string } }>('/api/executions/:id/resolution-diff', async (req) => {
+    if (!/^[A-Za-z0-9_-]+$/.test(req.params.id)) throw httpError(400, 'Ungültige ID');
+    const base = join(deps.dataDir, 'logs', req.params.id);
+    const pre = await readFile(`${base}.pre.diff`, 'utf8').catch(() => null);
+    const post = await readFile(`${base}.post.diff`, 'utf8').catch(() => null);
+    return { pre, post };
+  });
 
   // ---------- WebSockets ----------
 

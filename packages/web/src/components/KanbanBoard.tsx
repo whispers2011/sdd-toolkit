@@ -1,8 +1,11 @@
-import { useState, type DragEvent } from 'react';
+import { createContext, useContext, useState, type DragEvent } from 'react';
 import type { Feature, FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
+import { ReviewPortal } from './ReviewPortal.js';
+
+const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
 
 type Column = FeaturePhase | 'integration' | 'done';
 
@@ -30,6 +33,7 @@ function columnOf(feature: Feature): Column {
 export function KanbanBoard() {
   const { state, dispatch } = useStore();
   const [dragOver, setDragOver] = useState<Column | null>(null);
+  const [reviewFeatureId, setReviewFeatureId] = useState<string | null>(null);
   if (!state.app) return null;
 
   const features = state.app.features.filter(
@@ -60,6 +64,8 @@ export function KanbanBoard() {
   };
 
   return (
+    <OpenReviewContext.Provider value={setReviewFeatureId}>
+    {reviewFeatureId && <ReviewPortal featureId={reviewFeatureId} onClose={() => setReviewFeatureId(null)} />}
     <div className="flex h-full gap-3 overflow-x-auto p-4">
       {columns.map((column) => {
         const items = features.filter((f) => columnOf(f) === column);
@@ -91,6 +97,7 @@ export function KanbanBoard() {
         );
       })}
     </div>
+    </OpenReviewContext.Provider>
   );
 }
 
@@ -156,7 +163,7 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
           <CardAction onClick={() => void call(() => api.integrate(feature.id))}>⇥ Integrieren</CardAction>
         )}
         {feature.integration === 'awaiting_human_review' && (
-          <CardAction onClick={() => void call(() => api.approveMerge(feature.id))}>✓ Merge freigeben</CardAction>
+          <OpenReviewButton featureId={feature.id} />
         )}
         {(feature.integration === 'verify_failed' || feature.integration === 'conflict_escalated') && (
           <CardAction onClick={() => void call(() => api.retryIntegration(feature.id))}>↻ Erneut</CardAction>
@@ -170,6 +177,11 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
       </div>
     </div>
   );
+}
+
+function OpenReviewButton({ featureId }: { featureId: string }) {
+  const openReview = useContext(OpenReviewContext);
+  return <CardAction onClick={() => openReview(featureId)}>👀 Review</CardAction>;
 }
 
 function CardAction({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
