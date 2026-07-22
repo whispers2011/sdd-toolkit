@@ -16,6 +16,8 @@ import { PtySessionManager } from './pty/sessionManager.js';
 import { Orchestrator } from './services/orchestrator.js';
 import { MergeQueueService } from './services/mergeQueueService.js';
 import { OnboardingService } from './services/onboardingService.js';
+import { ChangeGuard } from './services/changeGuard.js';
+import { bus } from './events.js';
 import { buildServer } from './api/server.js';
 
 async function main(): Promise<void> {
@@ -70,6 +72,16 @@ async function main(): Promise<void> {
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
 
+  // Change-Guard (WP12): specs/** beobachten, Watcher-Menge bei Änderungen angleichen.
+  const changeGuard = new ChangeGuard(projects, features, orchestrator);
+  changeGuard.sync();
+  let guardSyncTimer: NodeJS.Timeout | null = null;
+  bus.onEvent('feature_updated', () => {
+    if (guardSyncTimer) clearTimeout(guardSyncTimer);
+    guardSyncTimer = setTimeout(() => changeGuard.sync(), 1000);
+  });
+  const guardInterval = setInterval(() => changeGuard.sync(), 30_000);
+
   const onboarding = new OnboardingService(projects, features);
   const app = await buildServer({
     projects,
@@ -92,6 +104,8 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     console.log('Fahre herunter — beende Sessions …');
+    clearInterval(guardInterval);
+    await changeGuard.stop();
     ptys.saveAllSnapshots();
     await Promise.allSettled(ptys.list().map((s) => ptys.terminate(s.id)));
     await app.close();

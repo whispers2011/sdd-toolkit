@@ -408,11 +408,21 @@ export class Orchestrator {
   reconcileFeature(featureId: string): void {
     const feature = this.mustFeature(featureId);
     const root = feature.worktreePath ?? this.mustProject(feature.projectId).path;
+    let changed = false;
     const reconciled = reconcileWithDisk(feature.phases, (p) => artifactExists(root, feature.name, p));
     if (reconciled !== feature.phases) {
       this.deps.features.savePhases(featureId, reconciled);
-      this.emitFeature(featureId);
+      changed = true;
     }
+    // Task-Fortschritt mitziehen (Change-Guard, WP12).
+    void parseTaskProgress(root, feature.name).then((progress) => {
+      if (progress.done !== feature.tasksDone || progress.total !== feature.tasksTotal) {
+        this.deps.features.setTasks(featureId, progress.done, progress.total);
+        this.emitFeature(featureId);
+      } else if (changed) {
+        this.emitFeature(featureId);
+      }
+    });
   }
 
   // ---------- Helpers ----------
