@@ -33,9 +33,16 @@ export function buildHeadlessArgv(prompt: string, opts: { model?: string; addDir
   return args;
 }
 
-/** Slash-Command für eine spec-kit-Phase (wird in die Feature-Session gesendet). */
-export function phaseSlashCommand(phase: FeaturePhase | 'constitution', featureDir?: string): string {
-  const cmd = `/speckit.${phase}`;
+/**
+ * Slash-Command für eine spec-kit-Phase (wird in die Feature-Session gesendet).
+ * `prefix` kommt aus der Repo-Erkennung: `/speckit-` (Skills) oder `/speckit.` (Commands).
+ */
+export function phaseSlashCommand(
+  phase: FeaturePhase | 'constitution',
+  featureDir?: string,
+  prefix = '/speckit-',
+): string {
+  const cmd = `${prefix}${phase}`;
   return featureDir ? `${cmd} ${featureDir}` : cmd;
 }
 

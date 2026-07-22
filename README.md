@@ -16,7 +16,10 @@ open http://localhost:4830
 
 Voraussetzungen: Node ≥ 22, git ≥ 2.40, Claude Code CLI (`claude`) im PATH.
 Ziel-Repos brauchen [spec-kit](https://github.com/github/spec-kit) für Claude Code
-(`/speckit.*`-Kommandos) — Initialisierung z. B. mit `uvx specify-cli init --here`.
+(`/speckit-*`-Kommandos) — Initialisierung über den Banner im Tool oder manuell:
+`uvx --from git+https://github.com/github/spec-kit.git specify init --here --integration claude`
+(danach committen, damit Feature-Worktrees die Skills erben). Ältere Installationen
+mit `/speckit.*`-Punktnotation werden automatisch erkannt.
 
 ## Arbeitsweise
 

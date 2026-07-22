@@ -200,9 +200,11 @@ export async function buildServer(deps: ApiDeps) {
       method: 'POST',
       url: `/api/projects/${req.params.id}/terminal`,
     }).then((r) => r.json())) as { sessionId: string };
+    // Init + Commit in einem Schritt: Worktrees zweigen vom Default-Branch ab —
+    // ohne Commit hätten Feature-Sessions die speckit-Skills nicht.
     deps.ptys.write(
       res.sessionId,
-      'uvx --from git+https://github.com/github/spec-kit.git specify init --here --ai claude',
+      'uvx --from git+https://github.com/github/spec-kit.git specify init --here --integration claude && git add -A && git commit -m "chore: spec-kit init"',
     );
     return res;
   });

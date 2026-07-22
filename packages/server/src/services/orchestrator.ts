@@ -23,7 +23,7 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand } from '../pty/commandBuilder.js';
-import { artifactExists, parseTaskProgress } from './artifacts.js';
+import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
 import { bus } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
@@ -170,7 +170,7 @@ export class Orchestrator {
     });
 
     const session = await this.ensureSession(featureId);
-    const slash = phaseSlashCommand(phase, `specs/${feature.name}`);
+    const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
     const prompt = extraPrompt ? `${slash} ${extraPrompt}` : slash;
     this.runningPhases.set(featureId, {
       phase,
@@ -243,7 +243,7 @@ export class Orchestrator {
       logPath: null,
     });
     const session = await this.ensureSession(featureId);
-    const prompt = phaseSlashCommand(phase, `specs/${feature.name}`);
+    const prompt = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
     this.runningPhases.set(featureId, {
       phase,
       executionId,
@@ -429,6 +429,15 @@ export class Orchestrator {
   }
 
   // ---------- Helpers ----------
+
+  /** Kommando-Stil (Skills `-` vs. Commands `.`): Worktree zuerst, sonst Projekt-Root. */
+  private commandPrefixFor(feature: Feature): string {
+    const fresh = this.deps.features.get(feature.id) ?? feature;
+    if (fresh.worktreePath && existsSync(fresh.worktreePath)) {
+      return speckitCommandPrefix(fresh.worktreePath);
+    }
+    return speckitCommandPrefix(this.mustProject(fresh.projectId).path);
+  }
 
   automationFor(feature: Feature): AutomationSettings {
     const project = this.mustProject(feature.projectId);

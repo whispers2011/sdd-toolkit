@@ -58,6 +58,24 @@ export function hasSpecKit(repoRoot: string): boolean {
   return false;
 }
 
+/**
+ * Kommando-Stil der spec-kit-Installation erkennen:
+ * neue Skills-Installationen → `/speckit-<phase>`, ältere Command-Installationen
+ * → `/speckit.<phase>`. Default: Bindestrich (aktueller Stand).
+ */
+export function speckitCommandPrefix(repoRoot: string): string {
+  if (existsSync(join(repoRoot, '.claude', 'skills', 'speckit-specify'))) return '/speckit-';
+  const commandsDir = join(repoRoot, '.claude', 'commands');
+  try {
+    if (existsSync(commandsDir) && readdirSync(commandsDir).some((f) => f.startsWith('speckit.'))) {
+      return '/speckit.';
+    }
+  } catch {
+    /* unlesbar */
+  }
+  return '/speckit-';
+}
+
 export function listSpecDirs(repoRoot: string): string[] {
   const specsDir = join(repoRoot, 'specs');
   if (!existsSync(specsDir)) return [];
