@@ -92,6 +92,24 @@ const MIGRATIONS: string[] = [
   `,
   // WP3: Token-Zählung pro Execution
   `ALTER TABLE executions ADD COLUMN tokens INTEGER;`,
+  // WP4: Review-Personas (project_id NULL = globale Defaults)
+  `
+  CREATE TABLE personas (
+    id TEXT PRIMARY KEY,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1
+  );
+  INSERT INTO personas (id, project_id, name, prompt, sort_order) VALUES
+    ('default-code-review', NULL, 'Code-Review',
+     'Du bist ein strenger Code-Reviewer. Reviewe die Änderungen dieses Feature-Branches gegenüber dem Default-Branch (git diff gegen den Merge-Base). Prüfe: Korrektheit, Randfälle, Fehlerbehandlung, Lesbarkeit, unnötige Komplexität, Konsistenz mit dem Bestandscode. Sei adversarial — suche aktiv nach Fehlern statt zu bestätigen. Schreibe deinen Review-Bericht als Markdown nach {reviewFile}. Die LETZTE Zeile der Datei MUSS exakt lauten: VERDICT: PASS oder VERDICT: FAIL. FAIL bei jedem Fund, der vor dem Merge behoben werden muss.',
+     0),
+    ('default-security-review', NULL, 'Security-Review',
+     'Du bist ein Security-Reviewer. Pruefe die Aenderungen dieses Feature-Branches (git diff gegen den Merge-Base) auf: Injection-Risiken, unsichere Dateizugriffe, Command-Injection, Secrets im Code, unsichere Defaults, fehlende Validierung an Vertrauensgrenzen. Schreibe deinen Bericht als Markdown nach {reviewFile}. Die LETZTE Zeile MUSS exakt lauten: VERDICT: PASS oder VERDICT: FAIL. FAIL nur bei echten Sicherheitsproblemen, nicht bei Stilfragen.',
+     1);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

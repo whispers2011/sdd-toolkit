@@ -7,6 +7,7 @@ import type {
   AttentionRepo,
   ExecutionRepo,
   FeatureRepo,
+  PersonaRepo,
   ProjectRepo,
   QueueRepo,
   SessionRepo,
@@ -29,6 +30,7 @@ export interface ApiDeps {
   attention: AttentionRepo;
   queue: QueueRepo;
   settings: SettingsRepo;
+  personas: PersonaRepo;
   orchestrator: Orchestrator;
   mergeQueue: MergeQueueService;
   onboarding: OnboardingService;
@@ -172,6 +174,18 @@ export async function buildServer(deps: ApiDeps) {
   app.post<{ Params: { id: string } }>('/api/attention/:id/resolve', (req) => {
     deps.attention.resolve(req.params.id);
     bus.emitEvent('attention_resolved', req.params.id);
+    return { ok: true };
+  });
+
+  // ---------- Personas (WP4) ----------
+
+  app.get('/api/personas', () => deps.personas.list());
+  app.put<{ Body: { id?: string; projectId: string | null; name: string; prompt: string; sortOrder: number; enabled: boolean } }>(
+    '/api/personas',
+    (req) => ({ id: deps.personas.upsert(req.body) }),
+  );
+  app.delete<{ Params: { id: string } }>('/api/personas/:id', (req) => {
+    deps.personas.remove(req.params.id);
     return { ok: true };
   });
 

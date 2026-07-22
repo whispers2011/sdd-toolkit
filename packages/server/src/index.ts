@@ -4,11 +4,13 @@ import {
   AttentionRepo,
   ExecutionRepo,
   FeatureRepo,
+  PersonaRepo,
   ProjectRepo,
   QueueRepo,
   SessionRepo,
   SettingsRepo,
 } from './db/repos.js';
+import { ReviewGateService } from './services/reviewGateService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
 import { Orchestrator } from './services/orchestrator.js';
@@ -27,6 +29,7 @@ async function main(): Promise<void> {
   const attention = new AttentionRepo(db);
   const queue = new QueueRepo(db);
   const settings = new SettingsRepo(db);
+  const personas = new PersonaRepo(db);
   const worktrees = new WorktreeManager(config.dataDir);
 
   // PTY-Callbacks delegieren an den (danach konstruierten) Orchestrator.
@@ -49,6 +52,7 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
   });
 
+  const reviewGate = new ReviewGateService(personas, executions, config.dataDir);
   const mergeQueue = new MergeQueueService({
     projects,
     features,
@@ -58,6 +62,7 @@ async function main(): Promise<void> {
     settings,
     worktrees,
     ptys,
+    reviewGate,
     dataDir: config.dataDir,
   });
   orchestrator.attachMergeQueue(mergeQueue);
@@ -74,6 +79,7 @@ async function main(): Promise<void> {
     attention,
     queue,
     settings,
+    personas,
     orchestrator,
     mergeQueue,
     onboarding,

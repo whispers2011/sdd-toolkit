@@ -7,6 +7,7 @@ import type { PtySessionManager } from '../pty/sessionManager.js';
 import { git, isCleanWorkingTree } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
+import type { ReviewGateService } from './reviewGateService.js';
 import { bus } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
@@ -20,6 +21,7 @@ export interface MergeQueueDeps {
   settings: SettingsRepo;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
+  reviewGate: ReviewGateService;
   dataDir: string;
 }
 
@@ -70,6 +72,20 @@ export class MergeQueueService {
       }
 
       const automation = this.automationFor(feature);
+
+      // Review-Gate (WP4): Personas sequentiell, erster FAIL eskaliert.
+      if (automation.autoReviewAgents) {
+        this.setStage(feature, 'review_gate');
+        const gate = await this.deps.reviewGate.run(this.mustFeature(featureId), project);
+        // Review-Berichte gehören versioniert zum Feature.
+        await this.commitWorktree(this.mustFeature(featureId), `docs(${feature.name}): review-berichte`);
+        if (!gate.ok) {
+          this.setStage(feature, 'gate_failed');
+          this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedPersona}`);
+          return;
+        }
+      }
+
       if (automation.autoMerge) {
         this.enqueue(feature);
       } else {
@@ -93,7 +109,7 @@ export class MergeQueueService {
     const feature = this.mustFeature(featureId);
     this.deps.attention.resolveFor({
       featureId,
-      kinds: ['merge_conflict_escalated', 'verify_failed'],
+      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
     });
     void this.beginIntegration(featureId);
   }
@@ -243,12 +259,16 @@ export class MergeQueueService {
     return true;
   }
 
-  /** Uncommittete Implement-Änderungen im Worktree committen. */
-  private async commitWorktree(feature: Feature): Promise<void> {
+  /** Uncommittete Änderungen im Worktree committen. */
+  private async commitWorktree(feature: Feature, message?: string): Promise<void> {
     if (!feature.worktreePath) return;
     if (await isCleanWorkingTree(feature.worktreePath)) return;
     await git(feature.worktreePath, ['add', '-A']);
-    const r = await git(feature.worktreePath, ['commit', '-m', `feat(${feature.name}): implementation`]);
+    const r = await git(feature.worktreePath, [
+      'commit',
+      '-m',
+      message ?? `feat(${feature.name}): implementation`,
+    ]);
     if (r.code !== 0) throw new Error(`Commit im Worktree fehlgeschlagen: ${r.stderr}`);
   }
 

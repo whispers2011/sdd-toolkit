@@ -484,6 +484,51 @@ function toAttention(r: Record<string, unknown>): AttentionItem {
   };
 }
 
+// ---------- Personas (WP4) ----------
+
+export interface PersonaRow {
+  id: string;
+  project_id: string | null;
+  name: string;
+  prompt: string;
+  sort_order: number;
+  enabled: number;
+}
+
+export class PersonaRepo {
+  constructor(private db: DB) {}
+
+  /** Personas eines Projekts: projektspezifische, sonst die globalen Defaults. */
+  forProject(projectId: string): PersonaRow[] {
+    const own = this.db
+      .prepare('SELECT * FROM personas WHERE project_id=? AND enabled=1 ORDER BY sort_order')
+      .all(projectId) as PersonaRow[];
+    if (own.length > 0) return own;
+    return this.db
+      .prepare('SELECT * FROM personas WHERE project_id IS NULL AND enabled=1 ORDER BY sort_order')
+      .all() as PersonaRow[];
+  }
+
+  list(): PersonaRow[] {
+    return this.db.prepare('SELECT * FROM personas ORDER BY project_id NULLS FIRST, sort_order').all() as PersonaRow[];
+  }
+
+  upsert(p: { id?: string; projectId: string | null; name: string; prompt: string; sortOrder: number; enabled: boolean }): string {
+    const id = p.id ?? nanoid(10);
+    this.db
+      .prepare(
+        `INSERT INTO personas (id, project_id, name, prompt, sort_order, enabled) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET name=excluded.name, prompt=excluded.prompt, sort_order=excluded.sort_order, enabled=excluded.enabled`,
+      )
+      .run(id, p.projectId, p.name, p.prompt, p.sortOrder, p.enabled ? 1 : 0);
+    return id;
+  }
+
+  remove(id: string): void {
+    this.db.prepare('DELETE FROM personas WHERE id=?').run(id);
+  }
+}
+
 // ---------- Settings ----------
 
 export class SettingsRepo {
