@@ -81,7 +81,7 @@ export async function buildServer(deps: ApiDeps) {
   app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>('/api/projects/:id', (req) => {
     const allowed: Record<string, unknown> = {};
     const b = req.body;
-    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'mergeMode', 'editorCmd'] as const) {
+    for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'mergeMode', 'editorCmd', 'integrationMode'] as const) {
       if (key in b) allowed[key] = b[key];
     }
     deps.projects.update(req.params.id, allowed);

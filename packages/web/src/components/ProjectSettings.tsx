@@ -24,6 +24,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
   const [verifyCommands, setVerifyCommands] = useState<VerifyCommand[]>(project.verifyCommands);
   const [automation, setAutomation] = useState<Partial<AutomationSettings>>(project.automation);
   const [mergeMode, setMergeMode] = useState(project.mergeMode);
+  const [integrationMode, setIntegrationMode] = useState(project.integrationMode);
   const [editorCmd, setEditorCmd] = useState(project.editorCmd ?? '');
   const [busy, setBusy] = useState(false);
 
@@ -38,6 +39,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
         verifyCommands: verifyCommands.filter((v) => v.name.trim() && v.command.trim()),
         automation,
         mergeMode,
+        integrationMode,
         editorCmd: editorCmd.trim() || null,
       });
       const fresh = await api.state();
@@ -137,12 +139,25 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
           <AutomationOverride value={automation} onChange={setAutomation} />
         </Field>
 
-        <Field label="Merge-Modus">
-          <select value={mergeMode} onChange={(e) => setMergeMode(e.target.value as 'ff' | 'squash')} className={inputCls}>
-            <option value="ff">Fast-Forward (Historie des Features erhalten)</option>
-            <option value="squash">Squash (ein Commit pro Feature)</option>
+        <Field label="Integration">
+          <select
+            value={integrationMode}
+            onChange={(e) => setIntegrationMode(e.target.value as 'local' | 'pr')}
+            className={inputCls}
+          >
+            <option value="local">Lokal auf {defaultBranch} mergen</option>
+            <option value="pr">GitHub-PR erstellen (gh CLI)</option>
           </select>
         </Field>
+
+        {integrationMode === 'local' && (
+          <Field label="Merge-Modus">
+            <select value={mergeMode} onChange={(e) => setMergeMode(e.target.value as 'ff' | 'squash')} className={inputCls}>
+              <option value="ff">Fast-Forward (Historie des Features erhalten)</option>
+              <option value="squash">Squash (ein Commit pro Feature)</option>
+            </select>
+          </Field>
+        )}
 
         <Field label="Editor-Kommando ({file}/{line}-Platzhalter)">
           <input

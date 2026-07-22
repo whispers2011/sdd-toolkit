@@ -203,6 +203,9 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         {feature.integration !== 'none' && feature.integration !== 'merged' && (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-sky-400">{feature.integration}</span>
         )}
+        {feature.integration === 'merged' && project?.integrationMode === 'pr' && (
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400">PR erstellt</span>
+        )}
         {column === 'done' && (
           <CardAction onClick={() => void call(() => api.archiveFeature(feature.id))}>🗄 Archivieren</CardAction>
         )}

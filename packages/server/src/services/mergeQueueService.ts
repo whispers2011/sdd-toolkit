@@ -5,7 +5,7 @@ import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo,
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
-import { git, isCleanWorkingTree } from '../git/git.js';
+import { git, isCleanWorkingTree, run } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { ReviewGateService } from './reviewGateService.js';
@@ -226,7 +226,12 @@ export class MergeQueueService {
       }
     }
 
-    // 3) Merge im Haupt-Checkout.
+    // 3a) PR-Modus (WP13): push + gh pr create statt lokalem Merge.
+    if (project.integrationMode === 'pr') {
+      return this.createPullRequest(queueId, feature, project);
+    }
+
+    // 3b) Merge im Haupt-Checkout.
     const merge = await this.engine.mergeFeature({
       projectPath: project.path,
       branch: feature.branch,
@@ -259,6 +264,40 @@ export class MergeQueueService {
       title: 'Feature gemergt',
       body: `${feature.name} → ${project.defaultBranch}`,
       featureId,
+      kind: 'merged',
+    });
+    return true;
+  }
+
+  /**
+   * PR-Modus (WP13): Branch pushen (force-with-lease — der Rebase hat die
+   * Historie umgeschrieben) und PR via gh erstellen. Worktree bleibt bis zum
+   * PR-Merge bestehen.
+   */
+  private async createPullRequest(queueId: string, feature: Feature, project: Project): Promise<boolean> {
+    const wt = feature.worktreePath!;
+    const push = await git(wt, ['push', '--force-with-lease', '-u', 'origin', feature.branch]);
+    if (push.code !== 0) {
+      this.setStage(feature, 'conflict_escalated');
+      this.deps.queue.setStage(queueId, 'conflict_escalated', push.stderr.trim());
+      this.escalate(feature, 'merge_conflict_escalated', `${feature.name}: Push fehlgeschlagen — ${push.stderr.trim()}`);
+      return false;
+    }
+    const pr = await run(wt, 'gh', ['pr', 'create', '--fill', '--base', project.defaultBranch, '--head', feature.branch]);
+    const alreadyExists = pr.code !== 0 && /already exists/i.test(pr.stderr + pr.stdout);
+    if (pr.code !== 0 && !alreadyExists) {
+      this.setStage(feature, 'conflict_escalated');
+      this.deps.queue.setStage(queueId, 'conflict_escalated', pr.stderr.trim());
+      this.escalate(feature, 'merge_conflict_escalated', `${feature.name}: PR-Erstellung fehlgeschlagen — ${pr.stderr.trim()}`);
+      return false;
+    }
+    this.setStage(feature, 'merged'); // UI zeigt im PR-Modus „PR erstellt"
+    this.deps.queue.remove(queueId);
+    this.emitQueue(project.id);
+    bus.emitEvent('notification', {
+      title: 'PR erstellt',
+      body: `${feature.name}: ${pr.stdout.trim().split('\n').at(-1) ?? feature.branch}`,
+      featureId: feature.id,
       kind: 'merged',
     });
     return true;

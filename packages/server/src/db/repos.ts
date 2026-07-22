@@ -27,6 +27,7 @@ interface ProjectRow {
   automation: string;
   merge_mode: string;
   editor_cmd: string | null;
+  integration_mode: string;
   created_at: number;
 }
 
@@ -42,6 +43,7 @@ function toProject(r: ProjectRow): Project {
     automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
     mergeMode: r.merge_mode === 'squash' ? 'squash' : 'ff',
     editorCmd: r.editor_cmd,
+    integrationMode: r.integration_mode === 'pr' ? 'pr' : 'local',
     createdAt: r.created_at,
   };
 }
@@ -54,8 +56,8 @@ export class ProjectRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, merge_mode, editor_cmd, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, merge_mode, editor_cmd, integration_mode, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -68,6 +70,7 @@ export class ProjectRepo {
         JSON.stringify(p.automation),
         p.mergeMode,
         p.editorCmd,
+        p.integrationMode,
         createdAt,
       );
     return { ...p, id, createdAt };
@@ -79,7 +82,7 @@ export class ProjectRepo {
     const merged = { ...cur, ...patch };
     this.db
       .prepare(
-        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, merge_mode=?, editor_cmd=? WHERE id=?`,
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, merge_mode=?, editor_cmd=?, integration_mode=? WHERE id=?`,
       )
       .run(
         merged.name,
@@ -91,6 +94,7 @@ export class ProjectRepo {
         JSON.stringify(merged.automation),
         merged.mergeMode,
         merged.editorCmd,
+        merged.integrationMode,
         id,
       );
   }

@@ -44,6 +44,7 @@ export class OnboardingService {
       automation: {},
       mergeMode: 'ff',
       editorCmd: null,
+      integrationMode: 'local',
     });
 
     const importedFeatures: string[] = [];

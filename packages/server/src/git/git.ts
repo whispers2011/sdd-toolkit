@@ -25,6 +25,20 @@ export function git(cwd: string, args: string[]): Promise<GitResult> {
   });
 }
 
+/** Generischer CLI-Aufruf (z. B. gh) — gleiche Semantik wie git(). */
+export function run(cwd: string, cmd: string, args: string[]): Promise<GitResult> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      let code = 0;
+      if (err) {
+        const raw: unknown = (err as NodeJS.ErrnoException).code;
+        code = typeof raw === 'number' ? raw : 1;
+      }
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 export async function gitOk(cwd: string, args: string[]): Promise<string> {
   const r = await git(cwd, args);
   if (r.code !== 0) {

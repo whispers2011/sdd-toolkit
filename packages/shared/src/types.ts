@@ -87,6 +87,8 @@ export interface Project {
   mergeMode: 'ff' | 'squash';
   /** Editor-Öffner, z. B. "code -g {file}:{line}" (WP10). */
   editorCmd: string | null;
+  /** local = direkt auf den Default-Branch mergen; pr = GitHub-PR via gh (WP13). */
+  integrationMode: 'local' | 'pr';
   createdAt: number;
 }
 

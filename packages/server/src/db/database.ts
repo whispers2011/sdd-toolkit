@@ -115,6 +115,8 @@ const MIGRATIONS: string[] = [
   ALTER TABLE projects ADD COLUMN merge_mode TEXT NOT NULL DEFAULT 'ff';
   ALTER TABLE projects ADD COLUMN editor_cmd TEXT;
   `,
+  // WP13: Integrationsmodus (lokaler Merge vs. GitHub-PR)
+  `ALTER TABLE projects ADD COLUMN integration_mode TEXT NOT NULL DEFAULT 'local';`,
 ];
 
 export function openDatabase(dataDir: string): DB {
