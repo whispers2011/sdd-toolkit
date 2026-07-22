@@ -4,6 +4,7 @@ import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
+import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
 import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
 
@@ -106,6 +107,7 @@ export function KanbanBoard() {
 function FeatureCard({ feature, column }: { feature: Feature; column: Column }) {
   const { state, dispatch } = useStore();
   const [showAutomation, setShowAutomation] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const project = state.app?.projects.find((p) => p.id === feature.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
 
@@ -207,7 +209,16 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400">PR erstellt</span>
         )}
         {column === 'done' && (
-          <CardAction onClick={() => void call(() => api.archiveFeature(feature.id))}>🗄 Archivieren</CardAction>
+          <CardAction onClick={() => setConfirmArchive(true)}>🗄 Archivieren</CardAction>
+        )}
+        {confirmArchive && (
+          <ConfirmDialog
+            title="Feature archivieren"
+            message={`„${feature.name}" archivieren?\n\nDie Session wird beendet; Specs und Git-Historie bleiben im Repo erhalten.`}
+            confirmLabel="Archivieren"
+            onConfirm={() => void call(() => api.archiveFeature(feature.id))}
+            onClose={() => setConfirmArchive(false)}
+          />
         )}
       </div>
     </div>

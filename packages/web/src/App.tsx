@@ -8,6 +8,7 @@ import { AutomationDial } from './components/AutomationDial.js';
 import { ExecutionsView } from './components/ExecutionsView.js';
 import { GridView } from './components/GridView.js';
 import { ShellConsole } from './components/ShellConsole.js';
+import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { api } from './api.js';
 
 export function App() {
@@ -38,6 +39,7 @@ export function App() {
 
   return (
     <div className="flex h-screen">
+      <QuickSwitcher />
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-4 border-b border-zinc-800 px-4 py-2">

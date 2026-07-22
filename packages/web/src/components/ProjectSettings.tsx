@@ -10,7 +10,7 @@ import {
 } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
-import { Dialog, DialogActions } from './Sidebar.js';
+import { ConfirmDialog, Dialog, DialogActions } from './Sidebar.js';
 
 const COLORS = ['#71717a', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#a855f7', '#ec4899'];
 
@@ -27,6 +27,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
   const [integrationMode, setIntegrationMode] = useState(project.integrationMode);
   const [editorCmd, setEditorCmd] = useState(project.editorCmd ?? '');
   const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const save = async () => {
     setBusy(true);
@@ -170,15 +171,7 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
 
         <div className="border-t border-zinc-800 pt-3">
           <button
-            onClick={() => {
-              if (confirm(`Projekt „${project.name}" wirklich entfernen? (Repo bleibt unberührt)`)) {
-                void api.removeProject(project.id).then(async () => {
-                  const fresh = await api.state();
-                  dispatch({ type: 'bootstrap', state: fresh });
-                  onClose();
-                });
-              }
-            }}
+            onClick={() => setConfirmRemove(true)}
             className="rounded px-2 py-1 text-xs text-red-400 hover:bg-red-950"
           >
             Projekt entfernen …
@@ -186,6 +179,21 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
         </div>
       </div>
       <DialogActions busy={busy} onCancel={onClose} onSubmit={() => void save()} submitLabel="Speichern" />
+      {confirmRemove && (
+        <ConfirmDialog
+          title="Projekt entfernen"
+          message={`„${project.name}" aus dem Toolkit entfernen?\n\nDas Git-Repo bleibt unberührt. Features, Phasen-Status und Läufe dieses Projekts werden aus der Toolkit-Datenbank gelöscht.`}
+          confirmLabel="Entfernen"
+          onConfirm={() =>
+            void api.removeProject(project.id).then(async () => {
+              const fresh = await api.state();
+              dispatch({ type: 'bootstrap', state: fresh });
+              onClose();
+            })
+          }
+          onClose={() => setConfirmRemove(false)}
+        />
+      )}
     </Dialog>
   );
 }

@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
 import { readFile } from 'node:fs/promises';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
@@ -379,6 +379,50 @@ export async function buildServer(deps: ApiDeps) {
       return { ok: true };
     },
   );
+
+  /** QoL (WP16/Q3): Worktree im Finder/Editor öffnen. */
+  app.post<{ Params: { id: string }; Body: { target: 'finder' | 'editor' } }>(
+    '/api/features/:id/open',
+    async (req) => {
+      const { project, cwd } = featureCwd(req.params.id);
+      const env = await loginShellEnv();
+      if (req.body.target === 'finder') {
+        exec(`open ${shellQuotePath(cwd)}`, { env }, () => {});
+      } else {
+        const template = project.editorCmd?.trim() || 'code -g {file}:{line}';
+        const command = template.replaceAll('{file}', shellQuotePath(cwd)).replaceAll('{line}', '1');
+        exec(command, { env, cwd }, () => {});
+      }
+      return { ok: true };
+    },
+  );
+
+  /**
+   * QoL (WP16/Q4): Bild aus der Zwischenablage → <worktree>/.sdd-tmp/,
+   * Pfad landet per Bracketed Paste in der Konsole (Claude liest Bilder per Pfad).
+   */
+  app.post<{ Params: { id: string } }>('/api/features/:id/paste-image', async (req) => {
+    const { feature, cwd } = featureCwd(req.params.id);
+    const file = await req.file();
+    if (!file) throw httpError(400, 'Bild fehlt');
+    const buffer = await file.toBuffer();
+    const ext = (file.mimetype.split('/')[1] ?? 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+    const dir = join(cwd, '.sdd-tmp');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `paste-${Date.now()}.${ext}`);
+    writeFileSync(path, buffer);
+    // .sdd-tmp lokal ausschließen, ohne das Repo-.gitignore anzufassen.
+    try {
+      const excludePath = join(cwd, '.git', 'info', 'exclude');
+      const cur = existsSync(excludePath) ? readFileSync(excludePath, 'utf8') : '';
+      if (!cur.includes('.sdd-tmp/')) appendFileSync(excludePath, '\n.sdd-tmp/\n');
+    } catch {
+      /* Worktree-.git ist eine Datei — exclude liegt im gitdir; best effort */
+    }
+    const session = deps.ptys.forFeature(feature.id);
+    if (session) deps.ptys.write(session.id, `\x1b[200~${path}\x1b[201~`);
+    return { path };
+  });
 
   // ---------- Personas (WP4) ----------
 

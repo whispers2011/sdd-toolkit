@@ -102,6 +102,15 @@ export const api = {
     ),
   setTranscription: (provider: 'openai' | 'groq', apiKey: string | undefined, language: string) =>
     request<unknown>('PUT', '/api/settings/transcription', { provider, apiKey, language }),
+  openFeature: (featureId: string, target: 'finder' | 'editor') =>
+    request<unknown>('POST', `/api/features/${featureId}/open`, { target }),
+  pasteImage: async (featureId: string, blob: Blob): Promise<{ path: string }> => {
+    const form = new FormData();
+    form.append('file', blob, 'paste.png');
+    const res = await fetch(`/api/features/${featureId}/paste-image`, { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await res.text());
+    return res.json() as Promise<{ path: string }>;
+  },
   initSpeckit: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/init-speckit`),
 };

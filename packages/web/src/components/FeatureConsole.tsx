@@ -33,9 +33,19 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
             {feature.worktreePath}
           </span>
         )}
+        <div className="ml-auto flex items-center gap-1">
+          <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>📂</HeaderIcon>
+          <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>⌨</HeaderIcon>
+          <HeaderIcon
+            title="Worktree-Pfad kopieren"
+            onClick={() => feature.worktreePath && void navigator.clipboard.writeText(feature.worktreePath)}
+          >
+            📋
+          </HeaderIcon>
+        </div>
         <button
           onClick={() => setShowReview(true)}
-          className="ml-auto rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
+          className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
         >
           Diff / Review
         </button>
@@ -51,6 +61,22 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
 
       <PromptBar featureId={featureId} />
     </div>
+  );
+}
+
+function HeaderIcon({
+  title,
+  onClick,
+  children,
+}: {
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button onClick={onClick} title={title} className="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800">
+      {children}
+    </button>
   );
 }
 

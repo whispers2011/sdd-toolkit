@@ -130,5 +130,22 @@ export function TerminalPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return <div ref={containerRef} className="h-full w-full" />;
+  // Bild-Paste (WP16/Q4): Screenshot einfügen → Pfad landet in der Konsole.
+  const onPaste = (e: React.ClipboardEvent) => {
+    if (!featureId) return;
+    for (const item of e.clipboardData.items) {
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) {
+          e.preventDefault();
+          void api.pasteImage(featureId, blob).catch((err: Error) =>
+            dispatch({ type: 'error', message: `Bild-Paste: ${err.message}` }),
+          );
+        }
+        return;
+      }
+    }
+  };
+
+  return <div ref={containerRef} className="h-full w-full" onPaste={onPaste} />;
 }

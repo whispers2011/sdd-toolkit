@@ -320,6 +320,41 @@ function NewFeatureDialog({ projectId, onClose }: { projectId: string; onClose: 
   );
 }
 
+/** Einheitlicher Bestätigungs-Dialog (WP16/Q6) — zeigt, was verloren geht. */
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  onConfirm,
+  onClose,
+}: {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Dialog title={title} onClose={onClose}>
+      <p className="text-sm whitespace-pre-line text-zinc-300">{message}</p>
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} className="rounded px-3 py-1.5 text-sm text-zinc-400 hover:bg-zinc-800">
+          Abbrechen
+        </button>
+        <button
+          onClick={() => {
+            onConfirm();
+            onClose();
+          }}
+          className="rounded bg-red-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
+        >
+          {confirmLabel}
+        </button>
+      </div>
+    </Dialog>
+  );
+}
+
 export function Dialog({
   title,
   onClose,
