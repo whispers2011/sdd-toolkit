@@ -162,7 +162,7 @@ export class MergeQueueService {
         logDir: join(this.deps.dataDir, 'logs'),
         executionId: execId,
       });
-      this.deps.executions.finish(execId, res.exitCode);
+      this.deps.executions.finish(execId, res.exitCode, res.costUsd, res.tokens);
       if (res.exitCode !== 0) break;
 
       rebase = await this.engine.continueRebase(feature.worktreePath);

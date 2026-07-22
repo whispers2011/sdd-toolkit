@@ -275,7 +275,9 @@ export class SessionRepo {
 export class ExecutionRepo {
   constructor(private db: DB) {}
 
-  start(e: Omit<ExecutionRecord, 'id' | 'status' | 'startedAt' | 'finishedAt' | 'exitCode' | 'costUsd'>): string {
+  start(
+    e: Omit<ExecutionRecord, 'id' | 'status' | 'startedAt' | 'finishedAt' | 'exitCode' | 'costUsd' | 'tokens'>,
+  ): string {
     const id = nanoid(10);
     this.db
       .prepare(
@@ -286,10 +288,10 @@ export class ExecutionRepo {
     return id;
   }
 
-  finish(id: string, exitCode: number, costUsd: number | null = null): void {
+  finish(id: string, exitCode: number, costUsd: number | null = null, tokens: number | null = null): void {
     this.db
-      .prepare(`UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=? WHERE id=?`)
-      .run(exitCode === 0 ? 'succeeded' : 'failed', Date.now(), exitCode, costUsd, id);
+      .prepare(`UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=?, tokens=? WHERE id=?`)
+      .run(exitCode === 0 ? 'succeeded' : 'failed', Date.now(), exitCode, costUsd, tokens, id);
   }
 
   /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
@@ -314,6 +316,7 @@ export class ExecutionRepo {
       finishedAt: r.finished_at as number | null,
       exitCode: r.exit_code as number | null,
       costUsd: r.cost_usd as number | null,
+      tokens: (r.tokens as number | null) ?? null,
       logPath: r.log_path as string | null,
     }));
   }

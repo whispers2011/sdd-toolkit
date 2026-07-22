@@ -90,6 +90,8 @@ const MIGRATIONS: string[] = [
   CREATE INDEX idx_executions_feature ON executions(feature_id);
   CREATE INDEX idx_attention_open ON attention(resolved_at) WHERE resolved_at IS NULL;
   `,
+  // WP3: Token-Zählung pro Execution
+  `ALTER TABLE executions ADD COLUMN tokens INTEGER;`,
 ];
 
 export function openDatabase(dataDir: string): DB {

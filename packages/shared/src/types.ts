@@ -166,6 +166,7 @@ export interface ExecutionRecord {
   finishedAt: number | null;
   exitCode: number | null;
   costUsd: number | null;
+  tokens: number | null;
   logPath: string | null;
 }
 

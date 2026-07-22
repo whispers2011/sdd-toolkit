@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { meter } from '@sdd/shared';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import { buildHeadlessArgv } from '../pty/commandBuilder.js';
 
@@ -19,7 +21,7 @@ export async function resolveConflicts(opts: {
   executionId: string;
   model?: string;
   timeoutMs?: number;
-}): Promise<{ exitCode: number; logPath: string }> {
+}): Promise<{ exitCode: number; logPath: string; costUsd: number; tokens: number }> {
   const logPath = join(opts.logDir, `${opts.executionId}.log`);
   const specDir = `specs/${opts.featureName}`;
   const specHint = existsSync(join(opts.worktreePath, specDir))
@@ -70,5 +72,9 @@ export async function resolveConflicts(opts: {
   });
 
   log.end();
-  return { exitCode, logPath };
+
+  // Kosten-Metering (WP3) aus dem Lauf-Log.
+  const output = await readFile(logPath, 'utf8').catch(() => '');
+  const cost = meter({ ...(opts.model !== undefined ? { model: opts.model } : {}), promptText: prompt, outputText: output });
+  return { exitCode, logPath, costUsd: cost.costUsd, tokens: cost.totalTokens };
 }

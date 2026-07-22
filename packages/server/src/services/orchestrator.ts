@@ -4,6 +4,7 @@ import {
   discardPhase,
   finishPhase,
   initialPhases,
+  meter,
   nextPhase,
   reapOrphanedRunning,
   reconcileWithDisk,
@@ -42,6 +43,9 @@ export interface OrchestratorDeps {
 interface RunningPhase {
   phase: FeaturePhase;
   executionId: string;
+  /** Scrollback-Offset beim Start — für Kosten-Metering des Turn-Deltas (WP3). */
+  scrollbackStart: number;
+  promptText: string;
 }
 
 export class Orchestrator {
@@ -159,11 +163,16 @@ export class Orchestrator {
       phase,
       logPath: null,
     });
-    this.runningPhases.set(featureId, { phase, executionId });
 
     const session = await this.ensureSession(featureId);
     const slash = phaseSlashCommand(phase, `specs/${feature.name}`);
     const prompt = extraPrompt ? `${slash} ${extraPrompt}` : slash;
+    this.runningPhases.set(featureId, {
+      phase,
+      executionId,
+      scrollbackStart: session.scrollback.length,
+      promptText: prompt,
+    });
     this.deps.ptys.sendPrompt(session.id, prompt);
 
     this.emitFeature(featureId);
@@ -228,9 +237,15 @@ export class Orchestrator {
       phase,
       logPath: null,
     });
-    this.runningPhases.set(featureId, { phase, executionId });
     const session = await this.ensureSession(featureId);
-    this.deps.ptys.sendPrompt(session.id, phaseSlashCommand(phase, `specs/${feature.name}`));
+    const prompt = phaseSlashCommand(phase, `specs/${feature.name}`);
+    this.runningPhases.set(featureId, {
+      phase,
+      executionId,
+      scrollbackStart: session.scrollback.length,
+      promptText: prompt,
+    });
+    this.deps.ptys.sendPrompt(session.id, prompt);
     this.emitFeature(featureId);
   }
 
@@ -293,7 +308,10 @@ export class Orchestrator {
 
     if (running) {
       this.runningPhases.delete(featureId);
-      this.deps.executions.finish(running.executionId, 0);
+      // Kosten-Metering (WP3): Turn-Delta des Scrollbacks als Output messen.
+      const outputText = session.scrollback.slice(running.scrollbackStart);
+      const cost = meter({ promptText: running.promptText, outputText });
+      this.deps.executions.finish(running.executionId, 0, cost.costUsd, cost.totalTokens);
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
