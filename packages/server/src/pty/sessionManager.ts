@@ -10,6 +10,7 @@ import {
 } from '@sdd/shared';
 import { loginShellEnv } from './loginShellEnv.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
+import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { bracketedPaste, SUBMIT_DELAY_MS, SUBMIT_KEY } from './commandBuilder.js';
 
 const SCROLLBACK_LIMIT = 2 * 1024 * 1024; // 2 MB Ring-Puffer pro Session
@@ -19,10 +20,13 @@ export interface LiveSession {
   projectId: string;
   featureId: string | null;
   kind: 'feature' | 'shell';
+  cwd: string;
   pty: IPty;
   machine: SessionMachine;
   hookSetup: HookSetup | null;
   hookWatcher: HookEventWatcher | null;
+  transcriptWatcher: TranscriptWatcher | null;
+  transcriptRetryTimer: NodeJS.Timeout | null;
   claudeSessionId: string | null;
   scrollback: string;
   subscribers: Set<(data: string) => void>;
@@ -83,10 +87,13 @@ export class PtySessionManager {
       projectId: opts.projectId,
       featureId: opts.featureId,
       kind: opts.kind,
+      cwd: opts.cwd,
       pty,
       machine: initialSession,
       hookSetup,
       hookWatcher: null,
+      transcriptWatcher: null,
+      transcriptRetryTimer: null,
       claudeSessionId: null,
       scrollback: '',
       subscribers: new Set(),
@@ -103,6 +110,7 @@ export class PtySessionManager {
       session.exited = true;
       this.dispatch(session, { type: 'process_exited', code: exitCode });
       void session.hookWatcher?.stop();
+      this.detachTranscript(session);
       this.callbacks.onExit(session, exitCode);
     });
 
@@ -111,6 +119,7 @@ export class PtySessionManager {
         if (event.claudeSessionId && event.claudeSessionId !== session.claudeSessionId) {
           session.claudeSessionId = event.claudeSessionId;
           this.callbacks.onClaudeSessionId(session, event.claudeSessionId);
+          this.attachTranscript(session); // folgt auch /clear-Neustarts (neue Session-ID)
         }
         if (event.signal) this.dispatch(session, { type: 'hook', event: event.signal });
       });
@@ -119,6 +128,32 @@ export class PtySessionManager {
 
     this.dispatch(session, { type: 'process_spawned' });
     return session;
+  }
+
+  /**
+   * Transkript-Watcher (WP1) starten, sobald die Claude-Session-ID bekannt ist.
+   * Das JSONL entsteht erst mit dem ersten Turn — bei Bedarf mit Retry suchen.
+   */
+  private attachTranscript(session: LiveSession, attempt = 0): void {
+    this.detachTranscript(session);
+    if (!session.claudeSessionId || session.exited) return;
+
+    const path = locateTranscript(session.cwd, session.claudeSessionId);
+    if (!path) {
+      if (attempt < 6) {
+        session.transcriptRetryTimer = setTimeout(() => this.attachTranscript(session, attempt + 1), 5_000);
+      }
+      return;
+    }
+    session.transcriptWatcher = new TranscriptWatcher(path, (signal) => this.dispatch(session, signal));
+    session.transcriptWatcher.start();
+  }
+
+  private detachTranscript(session: LiveSession): void {
+    if (session.transcriptRetryTimer) clearTimeout(session.transcriptRetryTimer);
+    session.transcriptRetryTimer = null;
+    void session.transcriptWatcher?.stop();
+    session.transcriptWatcher = null;
   }
 
   private dispatch(session: LiveSession, signal: SessionSignal): void {
