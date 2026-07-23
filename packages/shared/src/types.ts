@@ -248,6 +248,59 @@ export interface SavePhaseDefinitionResult {
   mtimeMs: number;
 }
 
+// ---------- Feature-Artefakte (Kachel-Ergebnis-Icons) ----------
+
+/** Eine einzelne einsehbare Ergebnis-Datei innerhalb eines Schritts. */
+export interface FeatureArtifactFile {
+  /** Stabile Kennung = relativer Pfad unter specs/<feature>/ (z. B. "plan.md", "contracts/api.md"). */
+  id: string;
+  label: string;
+  relPath: string;
+}
+
+/** Ein artefakt-erzeugender Speckit-Schritt eines Features (Kachel-Icon + Tooltip + Verfügbarkeit). */
+export interface FeatureArtifactStep {
+  phase: FeaturePhase;
+  label: string;
+  tooltip: string;
+  /** Mindestens eine zugehörige Datei existiert. */
+  available: boolean;
+  files: FeatureArtifactFile[];
+}
+
+/** Inhalt einer konkret gewählten Artefakt-Datei (Detail-DTO fürs Modal). */
+export interface FeatureArtifact {
+  featureId: string;
+  phase: FeaturePhase;
+  fileId: string;
+  label: string;
+  /** Absoluter Pfad (informativ); null wenn nicht vorhanden. */
+  path: string | null;
+  /** Roh-Markdown der Datei (der Editor rendert es als Rich-Text); null wenn nicht vorhanden. */
+  content: string | null;
+  /** Änderungszeit für Konfliktprüfung; null wenn nicht vorhanden. */
+  mtimeMs: number | null;
+  exists: boolean;
+  /** Bearbeiten gesperrt, solange eine Phase des Features läuft. */
+  locked: boolean;
+  lockReason: string | null;
+  /** Geschwister-Dateien desselben Schritts (für den Umschalter). */
+  files: FeatureArtifactFile[];
+}
+
+export interface SaveFeatureArtifactRequest {
+  content: string;
+  /** Beim Öffnen gelesene mtimeMs (Basis der Konfliktprüfung). */
+  baseMtimeMs: number;
+  /** Konfliktprüfung überspringen (bewusstes Überschreiben). */
+  overwrite?: boolean;
+}
+
+export interface SaveFeatureArtifactResult {
+  ok: true;
+  mtimeMs: number;
+}
+
 // ---------- Projekt-Chat (Ask-a-Question) ----------
 
 /**

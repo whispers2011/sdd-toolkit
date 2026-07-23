@@ -33,7 +33,12 @@ mit `/speckit.*`-Punktnotation werden automatisch erkannt.
    tasks → implement. Steuerung per Kanban (Drag-to-Advance), Phasen-Leiste über der
    Konsole oder direkt in der Konsole. Über das **ℹ-Icon im Lane-Header** lässt sich die
    spec-kit-Definition jedes Schritts einsehen und direkt bearbeiten („Was macht dieser
-   Schritt?") — inkl. Konfliktschutz und Sperre bei laufendem Agenten.
+   Schritt?") — inkl. Konfliktschutz und Sperre bei laufendem Agenten. Auf der
+   **Feature-Kachel** zeigen kompakte **Ergebnis-Icons** (Specify/Plan/Tasks/Checklist)
+   die pro Feature erzeugten Artefakte: Klick öffnet ein Modal, das `spec.md`, `plan.md`
+   (+ Begleitartefakte), `tasks.md` bzw. Checklisten **lesbar (WYSIWYG, kein Markdown-
+   Quelltext)** darstellt und direkt bearbeiten lässt — strukturerhaltend zurückgeschrieben,
+   konflikt- und sperrgeschützt; optional als Split-Screen neben der Feature-Konsole.
 4. **Integration**: implement fertig → Verifikations-Pipeline (Test/Build/Lint, pro
    Projekt konfigurierbar) → Merge-Queue: rebase auf main → **Konflikte löst ein
    Headless-Claude mit Spec-Kontext beider Seiten** → erneute Verifikation → Merge →

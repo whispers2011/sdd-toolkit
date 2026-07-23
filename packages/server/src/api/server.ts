@@ -34,6 +34,12 @@ import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
 import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
+import {
+  ArtifactError,
+  listFeatureArtifactSteps,
+  readFeatureArtifact,
+  writeFeatureArtifact,
+} from '../services/featureArtifacts.js';
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 
@@ -285,6 +291,68 @@ export async function buildServer(deps: ApiDeps) {
       return { ok: true };
     },
   );
+
+  // ---------- Feature-Artefakte (Kachel-Ergebnis-Icons) ----------
+
+  /** Liste der artefakt-erzeugenden Schritte eines Features (Icons + Verfügbarkeit + Datei-Umschalter). */
+  app.get<{ Params: { id: string } }>('/api/features/:id/artifacts', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    const project = deps.projects.get(feature.projectId);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+    return listFeatureArtifactSteps(project, feature);
+  });
+
+  /** Inhalt einer Artefakt-Datei lesen (immer erlaubt). */
+  app.get<{ Params: { id: string; phase: string }; Querystring: { file?: string } }>(
+    '/api/features/:id/artifacts/:phase',
+    async (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const project = deps.projects.get(feature.projectId);
+      if (!project) throw httpError(404, 'Projekt nicht gefunden');
+      const phase = validatePhase(req.params.phase);
+      try {
+        return await readFeatureArtifact(project, feature, phase, req.query.file);
+      } catch (e) {
+        if (e instanceof ArtifactError && e.code === 'not_found') throw httpError(400, e.message);
+        throw e;
+      }
+    },
+  );
+
+  /** Bearbeiteten Inhalt zurückschreiben (Konflikt- & Sperr-geschützt). */
+  app.put<{
+    Params: { id: string; phase: string };
+    Querystring: { file?: string };
+    Body: { content?: string; baseMtimeMs?: number; overwrite?: boolean };
+  }>('/api/features/:id/artifacts/:phase', async (req, reply) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    const project = deps.projects.get(feature.projectId);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+    const phase = validatePhase(req.params.phase);
+    if (typeof req.body.content !== 'string' || typeof req.body.baseMtimeMs !== 'number' || !req.query.file) {
+      throw httpError(400, 'content, baseMtimeMs und file erforderlich');
+    }
+    try {
+      const { mtimeMs } = await writeFeatureArtifact(project, feature, phase, req.query.file, {
+        content: req.body.content,
+        baseMtimeMs: req.body.baseMtimeMs,
+        overwrite: req.body.overwrite ?? false,
+      });
+      return { ok: true, mtimeMs };
+    } catch (e) {
+      if (e instanceof ArtifactError) {
+        if (e.code === 'not_found') throw httpError(404, e.message);
+        void reply.code(409);
+        return e.code === 'conflict'
+          ? { error: 'conflict', message: e.message, current: e.current }
+          : { error: 'locked', message: e.message };
+      }
+      throw e;
+    }
+  });
 
   // ---------- Projekt-Chat (Ask-a-Question) ----------
 
