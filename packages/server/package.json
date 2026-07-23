@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "NODE_ENV=production node dist/index.js",
-    "build": "tsc",
+    "build": "node build.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -27,6 +27,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.15.0",
     "@types/ws": "^8.18.1",
+    "esbuild": "0.25.12",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
     "vitest": "^3.2.0"
