@@ -47,9 +47,14 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       const s = findSession(item, snap);
       return !!s && s.status === 'awaiting_input';
     }
-    case 'agent_errored': {
-      // Stale, sobald eine Live-Session desselben Features (bzw. derselben Session/Unterhaltung)
-      // wieder arbeitet. Ohne laufende Arbeit bleibt der Fehler bestehen.
+    case 'agent_errored':
+    case 'run_interrupted':
+    case 'phase_gate_failed': {
+      // „Prozess"-Meldungen (Agent-Fehler / unterbrochener Lauf / fehlgeschlagenes Phasen-Gate):
+      // obsolet, sobald eine Live-Session desselben Features (bzw. derselben Session/Unterhaltung)
+      // wieder arbeitet — dann wird der Auslöser gerade „auf andere Weise" behoben (Lauf fortgesetzt
+      // bzw. Phase/Gate erneut angestoßen) und es gibt nichts mehr zu tun. Ohne laufende Arbeit
+      // bleiben sie bestehen (stage-unabhängig — ein Integration-Stage-Wechsel löst sie NICHT).
       if (item.featureId) {
         return !snap.sessions.some((s) => s.featureId === item.featureId && s.status === 'working');
       }

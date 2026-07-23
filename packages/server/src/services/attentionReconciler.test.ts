@@ -60,6 +60,21 @@ describe('isAttentionValid — agent_errored', () => {
   });
 });
 
+describe('isAttentionValid — Prozess-Arten (run_interrupted, phase_gate_failed)', () => {
+  for (const kind of ['run_interrupted', 'phase_gate_failed'] as const) {
+    it(`${kind} bleibt gültig, solange keine Feature-Session arbeitet`, () => {
+      expect(isAttentionValid(item(kind, { featureId: 'f1' }), snap([]))).toBe(true);
+    });
+    it(`${kind} wird stale, sobald wieder am Feature gearbeitet wird (Auslöser anderweitig behoben)`, () => {
+      const s: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+      expect(isAttentionValid(item(kind, { featureId: 'f1' }), snap([s]))).toBe(false);
+    });
+    it(`${kind} ist NICHT stage-gekoppelt (überlebt Stage-Wechsel ohne laufende Arbeit)`, () => {
+      expect(isAttentionValid(item(kind, { featureId: 'f1' }), snap([], [['f1', 'merged']]))).toBe(true);
+    });
+  }
+});
+
 describe('isAttentionValid — Merge-Arten gegen feature.integration', () => {
   const cases: Array<[AttentionKind, IntegrationStage]> = [
     ['review_due', 'awaiting_human_review'],
@@ -117,15 +132,13 @@ describe('findStaleOnBoot', () => {
     expect(findStaleOnBoot(open, stages).map((i) => i.id)).toEqual(['verify_failed-drop']);
   });
 
-  it('Agent-Gate-Arten sind NICHT stage-gekoppelt: bleiben über Boot und Stage-Wechsel offen', () => {
-    // Regression-Schutz: phase_gate_failed/approval_required dürfen weder beim
-    // Boot noch durch Integration-Stage-Wechsel wegresolven — sie lösen sich
-    // nur explizit (Approve/Discard/Neustart der Phase bzw. „Erledigt").
-    const open = [
-      item('phase_gate_failed', { id: 'gate', featureId: 'f1' }),
-      item('approval_required', { id: 'appr', featureId: 'f1' }),
-    ];
+  it('approval_required löst sich NUR explizit: bleibt über Boot, Stage-Wechsel UND laufende Arbeit', () => {
+    // Freigabebedarf ist eine stehende menschliche Entscheidung — da gibt es weiterhin etwas zu
+    // tun. Weder Boot noch Integration-Stage-Wechsel noch eine wieder arbeitende Session lösen ihn;
+    // nur Approve/Discard/Neustart der Phase bzw. „Erledigt".
+    const open = [item('approval_required', { id: 'appr', featureId: 'f1' })];
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
     expect(findStaleOnBoot(open, new Map([['f1', 'none' as IntegrationStage]]))).toEqual([]);
-    expect(findStaleRuntime(open, snap([], [['f1', 'merged']]))).toEqual([]);
+    expect(findStaleRuntime(open, snap([working], [['f1', 'merged']]))).toEqual([]);
   });
 });

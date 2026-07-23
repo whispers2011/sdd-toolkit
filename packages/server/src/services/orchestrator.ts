@@ -76,6 +76,7 @@ interface RunningPhase {
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private runningGates = new Set<string>(); // `${featureId}:${phase}` — Doppelstart-Guard für before-Gates
+  private startingPhases = new Set<string>(); // featureId — synchroner Guard gegen Start-Races (vor runningPhases)
   private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
   private lastPreamble = new Map<string, string>(); // featureId → zuletzt injizierte Wissens-Präambel
   private mergeQueue: MergeQueueService | null = null;
@@ -222,38 +223,51 @@ export class Orchestrator {
   ): Promise<{ gateRunning: boolean }> {
     const feature = this.mustFeature(featureId);
 
-    // before_phase-Gate: Start deferren, Phase bleibt idle (crash-sicher — ein
-    // Absturz während des Gates hinterlässt schlicht eine ungestartete Phase).
-    const trigger = { kind: 'before_phase', phase } as const;
-    if (!opts.skipGates && this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) {
-      const key = `${featureId}:${phase}`;
-      if (!this.runningGates.has(key)) {
-        this.runningGates.add(key);
-        void this.runBeforePhaseGate(key, featureId, phase, extraPrompt);
-      }
-      return { gateRunning: true };
+    // Doppelstart-/Queue-Schutz: läuft (oder startet gerade) für dieses Feature schon eine Phase,
+    // würde ein weiterer Start den Slash-Command nur in die laufende Session einreihen — er liefe
+    // nach dem aktuellen Schritt sofort erneut. Deshalb ablehnen statt einreihen. Auto-Progress und
+    // Gate-Fortsetzung laufen erst NACH dem Turn-Abschluss (runningPhases bereits geleert) und sind
+    // damit nicht betroffen. `startingPhases` schließt zusätzlich das Start-Race vor `launchPhase`.
+    if (this.runningPhases.has(featureId) || this.startingPhases.has(featureId)) {
+      throw new Error(`${feature.name}: Es läuft bereits ein Schritt — bitte abwarten, bis er fertig ist.`);
     }
-
-    this.resolveGateAttention(featureId);
-    const t = startPhase(feature.phases, phase, Date.now());
-    this.deps.features.savePhases(featureId, t.phases);
-
+    this.startingPhases.add(featureId);
     try {
-      const session = await this.ensureSession(featureId);
-      const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
-      const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
-      this.launchPhase(feature, phase, session, base);
-      this.emitFeature(featureId);
-    } catch (err) {
-      // Start fehlgeschlagen → kein hängendes „läuft": Phase zurückrollen + „braucht dich".
-      this.failPhaseStart(
-        featureId,
-        phase,
-        `${feature.name}: Phase ${phase} konnte nicht gestartet werden (${(err as Error).message})`,
-      );
-      throw err;
+      // before_phase-Gate: Start deferren, Phase bleibt idle (crash-sicher — ein
+      // Absturz während des Gates hinterlässt schlicht eine ungestartete Phase).
+      const trigger = { kind: 'before_phase', phase } as const;
+      if (!opts.skipGates && this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) {
+        const key = `${featureId}:${phase}`;
+        if (!this.runningGates.has(key)) {
+          this.runningGates.add(key);
+          void this.runBeforePhaseGate(key, featureId, phase, extraPrompt);
+        }
+        return { gateRunning: true };
+      }
+
+      this.resolveGateAttention(featureId);
+      const t = startPhase(feature.phases, phase, Date.now());
+      this.deps.features.savePhases(featureId, t.phases);
+
+      try {
+        const session = await this.ensureSession(featureId);
+        const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
+        const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
+        this.launchPhase(feature, phase, session, base);
+        this.emitFeature(featureId);
+      } catch (err) {
+        // Start fehlgeschlagen → kein hängendes „läuft": Phase zurückrollen + „braucht dich".
+        this.failPhaseStart(
+          featureId,
+          phase,
+          `${feature.name}: Phase ${phase} konnte nicht gestartet werden (${(err as Error).message})`,
+        );
+        throw err;
+      }
+      return { gateRunning: false };
+    } finally {
+      this.startingPhases.delete(featureId);
     }
-    return { gateRunning: false };
   }
 
   /**

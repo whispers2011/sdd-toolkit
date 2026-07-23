@@ -108,6 +108,16 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
     expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agent_errored', featureId: 'f1' }));
   });
 
+  it('startPhaseRun lehnt einen Doppelstart ab, solange bereits eine Phase läuft (kein Queueing)', async () => {
+    const { orch, savePhases } = setup();
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+    });
+    await expect(orch.startPhaseRun('f1', 'plan')).rejects.toThrow(/läuft bereits/i);
+    expect(savePhases).not.toHaveBeenCalled(); // Phase wurde NICHT gestartet → nichts eingereiht
+  });
+
   it('handleSubmitFailed rollt die laufende Phase zurück und meldet „braucht dich"', () => {
     const { orch, state, raise, finish } = setup({ running: true });
     (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
