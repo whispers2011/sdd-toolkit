@@ -6,6 +6,7 @@ import { ReviewPortal } from './ReviewPortal.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
+import { FeatureAgentSelect } from './FeatureAgentSelect.js';
 import { KnowledgeIcon } from './icons.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
@@ -14,6 +15,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const [connected, setConnected] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
@@ -40,6 +42,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>📂</HeaderIcon>
           <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>⌨</HeaderIcon>
           <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}><KnowledgeIcon /></HeaderIcon>
+          <HeaderIcon title="Agents für dieses Feature" onClick={() => setShowAgents(true)}>⚖</HeaderIcon>
           <HeaderIcon
             title="Worktree-Pfad kopieren"
             onClick={() => feature.worktreePath && void navigator.clipboard.writeText(feature.worktreePath)}
@@ -57,6 +60,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       </div>
       {showReview && <ReviewPortal featureId={featureId} onClose={() => setShowReview(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
+      {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
 
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 
@@ -197,6 +201,14 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
           </button>
         );
       })}
+      {state.gateRunning[featureId] && (
+        <span
+          className="animate-pulse rounded border border-violet-800 px-2 py-0.5 text-xs whitespace-nowrap text-violet-300"
+          title="Ein Qualitäts-Gate (Agent) läuft — Start/Fortschritt folgt nach PASS"
+        >
+          ⚖ Gate läuft …
+        </span>
+      )}
       <span className="mx-2 text-zinc-700">|</span>
       {feature.integration === 'none' ? (
         <button

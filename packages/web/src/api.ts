@@ -1,7 +1,15 @@
 import type {
+  AgentDefinition,
+  AgentFeatureDecision,
+  AgentRunSummary,
   Applicability,
+  ApproveMergeRequest,
   AttentionItem,
   AutomationSettings,
+  BranchInfo,
+  FeatureAgentView,
+  ReviewComment,
+  ReviewOverviewItem,
   ChatConversation,
   ChatFeatureProposal,
   ChatMessage,
@@ -110,7 +118,8 @@ export const api = {
   advance: (featureId: string, to: FeaturePhase) =>
     request<Feature>('POST', `/api/features/${featureId}/advance`, { to }),
   integrate: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/integrate`),
-  approveMerge: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/approve-merge`),
+  approveMerge: (featureId: string, body: ApproveMergeRequest = {}) =>
+    request<Feature>('POST', `/api/features/${featureId}/approve-merge`, body),
   retryIntegration: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
@@ -287,6 +296,62 @@ export const api = {
     request<{ features: Feature[] }>('POST', `/api/projects/${projectId}/chat/work/features/create`, { names }),
   dismissChatFeatures: (projectId: string) =>
     request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/features/dismiss`),
+
+  // Review-Portal
+  reviewOverview: (projectId: string) =>
+    request<ReviewOverviewItem[]>('GET', `/api/review/overview?projectId=${projectId}`),
+  branches: (projectId: string) => request<BranchInfo[]>('GET', `/api/projects/${projectId}/branches`),
+  featureTree: (featureId: string) => request<{ files: string[] }>('GET', `/api/features/${featureId}/tree`),
+  featureFile: (featureId: string, path: string) =>
+    request<{ path: string; content: string; mtimeMs: number; size: number }>(
+      'GET',
+      `/api/features/${featureId}/file?path=${encodeURIComponent(path)}`,
+    ),
+  saveFeatureFile: async (
+    featureId: string,
+    body: { path: string; content: string; baseMtimeMs: number },
+  ): Promise<{ mtimeMs: number }> => {
+    const res = await fetch(`/api/features/${featureId}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.status === 409 && data.error === 'conflict') {
+      throw new SaveConflictError((data.message as string) ?? 'Konflikt beim Speichern', {
+        content: '',
+        mtimeMs: data.currentMtimeMs as number,
+      });
+    }
+    if (!res.ok) throw new Error((data.message as string) ?? `PUT → ${res.status}`);
+    return data as unknown as { mtimeMs: number };
+  },
+  comments: (featureId: string) => request<ReviewComment[]>('GET', `/api/features/${featureId}/comments`),
+  addComment: (
+    featureId: string,
+    body: { filePath?: string | null; line?: number | null; side?: 'old' | 'new' | null; text: string },
+  ) => request<ReviewComment>('POST', `/api/features/${featureId}/comments`, body),
+  updateComment: (commentId: string, patch: { text?: string; status?: 'open' | 'resolved' }) =>
+    request<ReviewComment>('PATCH', `/api/comments/${commentId}`, patch),
+  deleteComment: (commentId: string) => request<unknown>('DELETE', `/api/comments/${commentId}`),
+  agentRuns: (featureId: string) => request<AgentRunSummary[]>('GET', `/api/features/${featureId}/agent-runs`),
+  agentRunReport: (featureId: string, runId: string) =>
+    request<{ content: string; reportPath: string }>(
+      'GET',
+      `/api/features/${featureId}/agent-runs/${encodeURIComponent(runId)}/report`,
+    ),
+
+  // Agents-Verwaltung
+  agents: (projectId?: string) =>
+    request<AgentDefinition[]>('GET', projectId ? `/api/agents?projectId=${projectId}` : '/api/agents'),
+  saveAgent: (agent: Omit<AgentDefinition, 'id'> & { id?: string }) =>
+    request<AgentDefinition>('PUT', '/api/agents', agent),
+  deleteAgent: (agentId: string) => request<unknown>('DELETE', `/api/agents/${agentId}`),
+  featureAgents: (featureId: string) => request<FeatureAgentView[]>('GET', `/api/features/${featureId}/agents`),
+  setAgentSelection: (featureId: string, agentId: string, decision: AgentFeatureDecision | 'auto') =>
+    request<unknown>('PUT', `/api/features/${featureId}/agents/selection`, { agentId, decision }),
+  runAgent: (featureId: string, agentId: string) =>
+    request<{ started: true }>('POST', `/api/features/${featureId}/agents/${agentId}/run`),
 };
 
 export interface KnowledgeResponse {

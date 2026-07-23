@@ -206,10 +206,15 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         >
           {feature.name}
         </button>
-        {session && <span className={`status-dot status-${session.status} ml-auto`} />}
+        {state.gateRunning[feature.id] && (
+          <span className="ml-auto animate-pulse text-xs text-violet-300" title="Qualitäts-Gate (Agent) läuft">
+            ⚖
+          </span>
+        )}
+        {session && <span className={`status-dot status-${session.status} ${state.gateRunning[feature.id] ? '' : 'ml-auto'}`} />}
         <button
           onClick={() => setShowAutomation(!showAutomation)}
-          className={`${session ? '' : 'ml-auto '}rounded px-1 text-xs text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
+          className={`${session || state.gateRunning[feature.id] ? '' : 'ml-auto '}rounded px-1 text-xs text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
           title="Automation-Override für dieses Feature"
         >
           ⚙
@@ -334,6 +339,16 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         {feature.integration === 'merged' && project?.integrationMode === 'pr' && (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400">PR erstellt</span>
         )}
+        {feature.integration === 'merged' &&
+          feature.integrationTarget &&
+          feature.integrationTarget !== project?.defaultBranch && (
+            <span
+              className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400"
+              title={`In '${feature.integrationTarget}' integriert (nicht in ${project?.defaultBranch})`}
+            >
+              → {feature.integrationTarget}
+            </span>
+          )}
         {column === 'done' && (
           <CardAction onClick={() => setConfirmArchive(true)}>🗄 Archivieren</CardAction>
         )}

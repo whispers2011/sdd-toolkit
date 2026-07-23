@@ -10,6 +10,8 @@ import { GridView } from './components/GridView.js';
 import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
+import { AgentsPanel } from './components/AgentsPanel.js';
+import { ReviewOverview } from './components/ReviewOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { api } from './api.js';
@@ -36,6 +38,12 @@ export function App() {
   useEffect(() => {
     document.title = openAttention > 0 ? `(${openAttention}) SDD Toolkit` : 'SDD Toolkit';
   }, [openAttention]);
+
+  // Review-Badge: prüfbereite Features des aktiven Projekts.
+  const reviewReady =
+    state.app?.features.filter(
+      (f) => f.projectId === state.selectedProjectId && f.integration === 'awaiting_human_review',
+    ).length ?? 0;
 
   if (!state.app) {
     return (
@@ -73,6 +81,17 @@ export function App() {
               Läufe
             </TabButton>
             <TabButton
+              active={state.view.kind === 'review'}
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'review' } })}
+            >
+              Review
+              {reviewReady > 0 && (
+                <span className="ml-1.5 rounded-full bg-sky-500 px-1.5 py-0.5 text-xs font-semibold text-black">
+                  {reviewReady}
+                </span>
+              )}
+            </TabButton>
+            <TabButton
               active={state.view.kind === 'inbox'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'inbox' } })}
             >
@@ -102,10 +121,12 @@ export function App() {
           {state.view.kind === 'board' && <KanbanBoard />}
           {state.view.kind === 'inbox' && <AttentionInbox />}
           {state.view.kind === 'executions' && <ExecutionsView />}
+          {state.view.kind === 'review' && <ReviewOverview />}
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}
           {state.view.kind === 'knowledge' && <KnowledgePanel projectId={state.view.projectId} />}
+          {state.view.kind === 'agents' && <AgentsPanel projectId={state.view.projectId} />}
         </main>
       </div>
     </div>

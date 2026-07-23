@@ -15,6 +15,11 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
 };
 
+/** Berichtspfad aus einer approval_required-Meldung (`… [Bericht: specs/…md]`). */
+function reportPathOf(message: string): string | null {
+  return message.match(/\[Bericht:\s*([^\]]+)\]/)?.[1]?.trim() ?? null;
+}
+
 /** Exception-Inbox: Monitoring by exception — der Level-3-Arbeitsmodus. */
 export function AttentionInbox() {
   const { state, dispatch } = useStore();
@@ -56,6 +61,15 @@ export function AttentionInbox() {
               </div>
               <p className="truncate text-sm text-zinc-300">{item.message}</p>
             </div>
+            {item.kind === 'approval_required' && item.featureId && reportPathOf(item.message) && (
+              <button
+                onClick={() => void api.openInEditor(item.featureId!, reportPathOf(item.message)!, null)}
+                className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+                title="Agent-Bericht im Editor öffnen"
+              >
+                Bericht öffnen
+              </button>
+            )}
             {item.featureId && (
               <button
                 onClick={() =>

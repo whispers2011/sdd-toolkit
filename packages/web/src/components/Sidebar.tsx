@@ -82,6 +82,17 @@ export function Sidebar() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  dispatch({ type: 'select_project', projectId: project.id });
+                  dispatch({ type: 'set_view', view: { kind: 'agents', projectId: project.id } });
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Agenten (Review- & Qualitäts-Gates)"
+              >
+                ⚖
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   setSettingsFor(project.id);
                 }}
                 className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
@@ -340,15 +351,18 @@ export function Dialog({
   title,
   onClose,
   children,
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  /** Breites Layout (z. B. Berichte, Editor-Dialoge). */
+  wide?: boolean;
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
       <div
-        className="w-[28rem] rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-xl"
+        className={`${wide ? 'w-[52rem] max-w-[92vw]' : 'w-[28rem]'} rounded-lg border border-zinc-700 bg-zinc-900 p-4 shadow-xl`}
         onClick={(e) => e.stopPropagation()}
       >
         <h2 className="mb-3 text-sm font-semibold text-zinc-100">{title}</h2>

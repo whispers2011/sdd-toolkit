@@ -14,10 +14,12 @@ export type View =
   | { kind: 'board' }
   | { kind: 'inbox' }
   | { kind: 'executions' }
+  | { kind: 'review' }
   | { kind: 'grid' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
-  | { kind: 'knowledge'; projectId: string };
+  | { kind: 'knowledge'; projectId: string }
+  | { kind: 'agents'; projectId: string };
 
 /** Laufender Antwort-Stream eines Chat-Turns (kumulierter Text, idempotent). */
 export interface ChatStreamState {
@@ -45,6 +47,12 @@ export interface UiState {
   chatUpdated: { projectId: string; conversationId: string; ts: number } | null;
   /** Signal „Chat-Panel öffnen" (z. B. aus der Inbox) — von ChatBubble konsumiert. */
   openChat: { projectId: string; ts: number } | null;
+  /** Kommentar-Invalidierung pro Feature — Portal refetcht bei Änderung. */
+  reviewCommentsVersion: Record<string, number>;
+  /** Laufende before/after-Gates pro Feature (gateRunning-Badge). */
+  gateRunning: Record<string, boolean>;
+  /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
+  agentGateVersion: number;
 }
 
 export type Action =
@@ -61,7 +69,9 @@ export type Action =
   | { type: 'error'; message: string | null }
   | { type: 'chat_stream'; payload: { projectId: string; conversationId: string; messageId: string; text: string; done: boolean } }
   | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } }
-  | { type: 'open_chat'; projectId: string };
+  | { type: 'open_chat'; projectId: string }
+  | { type: 'review_comments_updated'; featureId: string }
+  | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -149,6 +159,8 @@ function reducer(state: UiState, action: Action): UiState {
           view = { kind: 'board' };
         } else if (view.kind === 'knowledge' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
+        } else if (view.kind === 'agents' && view.projectId !== action.projectId) {
+          view = { kind: 'board' };
         }
       }
       persistSelectedProject(action.projectId);
@@ -182,6 +194,20 @@ function reducer(state: UiState, action: Action): UiState {
         ),
       );
       return { ...state, chatStreams, chatUpdated: { ...action.payload, ts: Date.now() } };
+    }
+    case 'review_comments_updated': {
+      const cur = state.reviewCommentsVersion[action.featureId] ?? 0;
+      return {
+        ...state,
+        reviewCommentsVersion: { ...state.reviewCommentsVersion, [action.featureId]: cur + 1 },
+      };
+    }
+    case 'agent_gate': {
+      return {
+        ...state,
+        gateRunning: { ...state.gateRunning, [action.payload.featureId]: action.payload.status === 'running' },
+        agentGateVersion: state.agentGateVersion + 1,
+      };
     }
   }
 }
@@ -261,6 +287,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     chatStreams: {},
     chatUpdated: null,
     openChat: null,
+    reviewCommentsVersion: {},
+    gateRunning: {},
+    agentGateVersion: 0,
   });
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -315,6 +344,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               dispatch({
                 type: 'chat_updated',
                 payload: msg.payload as Extract<Action, { type: 'chat_updated' }>['payload'],
+              });
+              break;
+            case 'review_comments_updated':
+              dispatch({
+                type: 'review_comments_updated',
+                featureId: (msg.payload as { featureId: string }).featureId,
+              });
+              break;
+            case 'agent_gate':
+              dispatch({
+                type: 'agent_gate',
+                payload: msg.payload as Extract<Action, { type: 'agent_gate' }>['payload'],
               });
               break;
             case 'notification': {

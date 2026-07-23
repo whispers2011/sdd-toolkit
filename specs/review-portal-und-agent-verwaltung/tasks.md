@@ -50,12 +50,12 @@ Historie, Freigeben/Zurückweisen).
 **Independent Test**: Feature in `awaiting_human_review` bringen → Review-Tab zeigt es;
 Portal öffnen, Diff + Historie sichten, einmal zurückweisen, einmal freigeben (quickstart e1).
 
-- [ ] T013 [US1] `packages/server/src/api/reviewRoutes.ts` (neu) mit `GET /api/review/overview?projectId=` (Stages awaiting_human_review/verify_failed/gate_failed/conflict_escalated; numstat-Kennzahlen, Audit-Zähler aus agent_runs, offene Kommentare, Verify-Status) und Einhängen in `packages/server/src/api/server.ts` / `index.ts`
-- [ ] T014 [P] [US1] `packages/web/src/api.ts`: `reviewOverview(projectId)`
-- [ ] T015 [US1] `packages/web/src/store.tsx`: View `'review'`; `packages/web/src/App.tsx`: Nav-Tab „Review" mit Badge (# awaiting_human_review im aktiven Projekt)
-- [ ] T016 [US1] `packages/web/src/components/ReviewOverview.tsx` (neu): Abschnitte „Bereit zum Review" / „Braucht Eingriff" (mit ↻ retry-integration-Aktion), Klick öffnet Portal
-- [ ] T017 [US1] `packages/web/src/components/review/DiffViewer.tsx` (neu): Renderer auf `parseUnifiedDiff` mit alt/neu-Zeilennummern und vorbereitetem Kommentar-Gutter
-- [ ] T018 [US1] `packages/web/src/components/ReviewPortal.tsx` Rework: 3-Spalten-Layout, Header-Kennzahlen (Dateien/Zeilen, Audit-Stand, Verify-Status), linke Tabs Dateien/Historie, Mitte DiffViewer bzw. bestehende Konfliktauflösungs-Ansicht, Footer Freigeben/Zurückweisen (Ziel vorerst Default-Branch); Öffnung aus ReviewOverview UND Kanban-Karte wie bisher
+- [X] T013 [US1] `packages/server/src/api/reviewRoutes.ts` (neu) mit `GET /api/review/overview?projectId=` (Stages awaiting_human_review/verify_failed/gate_failed/conflict_escalated; numstat-Kennzahlen, Audit-Zähler aus agent_runs, offene Kommentare, Verify-Status) und Einhängen in `packages/server/src/api/server.ts` / `index.ts`
+- [X] T014 [P] [US1] `packages/web/src/api.ts`: `reviewOverview(projectId)`
+- [X] T015 [US1] `packages/web/src/store.tsx`: View `'review'`; `packages/web/src/App.tsx`: Nav-Tab „Review" mit Badge (# awaiting_human_review im aktiven Projekt)
+- [X] T016 [US1] `packages/web/src/components/ReviewOverview.tsx` (neu): Abschnitte „Bereit zum Review" / „Braucht Eingriff" (mit ↻ retry-integration-Aktion), Klick öffnet Portal
+- [X] T017 [US1] `packages/web/src/components/review/DiffViewer.tsx` (neu): Renderer auf `parseUnifiedDiff` mit alt/neu-Zeilennummern und vorbereitetem Kommentar-Gutter
+- [X] T018 [US1] `packages/web/src/components/ReviewPortal.tsx` Rework: 3-Spalten-Layout, Header-Kennzahlen (Dateien/Zeilen, Audit-Stand, Verify-Status), linke Tabs Dateien/Historie, Mitte DiffViewer bzw. bestehende Konfliktauflösungs-Ansicht, Footer Freigeben/Zurückweisen (Ziel vorerst Default-Branch); Öffnung aus ReviewOverview UND Kanban-Karte wie bisher
 
 **Checkpoint**: US1 komplett — Review über Übersicht + Portal ohne Kommentare/Editor/Zielwahl.
 
@@ -69,13 +69,13 @@ Default-Pfad byte-identisch; Haupt-Checkout wird nie umgeschaltet.
 **Independent Test**: Freigabe in neuen Branch → Feature-Commits im Ziel, `main` und
 Haupt-Checkout unberührt, Done-Badge „→ <ziel>" (quickstart e5, h).
 
-- [ ] T019 [US2] `packages/server/src/git/mergeEngine.ts` + `mergeEngine.test.ts`: `rebaseOntoDefault` → `rebaseOnto(worktreePath, ontoBranch)`; `ensureBranch(projectPath, name, base)` (idempotent, kein Checkout); `isBranchMerged` gegen Ziel; `mergeIntoTarget({projectPath, branch, target, mode, message, tmpWorktreeDir})` — Fall A: Ziel im Haupt-Checkout = heutiger Pfad; Fall B: ephemerer `git worktree add <dataDir>/merge-tmp/<id>` → ff/squash → remove (finally, prune bei Fehler); Ziel in fremdem Worktree → sauberer Fehler
-- [ ] T020 [US2] `packages/server/src/services/mergeQueueService.ts`: überall `target = feature.integrationTarget ?? project.defaultBranch`; processItem: rebase auf target (falls existiert, sonst defaultBranch), `ensureBranch` vor Merge, `mergeIntoTarget`, Notification `feature → target`; createPullRequest: bei lokal neuem Ziel `git push -u origin <target>` dann `--base <target>`; Self-Heal (reconcile/finalizeMerged/cleanupMerged/reconcileMergedLeftovers) gegen integrationTarget, extern gelöschtes Ziel → safeOnly-Skip mit Warnung; reject-review setzt integration_target := NULL
-- [ ] T021 [US2] `approveForMerge(id, ApproveMergeRequest)` (wird async) + Tests in `mergeQueueService.test.ts`: Guard awaiting_human_review; Validierung (isValidBranchName; createBranch ⇒ darf nicht existieren; sonst ⇒ muss existieren und ≠ feature.branch); setIntegrationTarget (NULL wenn == defaultBranch); enqueue; attention resolve; `POST /api/features/:id/approve-merge` in `server.ts` nimmt Body entgegen
-- [ ] T022 [US2] `GET /api/projects/:id/branches` (git for-each-ref, BranchInfo[]) in `packages/server/src/api/reviewRoutes.ts`
-- [ ] T023 [P] [US2] `packages/web/src/api.ts`: `branches(projectId)`, `approveMerge(featureId, body)`
-- [ ] T024 [US2] `packages/web/src/components/review/MergeTargetChooser.tsx` (neu): Radio bestehend/neu, Branch-Combobox, Namens-Input mit `suggestBranchName`-Vorschlag + Live-Validierung; Einbau in ReviewPortal-Footer
-- [ ] T025 [P] [US2] `packages/web/src/components/KanbanBoard.tsx`: Done-Badge „→ <ziel>" wenn integrationTarget ≠ defaultBranch
+- [X] T019 [US2] `packages/server/src/git/mergeEngine.ts` + `mergeEngine.test.ts`: `rebaseOntoDefault` → `rebaseOnto(worktreePath, ontoBranch)`; `ensureBranch(projectPath, name, base)` (idempotent, kein Checkout); `isBranchMerged` gegen Ziel; `mergeIntoTarget({projectPath, branch, target, mode, message, tmpWorktreeDir})` — Fall A: Ziel im Haupt-Checkout = heutiger Pfad; Fall B: ephemerer `git worktree add <dataDir>/merge-tmp/<id>` → ff/squash → remove (finally, prune bei Fehler); Ziel in fremdem Worktree → sauberer Fehler
+- [X] T020 [US2] `packages/server/src/services/mergeQueueService.ts`: überall `target = feature.integrationTarget ?? project.defaultBranch`; processItem: rebase auf target (falls existiert, sonst defaultBranch), `ensureBranch` vor Merge, `mergeIntoTarget`, Notification `feature → target`; createPullRequest: bei lokal neuem Ziel `git push -u origin <target>` dann `--base <target>`; Self-Heal (reconcile/finalizeMerged/cleanupMerged/reconcileMergedLeftovers) gegen integrationTarget, extern gelöschtes Ziel → safeOnly-Skip mit Warnung; reject-review setzt integration_target := NULL
+- [X] T021 [US2] `approveForMerge(id, ApproveMergeRequest)` (wird async) + Tests in `mergeQueueService.test.ts`: Guard awaiting_human_review; Validierung (isValidBranchName; createBranch ⇒ darf nicht existieren; sonst ⇒ muss existieren und ≠ feature.branch); setIntegrationTarget (NULL wenn == defaultBranch); enqueue; attention resolve; `POST /api/features/:id/approve-merge` in `server.ts` nimmt Body entgegen
+- [X] T022 [US2] `GET /api/projects/:id/branches` (git for-each-ref, BranchInfo[]) in `packages/server/src/api/reviewRoutes.ts`
+- [X] T023 [P] [US2] `packages/web/src/api.ts`: `branches(projectId)`, `approveMerge(featureId, body)`
+- [X] T024 [US2] `packages/web/src/components/review/MergeTargetChooser.tsx` (neu): Radio bestehend/neu, Branch-Combobox, Namens-Input mit `suggestBranchName`-Vorschlag + Live-Validierung; Einbau in ReviewPortal-Footer
+- [X] T025 [P] [US2] `packages/web/src/components/KanbanBoard.tsx`: Done-Badge „→ <ziel>" wenn integrationTarget ≠ defaultBranch
 
 **Checkpoint**: US1+US2 — vollständige Integrations-Entscheidung im Portal.
 
@@ -89,11 +89,11 @@ Haupt-Checkout unberührt, Done-Badge „→ <ziel>" (quickstart e5, h).
 bearbeiten, deaktivieren, löschen; Alt-Personas erscheinen als review_gate-Gates (quickstart
 Stufe 2 Punkt 2).
 
-- [ ] T026 [US6] Agents-Endpunkte in `packages/server/src/api/server.ts` (ersetzen Personas-Block Z.668-678): `GET /api/agents?projectId=`, `PUT /api/agents` (upsert, Validierung trigger_phase ⇔ trigger_kind), `DELETE /api/agents/:id`
-- [ ] T027 [P] [US6] `packages/web/src/api.ts`: agents-CRUD-Methoden
-- [ ] T028 [US6] `packages/web/src/store.tsx`: View `{kind:'agents', projectId}`; `packages/web/src/components/Sidebar.tsx`: Button „Agenten" pro Projekt (Muster Knowledge-Button Z.71-81)
-- [ ] T029 [P] [US6] `packages/web/src/components/AgentsPanel.tsx` (neu, Vorbild KnowledgePanel): Abschnitte Global/Projekt; Zeile = Name, Trigger-Badge, Gate/Hinweis-Badge, Modell, letzter Verdict-Chip, Aktiv-Toggle, ↑↓-Umordnung, Edit, Delete
-- [ ] T030 [P] [US6] `packages/web/src/components/AgentEditDialog.tsx` (neu): Name, Beschreibung, Prompt (Hinweis {reviewFile} + VERDICT-Pflicht), Modell (datalist Standard/haiku/sonnet/opus + Freitext), Trigger-Select + Phasen-Select, Blockierend-Toggle, Aktiv-Toggle, Scope Global/Projekt (nur Neuanlage)
+- [X] T026 [US6] Agents-Endpunkte in `packages/server/src/api/server.ts` (ersetzen Personas-Block Z.668-678): `GET /api/agents?projectId=`, `PUT /api/agents` (upsert, Validierung trigger_phase ⇔ trigger_kind), `DELETE /api/agents/:id`
+- [X] T027 [P] [US6] `packages/web/src/api.ts`: agents-CRUD-Methoden
+- [X] T028 [US6] `packages/web/src/store.tsx`: View `{kind:'agents', projectId}`; `packages/web/src/components/Sidebar.tsx`: Button „Agenten" pro Projekt (Muster Knowledge-Button Z.71-81)
+- [X] T029 [P] [US6] `packages/web/src/components/AgentsPanel.tsx` (neu, Vorbild KnowledgePanel): Abschnitte Global/Projekt; Zeile = Name, Trigger-Badge, Gate/Hinweis-Badge, Modell, letzter Verdict-Chip, Aktiv-Toggle, ↑↓-Umordnung, Edit, Delete
+- [X] T030 [P] [US6] `packages/web/src/components/AgentEditDialog.tsx` (neu): Name, Beschreibung, Prompt (Hinweis {reviewFile} + VERDICT-Pflicht), Modell (datalist Standard/haiku/sonnet/opus + Freitext), Trigger-Select + Phasen-Select, Blockierend-Toggle, Aktiv-Toggle, Scope Global/Projekt (nur Neuanlage)
 
 **Checkpoint**: Alle P1-Stories fertig — sinnvolles Release möglich.
 
@@ -107,10 +107,10 @@ Arbeitsauftrag.
 **Independent Test**: 2 Zeilen-Kommentare anlegen, Portal neu öffnen (persistent),
 zurückweisen → Prompt enthält beide mit Datei/Zeile (quickstart e2, e4).
 
-- [ ] T031 [US3] Comments-CRUD in `packages/server/src/api/reviewRoutes.ts` (`GET/POST /api/features/:id/comments`, `PATCH/DELETE /api/comments/:id`) + WS-Event `review_comments_updated` in `packages/server/src/api/events.ts` (Broadcast bei jeder Mutation)
-- [ ] T032 [P] [US3] `packages/web/src/api.ts`: comments-CRUD; `packages/web/src/store.tsx`: WS-Case `review_comments_updated`
-- [ ] T033 [US3] `packages/web/src/components/review/CommentsPanel.tsx` (neu) + Kommentar-Gutter im `DiffViewer.tsx` aktivieren: Anlegen an Zeile (side old/new) oder Datei, offen/erledigt, Anker-Sprung, Hinweis „Anker evtl. veraltet", VoiceButton wie in FeatureConsole
-- [ ] T034 [US3] reject-review-Umbau in `packages/server/src/api/server.ts` + `mergeQueueService.ts`: offene Kommentare + Freitext via `compileReviewPrompt` → Prompt an Feature-Konsole; Kommentar-Vorschau im Zurückweisen-Dialog des Portals
+- [X] T031 [US3] Comments-CRUD in `packages/server/src/api/reviewRoutes.ts` (`GET/POST /api/features/:id/comments`, `PATCH/DELETE /api/comments/:id`) + WS-Event `review_comments_updated` in `packages/server/src/api/events.ts` (Broadcast bei jeder Mutation)
+- [X] T032 [P] [US3] `packages/web/src/api.ts`: comments-CRUD; `packages/web/src/store.tsx`: WS-Case `review_comments_updated`
+- [X] T033 [US3] `packages/web/src/components/review/CommentsPanel.tsx` (neu) + Kommentar-Gutter im `DiffViewer.tsx` aktivieren: Anlegen an Zeile (side old/new) oder Datei, offen/erledigt, Anker-Sprung, Hinweis „Anker evtl. veraltet", VoiceButton wie in FeatureConsole
+- [X] T034 [US3] reject-review-Umbau in `packages/server/src/api/server.ts` + `mergeQueueService.ts`: offene Kommentare + Freitext via `compileReviewPrompt` → Prompt an Feature-Konsole; Kommentar-Vorschau im Zurückweisen-Dialog des Portals
 
 **Checkpoint**: Zurückweisungen sind präzise und reproduzierbar.
 
@@ -124,10 +124,10 @@ Re-Verify.
 **Independent Test**: Datei im Portal editieren/speichern, freigeben → Commit
 `review(<name>): reviewer-korrekturen` existiert, Re-Verify lief vor Merge (quickstart e3, e5).
 
-- [ ] T035 [US4] In `packages/server/src/api/reviewRoutes.ts`: `GET /api/features/:id/tree` (git ls-files -co --exclude-standard, 409 ohne Worktree), `GET /api/features/:id/file?path=` (Traversal-Guard, Binär-Erkennung, 2-MB-Limit), `PUT /api/features/:id/file` (nur awaiting_human_review, mtime-409-Protokoll nach featureArtifacts-Muster)
-- [ ] T036 [P] [US4] `packages/web/src/api.ts`: `featureTree`, `featureFile`, `saveFeatureFile`
-- [ ] T037 [US4] `packages/web/src/components/review/FileTreePane.tsx` + `FileEditor.tsx` (neu): Baum-Navigation, Monospace-Textarea, Markdown-Preview-Toggle (react-markdown), 409-Konfliktmeldung; Portal-Tab „Projektdateien"
-- [ ] T038 [US4] Reviewer-Commit in `approveForMerge` (`packages/server/src/services/mergeQueueService.ts`): uncommittete Worktree-Änderungen → Commit `review(<name>): reviewer-korrekturen` ⇒ enqueue forceVerify=1; processItem: Re-Verify wenn `attempts>0 || forceVerify` (FAIL → verify_failed); Tests in `mergeQueueService.test.ts`
+- [X] T035 [US4] In `packages/server/src/api/reviewRoutes.ts`: `GET /api/features/:id/tree` (git ls-files -co --exclude-standard, 409 ohne Worktree), `GET /api/features/:id/file?path=` (Traversal-Guard, Binär-Erkennung, 2-MB-Limit), `PUT /api/features/:id/file` (nur awaiting_human_review, mtime-409-Protokoll nach featureArtifacts-Muster)
+- [X] T036 [P] [US4] `packages/web/src/api.ts`: `featureTree`, `featureFile`, `saveFeatureFile`
+- [X] T037 [US4] `packages/web/src/components/review/FileTreePane.tsx` + `FileEditor.tsx` (neu): Baum-Navigation, Monospace-Textarea, Markdown-Preview-Toggle (react-markdown), 409-Konfliktmeldung; Portal-Tab „Projektdateien"
+- [X] T038 [US4] Reviewer-Commit in `approveForMerge` (`packages/server/src/services/mergeQueueService.ts`): uncommittete Worktree-Änderungen → Commit `review(<name>): reviewer-korrekturen` ⇒ enqueue forceVerify=1; processItem: Re-Verify wenn `attempts>0 || forceVerify` (FAIL → verify_failed); Tests in `mergeQueueService.test.ts`
 
 **Checkpoint**: Trivial-Korrekturen ohne Zurückweisungs-Schleife.
 
@@ -141,10 +141,10 @@ Re-Verify.
 Kosten, AuditSidebar zeigt Verdict + öffenbaren Bericht; Alt-Feature zeigt
 Vor-Migrations-Reviews (quickstart f, Stufe 2 Punkt 3).
 
-- [ ] T039 [US5] In `packages/server/src/api/reviewRoutes.ts`: `GET /api/features/:id/agent-runs` (AgentRunSummary[] + costUsd/totalTokens via executions-Join; Markdown-Fallback `specs/<f>/reviews/*.md` + parseVerdict für Vor-Migrations-Features, `source:'markdown'`) und `GET /api/features/:id/agent-runs/:runId/report`
-- [ ] T040 [P] [US5] `packages/web/src/api.ts`: `agentRuns`, `agentRunReport`
-- [ ] T041 [US5] `packages/web/src/components/review/TestsPane.tsx` (neu): Verify-Executions als Dashboard (Status/Dauer/Exit-Code/Log-Viewer + Token/Kosten, charts.tsx-Bausteine); Portal-Tab „Tests"
-- [ ] T042 [US5] `packages/web/src/components/review/AuditSidebar.tsx` (neu): Gruppierung nach Trigger, SVG-Progress-Ring bestanden/gesamt, Verdict-Pills, decision_label, Summary, Kosten, Bericht-Dialog; rechte Portal-Spalte + Header-Kennzahlen aus echten Daten
+- [X] T039 [US5] In `packages/server/src/api/reviewRoutes.ts`: `GET /api/features/:id/agent-runs` (AgentRunSummary[] + costUsd/totalTokens via executions-Join; Markdown-Fallback `specs/<f>/reviews/*.md` + parseVerdict für Vor-Migrations-Features, `source:'markdown'`) und `GET /api/features/:id/agent-runs/:runId/report`
+- [X] T040 [P] [US5] `packages/web/src/api.ts`: `agentRuns`, `agentRunReport`
+- [X] T041 [US5] `packages/web/src/components/review/TestsPane.tsx` (neu): Verify-Executions als Dashboard (Status/Dauer/Exit-Code/Log-Viewer + Token/Kosten, charts.tsx-Bausteine); Portal-Tab „Tests"
+- [X] T042 [US5] `packages/web/src/components/review/AuditSidebar.tsx` (neu): Gruppierung nach Trigger, SVG-Progress-Ring bestanden/gesamt, Verdict-Pills, decision_label, Summary, Kosten, Bericht-Dialog; rechte Portal-Spalte + Header-Kennzahlen aus echten Daten
 
 **Checkpoint**: Entscheidungsgrundlage vollständig im Portal.
 
@@ -158,11 +158,11 @@ neue AttentionKinds, agent_gate-Event, Inbox-Aktionen.
 **Independent Test**: Agent „nach plan, blockierend" → FAIL stoppt Auto-Progress + Inbox-
 Eintrag, manuelles Approve geht; „vor implement" → Start deferrt bis PASS (quickstart a–c, i).
 
-- [ ] T043 [US7] `packages/server/src/services/attentionReconciler.ts`: Defaults/Verhalten für `phase_gate_failed` + `approval_required` (NICHT an STAGE_FOR_KIND koppeln); Tests
-- [ ] T044 [US7] after_phase-Hook in `packages/server/src/services/orchestrator.ts` `handleTurnCompleted` (nach finishPhase/savePhases, VOR Auto-Progress): `agentGate.runTrigger({kind:'after_phase', phase})`; blockierender FAIL ⇒ Phase bleibt awaiting_review, Attention `phase_gate_failed`, kein Auto-Approve; Human-Override via manuellem Approve; Approve/Discard/Neustart ⇒ `attention.resolveFor` beider neuer Kinds; approval_required-Items aus `parseApprovalItems` ⇒ Attention mit Thema + Berichts-Pfad (auch bei PASS)
-- [ ] T045 [US7] before_phase-Deferral in `orchestrator.ts`: `startPhaseRun(..., {skipGates})` — Gates vorhanden && !skipGates ⇒ Start deferren (Phase bleibt idle), runningGates-Map gegen Doppelstart, async Gate → PASS ⇒ `startPhaseRun({skipGates:true})`, FAIL ⇒ Attention; Auto-Progress-Umleitung in `approve` per vorhandenem Effekt-Unterdrückungs-Muster (advanceTo); Bus-Event `agent_gate {featureId, projectId, trigger, status}` in `packages/server/src/api/events.ts`; HTTP-Antwort `{gateRunning:true}`
-- [ ] T046 [US7] `packages/server/src/services/orchestrator.test.ts`: after_phase-FAIL blockiert Auto-Progress, before_phase deferrt/startet nach PASS, Human-Override, Attention-Resolve; `phaseMachine.test.ts` bleibt UNVERÄNDERT grün
-- [ ] T047 [US7] Web: `packages/web/src/store.tsx` WS-Case `agent_gate` + gateRunning-Badge in `FeatureConsole.tsx`/`KanbanBoard.tsx`; `packages/web/src/components/AttentionInbox.tsx`: Aktionen für `phase_gate_failed` (Feature öffnen, manuell freigeben) und `approval_required` („Bericht öffnen" via api.openInEditor, „Erledigt", optional „Feedback an Agent senden" nach reject-review-Muster)
+- [X] T043 [US7] `packages/server/src/services/attentionReconciler.ts`: Defaults/Verhalten für `phase_gate_failed` + `approval_required` (NICHT an STAGE_FOR_KIND koppeln); Tests
+- [X] T044 [US7] after_phase-Hook in `packages/server/src/services/orchestrator.ts` `handleTurnCompleted` (nach finishPhase/savePhases, VOR Auto-Progress): `agentGate.runTrigger({kind:'after_phase', phase})`; blockierender FAIL ⇒ Phase bleibt awaiting_review, Attention `phase_gate_failed`, kein Auto-Approve; Human-Override via manuellem Approve; Approve/Discard/Neustart ⇒ `attention.resolveFor` beider neuer Kinds; approval_required-Items aus `parseApprovalItems` ⇒ Attention mit Thema + Berichts-Pfad (auch bei PASS)
+- [X] T045 [US7] before_phase-Deferral in `orchestrator.ts`: `startPhaseRun(..., {skipGates})` — Gates vorhanden && !skipGates ⇒ Start deferren (Phase bleibt idle), runningGates-Map gegen Doppelstart, async Gate → PASS ⇒ `startPhaseRun({skipGates:true})`, FAIL ⇒ Attention; Auto-Progress-Umleitung in `approve` per vorhandenem Effekt-Unterdrückungs-Muster (advanceTo); Bus-Event `agent_gate {featureId, projectId, trigger, status}` in `packages/server/src/api/events.ts`; HTTP-Antwort `{gateRunning:true}`
+- [X] T046 [US7] `packages/server/src/services/orchestrator.test.ts`: after_phase-FAIL blockiert Auto-Progress, before_phase deferrt/startet nach PASS, Human-Override, Attention-Resolve; `phaseMachine.test.ts` bleibt UNVERÄNDERT grün
+- [X] T047 [US7] Web: `packages/web/src/store.tsx` WS-Case `agent_gate` + gateRunning-Badge in `FeatureConsole.tsx`/`KanbanBoard.tsx`; `packages/web/src/components/AttentionInbox.tsx`: Aktionen für `phase_gate_failed` (Feature öffnen, manuell freigeben) und `approval_required` („Bericht öffnen" via api.openInEditor, „Erledigt", optional „Feedback an Agent senden" nach reject-review-Muster)
 
 **Checkpoint**: Meeting-Beschlüsse 2+3 (Human-in-the-loop-Gates) funktionsfähig.
 
@@ -175,9 +175,9 @@ Eintrag, manuelles Approve geht; „vor implement" → Start deferrt bis PASS (q
 **Independent Test**: Global aktiven Agent per Feature ausschließen → läuft nicht;
 manueller Lauf → 202 + Ergebnis; ohne Worktree → 409 (quickstart g).
 
-- [ ] T048 [US8] In `packages/server/src/api/server.ts`: `GET /api/features/:id/agents` (effektiv + decision + lastRun via latestPerAgent), `PUT /api/features/:id/agents/selection` {agentId, decision include|exclude|auto}, `POST /api/features/:id/agents/:agentId/run` → 202 (agentGate.runAgent async), 409 ohne Worktree
-- [ ] T049 [P] [US8] `packages/web/src/api.ts`: `featureAgents`, `setAgentSelection`, `runAgent`
-- [ ] T050 [US8] `packages/web/src/components/FeatureAgentSelect.tsx` (neu, Klon FeatureKnowledgeSelect): effektive Agents mit Auto/Ein/Aus, letzter Lauf (Verdict/Summary/Kosten/Bericht), „Jetzt ausführen"; Button im `FeatureConsole.tsx`-Header
+- [X] T048 [US8] In `packages/server/src/api/server.ts`: `GET /api/features/:id/agents` (effektiv + decision + lastRun via latestPerAgent), `PUT /api/features/:id/agents/selection` {agentId, decision include|exclude|auto}, `POST /api/features/:id/agents/:agentId/run` → 202 (agentGate.runAgent async), 409 ohne Worktree
+- [X] T049 [P] [US8] `packages/web/src/api.ts`: `featureAgents`, `setAgentSelection`, `runAgent`
+- [X] T050 [US8] `packages/web/src/components/FeatureAgentSelect.tsx` (neu, Klon FeatureKnowledgeSelect): effektive Agents mit Auto/Ein/Aus, letzter Lauf (Verdict/Summary/Kosten/Bericht), „Jetzt ausführen"; Button im `FeatureConsole.tsx`-Header
 
 **Checkpoint**: Union-Semantik hat ihren Escape-Hatch.
 
@@ -190,8 +190,8 @@ manueller Lauf → 202 + Ergebnis; ohne Worktree → 409 (quickstart g).
 **Independent Test**: Frische Migration zeigt 5 globale Agents; DoR-Probelauf auf Feature
 mit offenen Fragen ⇒ FAIL mit nummerierter Liste (quickstart Stufe 2, i).
 
-- [ ] T051 [P] [US9] Seeds `default-dor-gate` (before_phase:implement, blocking; prüft spec/plan/tasks auf offene Fragen/[NEEDS CLARIFICATION]/unentschiedene Annahmen/prüfbare Akzeptanzkriterien; FAIL ⇒ nummerierte Fragenliste) und `default-doku-policy` (review_gate, advisory, sort_order 2; Meta-Kommentare/redundante DocBlocks/Ticketnummern-Historie im Diff; Regel: Rationale in Commit-Messages, git-Historie LESEN statt schreiben) als INSERTs in Migration B in `packages/server/src/db/database.ts`
-- [ ] T052 [P] [US9] Seed `default-plan-quality` (after_phase:plan, blocking): `docs/solution-plan-quality-review.md` auf ~80–100 Zeilen eindampfen (Evidenz vor Vermutung, Qualitätsprofile, Mandatory Gates, Pattern-Suitability, adversarialer Gegencheck; Ausgabe GESAMTENTSCHEIDUNG/ZUSAMMENFASSUNG/FREIGABE ERFORDERLICH + VERDICT-Mapping FREIGEGEBEN [MIT ÄNDERUNGEN]→PASS, PLAN ÜBERARBEITEN→FAIL) und in Migration B einbetten
+- [X] T051 [P] [US9] Seeds `default-dor-gate` (before_phase:implement, blocking; prüft spec/plan/tasks auf offene Fragen/[NEEDS CLARIFICATION]/unentschiedene Annahmen/prüfbare Akzeptanzkriterien; FAIL ⇒ nummerierte Fragenliste) und `default-doku-policy` (review_gate, advisory, sort_order 2; Meta-Kommentare/redundante DocBlocks/Ticketnummern-Historie im Diff; Regel: Rationale in Commit-Messages, git-Historie LESEN statt schreiben) als INSERTs in Migration B in `packages/server/src/db/database.ts`
+- [X] T052 [P] [US9] Seed `default-plan-quality` (after_phase:plan, blocking): `docs/solution-plan-quality-review.md` auf ~80–100 Zeilen eindampfen (Evidenz vor Vermutung, Qualitätsprofile, Mandatory Gates, Pattern-Suitability, adversarialer Gegencheck; Ausgabe GESAMTENTSCHEIDUNG/ZUSAMMENFASSUNG/FREIGABE ERFORDERLICH + VERDICT-Mapping FREIGEGEBEN [MIT ÄNDERUNGEN]→PASS, PLAN ÜBERARBEITEN→FAIL) und in Migration B einbetten
 
 **Checkpoint**: Meeting-Beschlüsse 1–3 als Daten ausgeliefert.
 
