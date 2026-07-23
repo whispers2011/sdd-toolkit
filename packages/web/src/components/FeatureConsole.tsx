@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { FEATURE_PHASES, type FeaturePhase } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
-import { ReviewPortal } from './ReviewPortal.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
@@ -13,7 +12,6 @@ import { KnowledgeIcon } from './icons.js';
 export function FeatureConsole({ featureId }: { featureId: string }) {
   const { state } = useStore();
   const [connected, setConnected] = useState(false);
-  const [showReview, setShowReview] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
 
@@ -61,15 +59,8 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
             📋
           </HeaderIcon>
         </div>
-        <button
-          onClick={() => setShowReview(true)}
-          className="rounded border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300 hover:bg-zinc-800"
-        >
-          Diff / Review
-        </button>
         <span className="text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
       </div>
-      {showReview && <ReviewPortal featureId={featureId} onClose={() => setShowReview(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
 
@@ -94,7 +85,7 @@ function HeaderIcon({
   children: React.ReactNode;
 }) {
   return (
-    <button onClick={onClick} title={title} className="rounded px-1.5 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800">
+    <button onClick={onClick} title={title} className="rounded px-1.5 py-0.5 text-base leading-none text-zinc-300 hover:bg-zinc-800">
       {children}
     </button>
   );
