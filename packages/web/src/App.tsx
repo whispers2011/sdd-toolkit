@@ -11,6 +11,7 @@ import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { ChatBubble } from './components/ChatBubble.js';
+import { ThemeToggle } from './components/ThemeToggle.js';
 import { api } from './api.js';
 
 export function App() {
@@ -77,13 +78,14 @@ export function App() {
             >
               Braucht dich
               {openAttention > 0 && (
-                <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-xs font-semibold text-zinc-950">
+                <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-xs font-semibold text-black">
                   {openAttention}
                 </span>
               )}
             </TabButton>
           </nav>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <ThemeToggle />
             <AutomationDial />
           </div>
         </header>

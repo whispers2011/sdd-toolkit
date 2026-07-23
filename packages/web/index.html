@@ -1,9 +1,31 @@
 <!doctype html>
-<html lang="de" class="dark">
+<html lang="de">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>SDD Toolkit</title>
+    <!-- FOUC-Guard (Contract C2): Modus vor dem ersten Paint setzen.
+         Auflösung: localStorage['sdd-theme'] → prefers-color-scheme → Dark. -->
+    <script>
+      (function () {
+        try {
+          var s = localStorage.getItem('sdd-theme');
+          var m =
+            s === 'light' || s === 'dark'
+              ? s
+              : matchMedia('(prefers-color-scheme: dark)').matches
+                ? 'dark'
+                : 'light';
+          var r = document.documentElement;
+          r.dataset.theme = m;
+          r.style.colorScheme = m;
+        } catch (e) {
+          var el = document.documentElement;
+          el.dataset.theme = 'dark';
+          el.style.colorScheme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

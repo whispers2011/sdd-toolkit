@@ -133,7 +133,7 @@ function PromptBar({ featureId }: { featureId: string }) {
       <button
         onClick={send}
         disabled={!text.trim()}
-        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+        className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
       >
         Senden
       </button>

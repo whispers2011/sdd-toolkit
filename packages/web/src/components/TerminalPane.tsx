@@ -5,6 +5,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { findPathLinks } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
+import { getTheme, onThemeChange } from '../theme.js';
+import { terminalTheme } from '../terminalTheme.js';
 
 /**
  * Wiederverwendbares Terminal (xterm.js ⇄ WS ⇄ Server-PTY) mit Reconnect und
@@ -44,9 +46,14 @@ export function TerminalPane({
     const term = new Terminal({
       fontSize,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-      theme: { background: '#09090b', foreground: '#d4d4d8', cursor: '#a1a1aa' },
+      theme: terminalTheme(getTheme()),
       scrollback: 20_000,
       allowProposedApi: true,
+    });
+    // Live-Umfärben bei Moduswechsel — ohne Remount, damit PTY-Verbindung,
+    // Scrollback und Eingabefokus erhalten bleiben (FR-003/FR-009).
+    const unsubscribeTheme = onThemeChange((mode) => {
+      term.options.theme = terminalTheme(mode);
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -121,6 +128,7 @@ export function TerminalPane({
 
     return () => {
       disposed = true;
+      unsubscribeTheme();
       observer.disconnect();
       dataDisposable.dispose();
       linkProvider?.dispose();

@@ -84,7 +84,7 @@ export function FeatureKnowledgeSelect({ featureId, onClose }: { featureId: stri
             <span className="text-xs text-zinc-500">{data.resolved.effective.length} aktiv</span>
             <button
               onClick={materialize}
-              className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600"
+              className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600"
             >
               In Worktree materialisieren
             </button>
