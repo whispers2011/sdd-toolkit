@@ -1,7 +1,8 @@
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import type { Feature, IntegrationStage, Project } from '@sdd/shared';
+import { isValidBranchName } from '@sdd/shared';
+import type { ApproveMergeRequest, Feature, IntegrationStage, Project } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
@@ -14,6 +15,14 @@ import { STAGE_FOR_KIND } from './attentionReconciler.js';
 import { bus } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
+
+/** Validierungsfehler der Review-Freigabe (API antwortet 400/409 statt 500). */
+export class MergeApprovalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MergeApprovalError';
+  }
+}
 
 export interface MergeQueueDeps {
   projects: ProjectRepo;
@@ -66,7 +75,7 @@ export class MergeQueueService {
         hasWork = true;
         const feature = this.deps.features.get(item.featureId);
         if (item.stage !== 'queued') {
-          // Halb erledigten Rebase abräumen, damit rebaseOntoDefault sauber neu startet.
+          // Halb erledigten Rebase abräumen, damit rebaseOnto sauber neu startet.
           if (feature?.worktreePath && existsSync(feature.worktreePath)) {
             await this.engine.abortRebase(feature.worktreePath).catch(() => {});
           }
@@ -114,12 +123,16 @@ export class MergeQueueService {
    * @returns true, wenn aufgeräumt wurde.
    */
   private async cleanupMerged(feature: Feature, project: Project, opts: { safeOnly?: boolean } = {}): Promise<boolean> {
+    const target = feature.integrationTarget ?? project.defaultBranch;
     const branchExists = await this.engine.branchExists(project.path, feature.branch);
     if (opts.safeOnly && branchExists) {
-      const merged = await this.engine.isBranchMerged(project.path, feature.branch, project.defaultBranch);
+      // Gegen das TATSÄCHLICHE Ziel prüfen — ein in 'integration/x' gemergtes
+      // Feature liegt bewusst nicht in main. Extern gelöschtes Ziel ⇒ nicht
+      // nachweisbar gemergt ⇒ überspringen mit Warnung (kein Datenverlust).
+      const merged = await this.engine.isBranchMerged(project.path, feature.branch, target);
       if (!merged) {
         console.warn(
-          `[merge-queue] ${feature.name}: als 'merged' markiert, aber Branch nicht in ${project.defaultBranch} — Cleanup übersprungen`,
+          `[merge-queue] ${feature.name}: als 'merged' markiert, aber Branch nicht in ${target} — Cleanup übersprungen`,
         );
         return false;
       }
@@ -213,11 +226,48 @@ export class MergeQueueService {
     }
   }
 
-  /** Nach menschlichem Review: in die Queue. */
-  approveForMerge(featureId: string): void {
+  /**
+   * Nach menschlichem Review: Zielwahl validieren + persistieren, Reviewer-Edits
+   * committen (⇒ erzwungene Re-Verifikation), dann in die Queue.
+   */
+  async approveForMerge(featureId: string, request: ApproveMergeRequest = {}): Promise<void> {
     const feature = this.mustFeature(featureId);
+    const project = this.mustProject(feature.projectId);
+    if (feature.integration !== 'awaiting_human_review') {
+      throw new MergeApprovalError(`Feature ist nicht prüfbereit (Stage: ${feature.integration})`);
+    }
+
+    const requested = request.targetBranch?.trim();
+    if (requested && requested !== project.defaultBranch) {
+      if (!isValidBranchName(requested)) {
+        throw new MergeApprovalError(`Ungültiger Branch-Name: '${requested}'`);
+      }
+      if (requested === feature.branch) {
+        throw new MergeApprovalError('Ziel darf nicht der Feature-Branch selbst sein');
+      }
+      const exists = await this.engine.branchExists(project.path, requested);
+      if (request.createBranch && exists) {
+        throw new MergeApprovalError(`Branch '${requested}' existiert bereits`);
+      }
+      if (!request.createBranch && !exists) {
+        throw new MergeApprovalError(`Branch '${requested}' existiert nicht`);
+      }
+      this.deps.features.setIntegrationTarget(feature.id, requested);
+    } else {
+      // Default-Ziel wird als NULL normalisiert (heutiges Verhalten).
+      this.deps.features.setIntegrationTarget(feature.id, null);
+    }
+
+    // Reviewer-Korrekturen aus dem Portal gehören als gekennzeichneter Commit ins
+    // Feature — und erzwingen eine Re-Verifikation vor dem Merge (ungeprüfter Code).
+    let forceVerify = false;
+    if (feature.worktreePath && !(await isCleanWorkingTree(feature.worktreePath))) {
+      await this.commitWorktree(feature, `review(${feature.name}): reviewer-korrekturen`);
+      forceVerify = true;
+    }
+
     this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] });
-    this.enqueue(feature);
+    this.enqueue(this.mustFeature(featureId), { forceVerify });
   }
 
   retry(featureId: string): void {
@@ -229,11 +279,11 @@ export class MergeQueueService {
     void this.beginIntegration(featureId);
   }
 
-  private enqueue(feature: Feature): void {
+  private enqueue(feature: Feature, opts: { forceVerify?: boolean } = {}): void {
     const existing = this.deps.queue
       .listByProject(feature.projectId)
       .find((i) => i.featureId === feature.id);
-    if (!existing) this.deps.queue.enqueue(feature.projectId, feature.id);
+    if (!existing) this.deps.queue.enqueue(feature.projectId, feature.id, opts);
     this.setStage(feature, 'queued');
     this.emitQueue(feature.projectId);
     void this.processProject(feature.projectId);
@@ -248,7 +298,7 @@ export class MergeQueueService {
         const head = this.deps.queue.head(projectId);
         if (!head) break;
         try {
-          const done = await this.processItem(head.id, head.featureId, projectId);
+          const done = await this.processItem(head.id, head.featureId, projectId, head.forceVerify);
           if (!done) break; // eskaliert → Queue anhalten bis Mensch eingreift
         } catch (err) {
           // Unerwarteter Fehler (z. B. Worktree ist kein Git-Repo mehr, weil er
@@ -277,9 +327,15 @@ export class MergeQueueService {
   }
 
   /** true = Item abgeschlossen (weiter mit nächstem); false = eskaliert. */
-  private async processItem(queueId: string, featureId: string, projectId: string): Promise<boolean> {
+  private async processItem(
+    queueId: string,
+    featureId: string,
+    projectId: string,
+    forceVerify = false,
+  ): Promise<boolean> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(projectId);
+    const target = feature.integrationTarget ?? project.defaultBranch;
 
     // Selbstheilung vor dem Merge: bereits gemergt → finalisieren (weiter);
     // Worktree unwiederbringlich weg und NICHT gemergt → sauber eskalieren (anhalten).
@@ -298,8 +354,12 @@ export class MergeQueueService {
     this.deps.queue.setStage(queueId, 'merging');
     this.emitQueue(projectId);
 
-    // 1) Rebase auf den Default-Branch, Konflikte agentisch auflösen.
-    let rebase = await this.engine.rebaseOntoDefault(feature.worktreePath, project.defaultBranch);
+    // 1) Rebase auf das Ziel (neuer Ziel-Branch existiert noch nicht → identische
+    //    Basis ist der Default-Branch), Konflikte agentisch auflösen.
+    const rebaseBase = (await this.engine.branchExists(project.path, target))
+      ? target
+      : project.defaultBranch;
+    let rebase = await this.engine.rebaseOnto(feature.worktreePath, rebaseBase);
     let attempts = 0;
     while (!rebase.ok && rebase.kind === 'conflict' && attempts < MAX_RESOLUTION_ATTEMPTS) {
       attempts++;
@@ -345,8 +405,9 @@ export class MergeQueueService {
       return false;
     }
 
-    // 2) Nach Konfliktauflösung IMMER erneut verifizieren — nie blind mergen.
-    if (project.verifyCommands.length > 0 && attempts > 0) {
+    // 2) Nach Konfliktauflösung oder Reviewer-Edits IMMER erneut verifizieren —
+    //    nie blind mergen.
+    if (project.verifyCommands.length > 0 && (attempts > 0 || forceVerify)) {
       const execId = this.deps.executions.start({
         projectId,
         featureId,
@@ -371,16 +432,19 @@ export class MergeQueueService {
 
     // 3a) PR-Modus (WP13): push + gh pr create statt lokalem Merge.
     if (project.integrationMode === 'pr') {
-      return this.createPullRequest(queueId, feature, project);
+      return this.createPullRequest(queueId, feature, project, target);
     }
 
-    // 3b) Merge im Haupt-Checkout.
-    const merge = await this.engine.mergeFeature({
+    // 3b) Merge ins Ziel: idempotent sicherstellen („Ziel-Branch sicherstellen,
+    //     dann mergen" — resume-sicher), Haupt-Checkout wird nie umgeschaltet.
+    await this.engine.ensureBranch(project.path, target, project.defaultBranch);
+    const merge = await this.engine.mergeIntoTarget({
       projectPath: project.path,
       branch: feature.branch,
-      defaultBranch: project.defaultBranch,
+      target,
       mode: project.mergeMode,
       message: `feat: ${feature.name}`,
+      tmpWorktreeDir: join(this.deps.dataDir, 'merge-tmp'),
     });
     if (!merge.ok) {
       this.setStage(feature, 'conflict_escalated');
@@ -396,7 +460,7 @@ export class MergeQueueService {
     this.emitQueue(projectId);
     bus.emitEvent('notification', {
       title: 'Feature gemergt',
-      body: `${feature.name} → ${project.defaultBranch}`,
+      body: `${feature.name} → ${target}`,
       featureId,
       kind: 'merged',
     });
@@ -406,10 +470,30 @@ export class MergeQueueService {
   /**
    * PR-Modus (WP13): Branch pushen (force-with-lease — der Rebase hat die
    * Historie umgeschrieben) und PR via gh erstellen. Worktree bleibt bis zum
-   * PR-Merge bestehen.
+   * PR-Merge bestehen. Ein lokal neu angelegter Ziel-Branch wird zuerst
+   * veröffentlicht, damit er als PR-Basis existiert.
    */
-  private async createPullRequest(queueId: string, feature: Feature, project: Project): Promise<boolean> {
+  private async createPullRequest(
+    queueId: string,
+    feature: Feature,
+    project: Project,
+    target: string,
+  ): Promise<boolean> {
     const wt = feature.worktreePath!;
+    if (target !== project.defaultBranch) {
+      await this.engine.ensureBranch(project.path, target, project.defaultBranch);
+      const pushTarget = await git(project.path, ['push', '-u', 'origin', target]);
+      if (pushTarget.code !== 0) {
+        this.setStage(feature, 'conflict_escalated');
+        this.deps.queue.setStage(queueId, 'conflict_escalated', pushTarget.stderr.trim());
+        this.escalate(
+          feature,
+          'merge_conflict_escalated',
+          `${feature.name}: Ziel-Branch '${target}' konnte nicht gepusht werden — ${pushTarget.stderr.trim()}`,
+        );
+        return false;
+      }
+    }
     const push = await git(wt, ['push', '--force-with-lease', '-u', 'origin', feature.branch]);
     if (push.code !== 0) {
       this.setStage(feature, 'conflict_escalated');
@@ -417,7 +501,7 @@ export class MergeQueueService {
       this.escalate(feature, 'merge_conflict_escalated', `${feature.name}: Push fehlgeschlagen — ${push.stderr.trim()}`);
       return false;
     }
-    const pr = await run(wt, 'gh', ['pr', 'create', '--fill', '--base', project.defaultBranch, '--head', feature.branch]);
+    const pr = await run(wt, 'gh', ['pr', 'create', '--fill', '--base', target, '--head', feature.branch]);
     const alreadyExists = pr.code !== 0 && /already exists/i.test(pr.stderr + pr.stdout);
     if (pr.code !== 0 && !alreadyExists) {
       this.setStage(feature, 'conflict_escalated');
@@ -466,7 +550,8 @@ export class MergeQueueService {
    * Läuft immer im Haupt-Checkout (`project.path`), nie im evtl. defekten Worktree.
    */
   private async reconcile(feature: Feature, project: Project): Promise<'proceed' | 'merged' | 'lost'> {
-    if (await isBranchMergedInto(project.path, feature.branch, project.defaultBranch)) {
+    const target = feature.integrationTarget ?? project.defaultBranch;
+    if (await isBranchMergedInto(project.path, feature.branch, target)) {
       await this.finalizeMerged(feature, project);
       return 'merged';
     }
@@ -477,7 +562,7 @@ export class MergeQueueService {
         this.escalate(
           feature,
           'merge_conflict_escalated',
-          `${feature.name}: Worktree fehlt und der Branch ist noch nicht in ${project.defaultBranch}. ` +
+          `${feature.name}: Worktree fehlt und der Branch ist noch nicht in ${feature.integrationTarget ?? project.defaultBranch}. ` +
             `Worktree neu erstellen und Integration erneut starten.`,
         );
         return 'lost';

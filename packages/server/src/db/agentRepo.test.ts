@@ -45,16 +45,24 @@ describe('AgentRepo', () => {
 
   afterEach(() => db.close());
 
-  it('Migration überführt die Alt-Personas als blockierende review_gate-Agents', () => {
+  it('Migration: Alt-Personas als blockierende review_gate-Agents + 3 neue Seeds', () => {
     const all = agents.list();
     const ids = all.map((a) => a.id);
-    expect(ids).toContain('default-code-review');
-    expect(ids).toContain('default-security-review');
-    for (const a of all.filter((x) => ids.slice(0, 2).includes(x.id))) {
+    for (const id of ['default-code-review', 'default-security-review']) {
+      const a = all.find((x) => x.id === id)!;
       expect(a.trigger).toEqual({ kind: 'review_gate' });
       expect(a.blocking).toBe(true);
       expect(a.enabled).toBe(true);
     }
+    expect(ids).toContain('default-dor-gate');
+    expect(ids).toContain('default-plan-quality');
+    expect(ids).toContain('default-doku-policy');
+    expect(agents.get('default-dor-gate')!.trigger).toEqual({ kind: 'before_phase', phase: 'implement' });
+    expect(agents.get('default-plan-quality')!.trigger).toEqual({ kind: 'after_phase', phase: 'plan' });
+    const doku = agents.get('default-doku-policy')!;
+    expect(doku.trigger).toEqual({ kind: 'review_gate' });
+    expect(doku.blocking).toBe(false); // advisory
+    expect(doku.sortOrder).toBe(2);
   });
 
   it('forProject = Union aus globalen UND projektspezifischen Agents', () => {

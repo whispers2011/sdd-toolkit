@@ -31,7 +31,15 @@ function makeFeature(
   } as unknown as Feature;
 }
 
-function setup(opts: { projectExists?: boolean; running?: boolean; feature?: Partial<Feature> } = {}) {
+function setup(
+  opts: {
+    projectExists?: boolean;
+    running?: boolean;
+    feature?: Partial<Feature>;
+    gate?: { hasAgentsFor?: (...args: unknown[]) => boolean; runTrigger?: ReturnType<typeof vi.fn> };
+    automation?: Record<string, unknown>;
+  } = {},
+) {
   let phases = initialPhases(['specify', 'plan']);
   if (opts.running) phases = { ...phases, specify: { ...phases.specify, status: 'running' } };
   const state = { get phases() { return phases; } };
@@ -40,6 +48,7 @@ function setup(opts: { projectExists?: boolean; running?: boolean; feature?: Par
   });
   const raise = vi.fn((a: { kind: string }) => ({ id: 'a1', ...a }));
   const finish = vi.fn();
+  const runTrigger = opts.gate?.runTrigger ?? vi.fn();
   const deps = {
     features: {
       get: () => makeFeature(phases, opts.feature),
@@ -55,16 +64,37 @@ function setup(opts: { projectExists?: boolean; running?: boolean; feature?: Par
           : { id: 'p1', name: 'proj', path: '/p', defaultBranch: 'main', enabledPhases: ['specify', 'plan'] },
     },
     attention: { raise, resolveFor: vi.fn(), listOpen: () => [], resolve: vi.fn() },
-    executions: { finish, reapOrphans: () => 0, start: vi.fn(), finishWithUsage: vi.fn() },
+    executions: {
+      finish,
+      reapOrphans: () => 0,
+      start: vi.fn(),
+      finishWithUsage: vi.fn(),
+      recordTranscriptEnd: vi.fn(),
+    },
     sessions: { listOpen: () => [], end: vi.fn(), latestForFeature: () => undefined, create: vi.fn() },
-    settings: {},
+    settings: {
+      getAutomation: () => ({
+        autoProgressUntil: 'off',
+        autoVerify: false,
+        autoReviewAgents: false,
+        autoMerge: false,
+        autoMode: true,
+        ...(opts.automation ?? {}),
+      }),
+      getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+    },
     worktrees: {},
-    ptys: { forFeature: () => undefined, spawn: vi.fn(), remove: vi.fn() },
-    knowledge: {},
+    ptys: { forFeature: () => undefined, spawn: vi.fn(), remove: vi.fn(), sendPrompt: vi.fn() },
+    knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+    agentGate: {
+      hasAgentsFor: opts.gate?.hasAgentsFor ?? (() => false),
+      runTrigger,
+      runAgent: vi.fn(),
+    },
     dataDir: '/tmp',
   } as unknown as OrchestratorDeps;
   const orch = new Orchestrator(deps);
-  return { orch, state, savePhases, raise, finish };
+  return { orch, state, savePhases, raise, finish, runTrigger };
 }
 
 describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
@@ -103,6 +133,118 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
 
     expect(state.phases.specify.status).toBe('idle');
     expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'run_interrupted', featureId: 'f1' }));
+  });
+});
+
+describe('Orchestrator — Agent-Gates (before_phase / after_phase)', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+
+  it('before_phase-Gate deferrt den Start: Phase bleibt idle, gateRunning=true', async () => {
+    // runTrigger hängt bewusst — der Start darf währenddessen nicht erfolgen.
+    const runTrigger = vi.fn(() => new Promise(() => {}));
+    const { orch, state } = setup({
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+    });
+
+    const result = await orch.startPhaseRun('f1', 'specify');
+    expect(result).toEqual({ gateRunning: true });
+    expect(state.phases.specify.status).toBe('idle'); // deferrt, nichts zu heilen
+    await tick();
+    expect(runTrigger).toHaveBeenCalledTimes(1);
+
+    // Doppelstart-Guard: zweiter Aufruf startet kein zweites Gate.
+    const again = await orch.startPhaseRun('f1', 'specify');
+    expect(again).toEqual({ gateRunning: true });
+    expect(runTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('before_phase-FAIL: kein Start, Inbox-Item phase_gate_failed', async () => {
+    const runTrigger = vi.fn(async () => ({ ok: false, failedAgent: 'DoR-Gate', runs: [] }));
+    const { orch, state, raise } = setup({
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+    });
+
+    await orch.startPhaseRun('f1', 'specify');
+    await tick();
+
+    expect(state.phases.specify.status).toBe('idle');
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'phase_gate_failed', featureId: 'f1' }));
+  });
+
+  it('before_phase-PASS: Start wird mit skipGates nachgeholt', async () => {
+    const runTrigger = vi.fn(async () => ({ ok: true, failedAgent: null, runs: [] }));
+    const { orch, raise } = setup({
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+    });
+
+    await orch.startPhaseRun('f1', 'specify');
+    await tick();
+
+    // Der nachgeholte Start läuft in die (absichtlich kaputte) Session-Fake und
+    // rollt zurück — entscheidend: er wurde VERSUCHT (agent_errored statt gate-FAIL).
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agent_errored', featureId: 'f1' }));
+    expect(raise).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'phase_gate_failed' }));
+  });
+
+  it('after_phase-FAIL blockiert den Auto-Progress; Phase bleibt awaiting_review', async () => {
+    const runTrigger = vi.fn(async () => ({ ok: false, failedAgent: 'Plan-Quality', runs: [] }));
+    const { orch, state, raise } = setup({
+      running: true,
+      automation: { autoProgressUntil: 'plan' }, // ohne Gate würde plan automatisch starten
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'after_phase', runTrigger },
+    });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      promptText: '',
+    });
+    const session = {
+      kind: 'feature',
+      featureId: 'f1',
+      projectId: 'p1',
+      id: 's1',
+      scrollback: '',
+      cwd: '/nonexistent',
+    } as unknown as LiveSession;
+
+    await (orch as unknown as { handleTurnCompleted: (s: LiveSession) => Promise<void> }).handleTurnCompleted(
+      session,
+    );
+
+    expect(runTrigger).toHaveBeenCalledTimes(1);
+    expect(state.phases.specify.status).toBe('awaiting_review'); // kein Auto-Approve (Human-Override möglich)
+    expect(state.phases.plan.status).toBe('idle');
+    expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'phase_gate_failed', featureId: 'f1' }));
+  });
+
+  it('approve leitet Auto-Progress mit before-Gate um (Effekt-Unterdrückung + Deferral)', async () => {
+    const runTrigger = vi.fn(() => new Promise(() => {}));
+    const { orch, state } = setup({
+      automation: { autoProgressUntil: 'plan' },
+      gate: {
+        hasAgentsFor: (...a) => {
+          const t = a[2] as { kind: string; phase?: string };
+          return t.kind === 'before_phase' && t.phase === 'plan';
+        },
+        runTrigger,
+      },
+    });
+    // specify wartet auf Review → approve würde plan normalerweise sofort starten.
+    (state.phases.specify as { status: string }).status = 'awaiting_review';
+
+    orch.approve('f1', 'specify');
+    await tick();
+
+    expect(state.phases.specify.status).toBe('approved');
+    expect(state.phases.plan.status).toBe('idle'); // deferrt statt gestartet
+    expect(runTrigger).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ kind: 'before_phase', phase: 'plan' }),
+    );
   });
 });
 

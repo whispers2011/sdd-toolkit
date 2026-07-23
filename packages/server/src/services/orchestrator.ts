@@ -35,6 +35,7 @@ import { bus } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
+import type { AgentGateService } from './agentGateService.js';
 import {
   findStaleOnBoot,
   findStaleRuntime,
@@ -51,6 +52,7 @@ export interface OrchestratorDeps {
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   knowledge: KnowledgeService;
+  agentGate: AgentGateService;
   dataDir: string;
 }
 
@@ -73,6 +75,7 @@ interface RunningPhase {
 
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
+  private runningGates = new Set<string>(); // `${featureId}:${phase}` — Doppelstart-Guard für before-Gates
   private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
@@ -210,8 +213,27 @@ export class Orchestrator {
 
   // ---------- Phasen ----------
 
-  async startPhaseRun(featureId: string, phase: FeaturePhase, extraPrompt?: string): Promise<void> {
+  async startPhaseRun(
+    featureId: string,
+    phase: FeaturePhase,
+    extraPrompt?: string,
+    opts: { skipGates?: boolean } = {},
+  ): Promise<{ gateRunning: boolean }> {
     const feature = this.mustFeature(featureId);
+
+    // before_phase-Gate: Start deferren, Phase bleibt idle (crash-sicher — ein
+    // Absturz während des Gates hinterlässt schlicht eine ungestartete Phase).
+    const trigger = { kind: 'before_phase', phase } as const;
+    if (!opts.skipGates && this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) {
+      const key = `${featureId}:${phase}`;
+      if (!this.runningGates.has(key)) {
+        this.runningGates.add(key);
+        void this.runBeforePhaseGate(key, featureId, phase, extraPrompt);
+      }
+      return { gateRunning: true };
+    }
+
+    this.resolveGateAttention(featureId);
     const t = startPhase(feature.phases, phase, Date.now());
     this.deps.features.savePhases(featureId, t.phases);
 
@@ -230,6 +252,67 @@ export class Orchestrator {
       );
       throw err;
     }
+    return { gateRunning: false };
+  }
+
+  /**
+   * before_phase-Gate asynchron ausführen: PASS startet die Phase (skipGates),
+   * blockierender FAIL erzeugt ein Inbox-Item — der Start unterbleibt.
+   */
+  private async runBeforePhaseGate(
+    key: string,
+    featureId: string,
+    phase: FeaturePhase,
+    extraPrompt?: string,
+  ): Promise<void> {
+    try {
+      const feature = this.mustFeature(featureId);
+      const project = this.mustProject(feature.projectId);
+      const outcome = await this.deps.agentGate.runTrigger(feature, project, { kind: 'before_phase', phase });
+      if (outcome.ok) {
+        await this.startPhaseRun(featureId, phase, extraPrompt, { skipGates: true });
+        return;
+      }
+      this.raiseGateFailed(featureId, `Gate vor Phase '${phase}' FAIL — ${outcome.failedAgent}`);
+    } catch (err) {
+      // Infrastruktur-Fehler (z. B. Worktree weg): behebbar melden, kein Dauer-FAIL.
+      const feature = this.deps.features.get(featureId);
+      if (!feature) return;
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: feature.projectId,
+        featureId,
+        message: `${feature.name}: Gate vor Phase '${phase}' fehlgeschlagen — ${(err as Error).message}`,
+      });
+      bus.emitEvent('attention_raised', item);
+    } finally {
+      this.runningGates.delete(key);
+    }
+  }
+
+  /** Blockierender Gate-FAIL: Inbox-Item + Notification (Human-Override bleibt möglich). */
+  private raiseGateFailed(featureId: string, detail: string): void {
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return;
+    const item = this.deps.attention.raise({
+      kind: 'phase_gate_failed',
+      projectId: feature.projectId,
+      featureId,
+      message: `${feature.name}: ${detail}`,
+    });
+    bus.emitEvent('attention_raised', item);
+    bus.emitEvent('notification', {
+      title: 'Qualitäts-Gate FAIL',
+      body: item.message,
+      featureId,
+      kind: 'escalation',
+    });
+  }
+
+  /** Freigabe/Verwerfen/Neustart einer Phase löst offene Gate-Meldungen des Features auf. */
+  private resolveGateAttention(featureId: string): void {
+    this.deps.attention.resolveFor({ featureId, kinds: ['phase_gate_failed', 'approval_required'] });
+    bus.emitEvent('attention_resolved', featureId);
   }
 
   /** Fehlgeschlagenen Phasenstart zurückrollen (running → idle) und ein „braucht dich"-Item erzeugen. */
@@ -329,6 +412,30 @@ export class Orchestrator {
   approve(featureId: string, phase: FeaturePhase): void {
     const feature = this.mustFeature(featureId);
     const automation = this.automationFor(feature);
+    this.resolveGateAttention(featureId);
+
+    // Auto-Progress-Umleitung: hätte die Folgephase ein before_phase-Gate, wird
+    // ohne Auto-Start-Effekte approvt (advanceTo-Muster) und der Start über
+    // startPhaseRun angestoßen — der deferrt bis zum Gate-PASS. phaseMachine
+    // bleibt unangetastet (kein Agent-Wissen in der pure Machine).
+    const next = nextPhase(feature.phases, phase);
+    if (
+      next !== null &&
+      shouldAutoProgress(next, automation) &&
+      this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, { kind: 'before_phase', phase: next })
+    ) {
+      const t = approvePhase(
+        feature.phases,
+        phase,
+        { ...automation, autoProgressUntil: 'off', autoVerify: false },
+        Date.now(),
+      );
+      this.deps.features.savePhases(featureId, t.phases);
+      this.emitFeature(featureId);
+      void this.startPhaseRun(featureId, next);
+      return;
+    }
+
     const t = approvePhase(feature.phases, phase, automation, Date.now());
     this.deps.features.savePhases(featureId, t.phases);
     this.emitFeature(featureId);
@@ -360,6 +467,7 @@ export class Orchestrator {
 
   discard(featureId: string, phase: FeaturePhase): void {
     const feature = this.mustFeature(featureId);
+    this.resolveGateAttention(featureId);
     const t = discardPhase(feature.phases, phase);
     this.deps.features.savePhases(featureId, t.phases);
     this.emitFeature(featureId);
@@ -491,6 +599,12 @@ export class Orchestrator {
       this.deps.features.savePhases(featureId, t.phases);
       this.emitFeature(featureId);
 
+      // after_phase-Gate: läuft NACH dem Phasenabschluss und VOR dem Auto-
+      // Progress. Blockierender FAIL → Phase bleibt awaiting_review, Inbox-Item,
+      // kein Auto-Approve; manuelles Freigeben (Human-Override) bleibt möglich.
+      const gateBlocked = await this.runAfterPhaseGate(featureId, running.phase);
+      if (gateBlocked) return;
+
       const automation = this.automationFor(feature);
       const next = nextPhase(t.phases, running.phase);
 
@@ -518,6 +632,33 @@ export class Orchestrator {
           kind: 'turn_completed',
         });
       }
+    }
+  }
+
+  /**
+   * after_phase-Gate ausführen; true = blockierender FAIL (Aufrufer stoppt den
+   * Auto-Progress). Infrastruktur-Fehler blockieren nie (best-effort + Meldung).
+   */
+  private async runAfterPhaseGate(featureId: string, phase: FeaturePhase): Promise<boolean> {
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return false;
+    const trigger = { kind: 'after_phase', phase } as const;
+    if (!this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) return false;
+    try {
+      const project = this.mustProject(feature.projectId);
+      const outcome = await this.deps.agentGate.runTrigger(feature, project, trigger);
+      if (outcome.ok) return false;
+      this.raiseGateFailed(featureId, `Qualitäts-Gate nach Phase '${phase}' FAIL — ${outcome.failedAgent}`);
+      return true;
+    } catch (err) {
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: feature.projectId,
+        featureId,
+        message: `${feature.name}: Gate nach Phase '${phase}' fehlgeschlagen — ${(err as Error).message}`,
+      });
+      bus.emitEvent('attention_raised', item);
+      return false;
     }
   }
 

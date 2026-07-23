@@ -58,6 +58,14 @@ async function main(): Promise<void> {
     onSubmitFailed: (s, text) => orchestrator.handleSubmitFailed(s, text),
   });
 
+  const agentGate = new AgentGateService({
+    agents,
+    agentRuns,
+    executions,
+    attention,
+    dataDir: config.dataDir,
+  });
+
   orchestrator = new Orchestrator({
     projects,
     features,
@@ -68,16 +76,10 @@ async function main(): Promise<void> {
     worktrees,
     ptys,
     knowledge: knowledgeService,
+    agentGate,
     dataDir: config.dataDir,
   });
 
-  const agentGate = new AgentGateService({
-    agents,
-    agentRuns,
-    executions,
-    attention,
-    dataDir: config.dataDir,
-  });
   const mergeQueue = new MergeQueueService({
     projects,
     features,

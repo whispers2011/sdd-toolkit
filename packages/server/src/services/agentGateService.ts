@@ -86,7 +86,15 @@ export class AgentGateService {
     const agent = this.deps.agents.get(agentId);
     if (!agent) throw new Error(`Agent ${agentId} nicht gefunden`);
     this.guardWorktree(feature);
-    return this.runOne(agent, feature, project, { kind: 'manual' });
+    await this.emitGate(feature, { kind: 'manual' }, 'running');
+    try {
+      const run = await this.runOne(agent, feature, project, { kind: 'manual' });
+      await this.emitGate(feature, { kind: 'manual' }, run.verdict === 'PASS' ? 'pass' : 'fail');
+      return run;
+    } catch (err) {
+      await this.emitGate(feature, { kind: 'manual' }, 'fail');
+      throw err;
+    }
   }
 
   private resolve(projectId: string, featureId: string, trigger: AgentTrigger): AgentDefinition[] {

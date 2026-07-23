@@ -55,15 +55,16 @@ describe('git-Layer (Integration)', () => {
     sh(repo, ['add', '-A']);
     sh(repo, ['commit', '-m', 'main change']);
 
-    const rebase = await engine.rebaseOntoDefault(wt, 'main');
+    const rebase = await engine.rebaseOnto(wt, 'main');
     expect(rebase).toEqual({ ok: true });
 
-    const merge = await engine.mergeFeature({
+    const merge = await engine.mergeIntoTarget({
       projectPath: repo,
       branch: 'feature/feat-a',
-      defaultBranch: 'main',
+      target: 'main',
       mode: 'ff',
       message: 'feat: feat-a',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
     });
     expect(merge.ok).toBe(true);
     expect(existsSync(join(repo, 'feature-a.txt'))).toBe(true);
@@ -91,7 +92,7 @@ describe('git-Layer (Integration)', () => {
     sh(repo, ['add', '-A']);
     sh(repo, ['commit', '-m', 'main edit']);
 
-    const rebase = await engine.rebaseOntoDefault(wt, 'main');
+    const rebase = await engine.rebaseOnto(wt, 'main');
     expect(rebase.ok).toBe(false);
     if (!rebase.ok && rebase.kind === 'conflict') {
       expect(rebase.files).toEqual(['app.txt']);
@@ -104,12 +105,13 @@ describe('git-Layer (Integration)', () => {
     const cont = await engine.continueRebase(wt);
     expect(cont).toEqual({ ok: true });
 
-    const merge = await engine.mergeFeature({
+    const merge = await engine.mergeIntoTarget({
       projectPath: repo,
       branch: 'feature/feat-b',
-      defaultBranch: 'main',
+      target: 'main',
       mode: 'ff',
       message: 'feat: feat-b',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
     });
     expect(merge.ok).toBe(true);
     expect(readFileSync(join(repo, 'app.txt'), 'utf8')).toContain('MAIN+FEATURE');
@@ -132,7 +134,7 @@ describe('git-Layer (Integration)', () => {
     sh(repo, ['add', '-A']);
     sh(repo, ['commit', '-m', 'main edit']);
 
-    const rebase = await engine.rebaseOntoDefault(wt, 'main');
+    const rebase = await engine.rebaseOnto(wt, 'main');
     expect(rebase.ok).toBe(false);
 
     // Fehlerhafte „Auflösung": Marker bleiben im Quelltext stehen (Agent exit 0, aber unvollständig).
@@ -166,15 +168,95 @@ describe('git-Layer (Integration)', () => {
     sh(wt, ['commit', '-m', 'c']);
 
     writeFileSync(join(repo, 'dirty.txt'), 'uncommitted\n');
-    const merge = await engine.mergeFeature({
+    const merge = await engine.mergeIntoTarget({
       projectPath: repo,
       branch: 'feature/feat-c',
-      defaultBranch: 'main',
+      target: 'main',
       mode: 'ff',
       message: 'x',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
     });
     expect(merge.ok).toBe(false);
     if (!merge.ok) expect(merge.message).toContain('uncommittete');
+  });
+
+  it('mergeIntoTarget: Nicht-Default-Ziel via ephemerem Worktree, Haupt-Checkout bleibt unberührt', async () => {
+    const wt = await worktrees.create({
+      projectId: 'p1',
+      projectPath: repo,
+      featureName: 'feat-e',
+      branch: 'feature/feat-e',
+      defaultBranch: 'main',
+    });
+    writeFileSync(join(wt, 'e.txt'), 'e\n');
+    sh(wt, ['add', '-A']);
+    sh(wt, ['commit', '-m', 'e']);
+
+    const mainHeadBefore = sh(repo, ['rev-parse', 'main']).trim();
+    await engine.ensureBranch(repo, 'integration/ziel', 'main');
+    // Idempotent: zweiter Aufruf ist ein No-Op.
+    await expect(engine.ensureBranch(repo, 'integration/ziel', 'main')).resolves.toBeUndefined();
+
+    const merge = await engine.mergeIntoTarget({
+      projectPath: repo,
+      branch: 'feature/feat-e',
+      target: 'integration/ziel',
+      mode: 'ff',
+      message: 'feat: feat-e',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
+    });
+    expect(merge).toEqual({ ok: true });
+
+    // Ziel enthält den Feature-Commit, main und Haupt-Checkout sind unverändert.
+    expect(sh(repo, ['merge-base', '--is-ancestor', 'feature/feat-e', 'integration/ziel'])).toBe('');
+    expect(sh(repo, ['rev-parse', 'main']).trim()).toBe(mainHeadBefore);
+    expect(readBranch(repo)).toBe('main');
+    expect(existsSync(join(repo, 'e.txt'))).toBe(false);
+    // Ephemerer Worktree wurde aufgeräumt.
+    expect(sh(repo, ['worktree', 'list'])).not.toContain('merge-tmp');
+    expect(await engine.isBranchMerged(repo, 'feature/feat-e', 'integration/ziel')).toBe(true);
+    expect(await engine.isBranchMerged(repo, 'feature/feat-e', 'main')).toBe(false);
+  });
+
+  it('mergeIntoTarget: Ziel in fremdem Worktree ausgecheckt → sauberer Fehler', async () => {
+    sh(repo, ['branch', 'integration/busy', 'main']);
+    const foreign = join(dataDir, 'foreign-wt');
+    sh(repo, ['worktree', 'add', foreign, 'integration/busy']);
+
+    const wt = await worktrees.create({
+      projectId: 'p1',
+      projectPath: repo,
+      featureName: 'feat-f',
+      branch: 'feature/feat-f',
+      defaultBranch: 'main',
+    });
+    writeFileSync(join(wt, 'f.txt'), 'f\n');
+    sh(wt, ['add', '-A']);
+    sh(wt, ['commit', '-m', 'f']);
+
+    const merge = await engine.mergeIntoTarget({
+      projectPath: repo,
+      branch: 'feature/feat-f',
+      target: 'integration/busy',
+      mode: 'ff',
+      message: 'x',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
+    });
+    expect(merge.ok).toBe(false);
+    if (!merge.ok) expect(merge.message).toContain('ausgecheckt');
+  });
+
+  it('mergeIntoTarget: fehlender Ziel-Branch → sauberer Fehler', async () => {
+    const merge = await engine.mergeIntoTarget({
+      projectPath: repo,
+      branch: 'main',
+      target: 'gibt/es-nicht',
+      mode: 'ff',
+      message: 'x',
+      tmpWorktreeDir: join(dataDir, 'merge-tmp'),
+    });
+    expect(merge.ok).toBe(false);
+    if (!merge.ok) expect(merge.message).toContain('existiert nicht');
   });
 
   it('Worktree-Remove verweigert bei uncommitteten Änderungen (ohne force)', async () => {

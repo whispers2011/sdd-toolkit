@@ -8,8 +8,15 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
-import type { AgentDefinition, FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES, aggregateBreakdown, buildRunSummaries, detectCycle, renderTranscriptLog } from '@sdd/shared';
+import type { AgentDefinition, ApproveMergeRequest, FeaturePhase } from '@sdd/shared';
+import {
+  FEATURE_PHASES,
+  aggregateBreakdown,
+  buildRunSummaries,
+  compileReviewPrompt,
+  detectCycle,
+  renderTranscriptLog,
+} from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
@@ -26,7 +33,7 @@ import type { KnowledgeRepo } from '../db/knowledgeRepo.js';
 import type { KnowledgeService } from '../services/knowledgeService.js';
 import type { Applicability, SelectionDecision } from '@sdd/shared';
 import type { Orchestrator } from '../services/orchestrator.js';
-import type { MergeQueueService } from '../services/mergeQueueService.js';
+import { MergeApprovalError, type MergeQueueService } from '../services/mergeQueueService.js';
 import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
@@ -44,6 +51,7 @@ import {
 } from '../services/featureArtifacts.js';
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
+import { registerReviewRoutes } from './reviewRoutes.js';
 
 export interface ApiDeps {
   projects: ProjectRepo;
@@ -73,6 +81,15 @@ export async function buildServer(deps: ApiDeps) {
   await app.register(cors, { origin: true });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Review-Portal-Routen (Übersicht, Branches, Dateibaum/Editor, Kommentare, Audits).
+  registerReviewRoutes(app, {
+    projects: deps.projects,
+    features: deps.features,
+    executions: deps.executions,
+    reviewComments: deps.reviewComments,
+    agentRuns: deps.agentRuns,
+  });
 
   // ---------- Bootstrap ----------
 
@@ -444,8 +461,8 @@ export async function buildServer(deps: ApiDeps) {
     '/api/features/:id/phases/:phase/start',
     async (req) => {
       const phase = validatePhase(req.params.phase);
-      await deps.orchestrator.startPhaseRun(req.params.id, phase, req.body?.prompt);
-      return deps.features.get(req.params.id);
+      const { gateRunning } = await deps.orchestrator.startPhaseRun(req.params.id, phase, req.body?.prompt);
+      return { ...deps.features.get(req.params.id), gateRunning };
     },
   );
 
@@ -497,10 +514,18 @@ export async function buildServer(deps: ApiDeps) {
     return deps.features.get(req.params.id);
   });
 
-  app.post<{ Params: { id: string } }>('/api/features/:id/approve-merge', (req) => {
-    deps.mergeQueue.approveForMerge(req.params.id);
-    return deps.features.get(req.params.id);
-  });
+  app.post<{ Params: { id: string }; Body: ApproveMergeRequest | undefined }>(
+    '/api/features/:id/approve-merge',
+    async (req) => {
+      try {
+        await deps.mergeQueue.approveForMerge(req.params.id, req.body ?? {});
+      } catch (e) {
+        if (e instanceof MergeApprovalError) throw httpError(400, e.message);
+        throw e;
+      }
+      return deps.features.get(req.params.id);
+    },
+  );
 
   app.post<{ Params: { id: string } }>('/api/features/:id/retry-integration', (req) => {
     deps.mergeQueue.retry(req.params.id);
@@ -571,17 +596,26 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
-  /** Zurückweisen im Review: Kommentar geht als Prompt in die Feature-Konsole. */
+  /**
+   * Zurückweisen im Review: offene Reviewer-Kommentare + Freitext werden zu
+   * einem strukturierten Arbeitsauftrag kompiliert und gehen als Prompt in die
+   * Feature-Konsole; eine gewählte Nicht-Default-Zielwahl wird zurückgesetzt.
+   */
   app.post<{ Params: { id: string }; Body: { comment?: string } }>(
     '/api/features/:id/reject-review',
     async (req) => {
       const feature = deps.features.get(req.params.id);
       if (!feature) throw httpError(404, 'Feature nicht gefunden');
       deps.features.setIntegration(feature.id, 'none');
+      deps.features.setIntegrationTarget(feature.id, null);
       deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] });
-      if (req.body?.comment) {
+      const openComments = deps.reviewComments
+        .listForFeature(feature.id)
+        .filter((c) => c.status === 'open');
+      const freeText = req.body?.comment ?? '';
+      if (openComments.length > 0 || freeText.trim()) {
         const session = await deps.orchestrator.ensureSession(feature.id);
-        deps.ptys.sendPrompt(session.id, `Review-Feedback (bitte umsetzen): ${req.body.comment}`);
+        deps.ptys.sendPrompt(session.id, compileReviewPrompt(openComments, freeText));
       }
       const fresh = deps.features.get(feature.id);
       if (fresh) bus.emitEvent('feature_updated', fresh);
@@ -698,6 +732,65 @@ export async function buildServer(deps: ApiDeps) {
     deps.agents.remove(req.params.id);
     return { ok: true };
   });
+
+  /** Effektive Agent-Sicht eines Features (Union + Selektion + letzter Lauf). */
+  app.get<{ Params: { id: string } }>('/api/features/:id/agents', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    const selection = deps.agents.listSelection(feature.id);
+    const lastRuns = deps.agentRuns.latestPerAgent(feature.id);
+    return deps.agents.forProject(feature.projectId).map((agent) => {
+      const decision = selection.get(agent.id) ?? 'auto';
+      const lastRun = lastRuns.get(agent.id) ?? null;
+      return {
+        agent,
+        decision,
+        effective: decision === 'include' ? true : decision === 'exclude' ? false : agent.enabled,
+        lastRun:
+          lastRun?.executionId != null
+            ? {
+                ...lastRun,
+                costUsd: deps.executions.get(lastRun.executionId)?.costUsd ?? null,
+                totalTokens: deps.executions.get(lastRun.executionId)?.tokens ?? null,
+              }
+            : lastRun,
+      };
+    });
+  });
+
+  app.put<{ Params: { id: string }; Body: { agentId: string; decision: 'include' | 'exclude' | 'auto' } }>(
+    '/api/features/:id/agents/selection',
+    (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const { agentId, decision } = req.body ?? ({} as never);
+      if (!deps.agents.get(agentId)) throw httpError(404, 'Agent nicht gefunden');
+      if (decision === 'auto') deps.agents.clearSelection(feature.id, agentId);
+      else if (decision === 'include' || decision === 'exclude') deps.agents.setSelection(feature.id, agentId, decision);
+      else throw httpError(400, 'decision muss include|exclude|auto sein');
+      return { ok: true };
+    },
+  );
+
+  /** Manueller Agent-Lauf („Jetzt ausführen") — asynchron, Ergebnis via agent_gate-Event. */
+  app.post<{ Params: { id: string; agentId: string } }>(
+    '/api/features/:id/agents/:agentId/run',
+    async (req, reply) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const project = deps.projects.get(feature.projectId);
+      if (!project) throw httpError(404, 'Projekt nicht gefunden');
+      if (!deps.agents.get(req.params.agentId)) throw httpError(404, 'Agent nicht gefunden');
+      if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
+        throw httpError(409, 'Kein Worktree vorhanden — Agent-Läufe brauchen einen Arbeitsstand');
+      }
+      void deps.agentGate
+        .runAgent(req.params.agentId, feature, project)
+        .catch((err) => console.warn(`[agents] Manueller Lauf fehlgeschlagen: ${(err as Error).message}`));
+      void reply.code(202);
+      return { started: true };
+    },
+  );
 
   // ---------- Projektspezifisches Wissen ----------
 

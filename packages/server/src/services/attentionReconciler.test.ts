@@ -116,4 +116,16 @@ describe('findStaleOnBoot', () => {
     ]);
     expect(findStaleOnBoot(open, stages).map((i) => i.id)).toEqual(['verify_failed-drop']);
   });
+
+  it('Agent-Gate-Arten sind NICHT stage-gekoppelt: bleiben über Boot und Stage-Wechsel offen', () => {
+    // Regression-Schutz: phase_gate_failed/approval_required dürfen weder beim
+    // Boot noch durch Integration-Stage-Wechsel wegresolven — sie lösen sich
+    // nur explizit (Approve/Discard/Neustart der Phase bzw. „Erledigt").
+    const open = [
+      item('phase_gate_failed', { id: 'gate', featureId: 'f1' }),
+      item('approval_required', { id: 'appr', featureId: 'f1' }),
+    ];
+    expect(findStaleOnBoot(open, new Map([['f1', 'none' as IntegrationStage]]))).toEqual([]);
+    expect(findStaleRuntime(open, snap([], [['f1', 'merged']]))).toEqual([]);
+  });
 });
