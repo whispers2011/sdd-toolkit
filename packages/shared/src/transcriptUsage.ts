@@ -5,7 +5,7 @@
  * Eine `assistant`-Zeile trägt `message.usage` mit input/output sowie
  * cache_read/cache_creation — letzteres macht den akkumulierten Kontext sichtbar.
  */
-import { priceFor } from './costMeter.js';
+import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, priceFor } from './costMeter.js';
 
 export interface TurnUsage {
   inputTokens: number;
@@ -13,6 +13,11 @@ export interface TurnUsage {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   model?: string;
+  /**
+   * Dedupe-Schlüssel (message.id + requestId): Claude Code schreibt pro Content-Block
+   * eine JSONL-Zeile mit identischer Usage — ohne Dedupe wird ~2–3× überzählt.
+   */
+  dedupeKey?: string;
 }
 
 const ZERO: TurnUsage = {
@@ -47,16 +52,29 @@ export function parseUsageLine(line: string): TurnUsage | null {
     cacheCreationTokens: num(usage.cache_creation_input_tokens),
   };
   if (typeof message?.model === 'string') out.model = message.model;
+  const messageId = typeof message?.id === 'string' ? message.id : null;
+  if (messageId) {
+    const requestId = typeof obj.requestId === 'string' ? obj.requestId : '';
+    out.dedupeKey = `${messageId}:${requestId}`;
+  }
   return out;
 }
 
-/** Alle Usage-Zeilen eines Fensters robust summieren (Nicht-Usage/kaputte Zeilen ignorieren). */
+/**
+ * Alle Usage-Zeilen eines Fensters robust summieren (Nicht-Usage/kaputte Zeilen ignorieren).
+ * Zeilen derselben Assistant-Message (gleicher dedupeKey) zählen nur einmal.
+ */
 export function sumUsage(lines: string[]): TurnUsage {
   let model: string | undefined;
   const acc: TurnUsage = { ...ZERO };
+  const seen = new Set<string>();
   for (const line of lines) {
     const u = parseUsageLine(line);
     if (!u) continue;
+    if (u.dedupeKey) {
+      if (seen.has(u.dedupeKey)) continue;
+      seen.add(u.dedupeKey);
+    }
     acc.inputTokens += u.inputTokens;
     acc.outputTokens += u.outputTokens;
     acc.cacheReadTokens += u.cacheReadTokens;
@@ -75,14 +93,18 @@ export function hasUsage(u: TurnUsage): boolean {
 }
 
 /**
- * TurnUsage → Gesamt-Tokens + Kosten. Cache-Read/-Creation werden wie Input-Tokens
- * bepreist (grobe, dokumentierte Näherung — konsistent mit der bestehenden Preis-Heuristik).
+ * TurnUsage → Gesamt-Tokens + Kosten. Cache-Read kostet 0.1× Input, Cache-Write 1.25×
+ * (Anthropic-Standardpreise) — Cache-Reads wie volle Input-Tokens zu bepreisen würde
+ * die Kosten kontextlastiger Läufe um ~10× überzeichnen.
  */
 export function usageToCost(u: TurnUsage): { totalTokens: number; costUsd: number } {
   const totalTokens =
     u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
   const price = priceFor(u.model);
-  const inputLike = u.inputTokens + u.cacheReadTokens + u.cacheCreationTokens;
+  const inputLike =
+    u.inputTokens +
+    u.cacheReadTokens * CACHE_READ_FACTOR +
+    u.cacheCreationTokens * CACHE_WRITE_FACTOR;
   const costUsd =
     (inputLike / 1_000_000) * price.inputPerM + (u.outputTokens / 1_000_000) * price.outputPerM;
   return { totalTokens, costUsd };

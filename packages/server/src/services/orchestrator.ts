@@ -67,6 +67,7 @@ interface RunningPhase {
 
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
+  private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
@@ -120,12 +121,32 @@ export class Orchestrator {
     return this.deps.features.get(feature.id)!;
   }
 
-  /** Konsole pro Feature: eine persistente Claude-Session im Worktree. */
-  async ensureSession(featureId: string): Promise<LiveSession> {
+  /**
+   * Konsole pro Feature: eine persistente Claude-Session im Worktree.
+   * Pro Feature serialisiert (in-flight Promise), sonst spawnen zwei gleichzeitige
+   * Aufrufe (z. B. Grid-Auto-Select + Konsole öffnen) doppelte Sessions.
+   */
+  ensureSession(featureId: string): Promise<LiveSession> {
+    const inFlight = this.ensuringSessions.get(featureId);
+    if (inFlight) return inFlight;
+    const p = this.ensureSessionInner(featureId).finally(() => {
+      this.ensuringSessions.delete(featureId);
+    });
+    this.ensuringSessions.set(featureId, p);
+    return p;
+  }
+
+  private async ensureSessionInner(featureId: string): Promise<LiveSession> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
     const existing = this.deps.ptys.forFeature(featureId);
     if (existing) return existing;
+
+    // Abgeschlossene Features bekommen keine neue Session mehr — sonst sammeln
+    // sich offene Sessions auf gemergten/archivierten Features an.
+    if (feature.integration === 'merged' || feature.archivedAt !== null) {
+      throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
+    }
 
     // Worktree sicherstellen — auch wenn ein gespeicherter Pfad auf Disk fehlt
     // (z. B. manuell gelöscht): worktrees.create ist idempotent.

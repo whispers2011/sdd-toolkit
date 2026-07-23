@@ -16,6 +16,16 @@ export async function loginShellEnv(): Promise<Record<string, string>> {
   for (const [k, v] of Object.entries(process.env)) {
     if (v !== undefined) base[k] = v;
   }
+  // Geerbte Claude-Code-Marker entfernen: Wurde der Server aus einer Claude-Session
+  // gestartet, erben gespawnte Sessions CLAUDE_CODE_CHILD_SESSION — Claude Code ≥2.1
+  // schaltet dann das Transkript-Schreiben ab („Transcript saving is off") und die
+  // autoritative Token-Messung fällt still auf Schätzung zurück.
+  for (const k of Object.keys(base)) {
+    if (k === 'CLAUDECODE' || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT' || k.startsWith('CLAUDE_CODE_')) {
+      delete base[k];
+    }
+  }
+  base.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1';
 
   const shell = process.env.SHELL ?? '/bin/zsh';
   const shellPath = await new Promise<string | null>((resolve) => {

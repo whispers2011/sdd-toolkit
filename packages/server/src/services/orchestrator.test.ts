@@ -9,7 +9,10 @@ import type { LiveSession } from '../pty/sessionManager.js';
  * handleSubmitFailed und reapOnBoot.
  */
 
-function makeFeature(phases = initialPhases(['specify', 'plan'])): Feature {
+function makeFeature(
+  phases = initialPhases(['specify', 'plan']),
+  patch: Partial<Feature> = {},
+): Feature {
   return {
     id: 'f1',
     projectId: 'p1',
@@ -24,10 +27,11 @@ function makeFeature(phases = initialPhases(['specify', 'plan'])): Feature {
     tasksTotal: 0,
     createdAt: 0,
     archivedAt: null,
+    ...patch,
   } as unknown as Feature;
 }
 
-function setup(opts: { projectExists?: boolean; running?: boolean } = {}) {
+function setup(opts: { projectExists?: boolean; running?: boolean; feature?: Partial<Feature> } = {}) {
   let phases = initialPhases(['specify', 'plan']);
   if (opts.running) phases = { ...phases, specify: { ...phases.specify, status: 'running' } };
   const state = { get phases() { return phases; } };
@@ -38,9 +42,9 @@ function setup(opts: { projectExists?: boolean; running?: boolean } = {}) {
   const finish = vi.fn();
   const deps = {
     features: {
-      get: () => makeFeature(phases),
+      get: () => makeFeature(phases, opts.feature),
       savePhases,
-      listAll: () => [makeFeature(phases)],
+      listAll: () => [makeFeature(phases, opts.feature)],
       setTasks: vi.fn(),
       setWorktree: vi.fn(),
     },
@@ -99,5 +103,35 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
 
     expect(state.phases.specify.status).toBe('idle');
     expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'run_interrupted', featureId: 'f1' }));
+  });
+});
+
+describe('Orchestrator — ensureSession-Guards (offene Sessions auf abgeschlossenen Features)', () => {
+  it('verweigert eine neue Session für ein gemergtes Feature', async () => {
+    const { orch } = setup({ feature: { integration: 'merged' } });
+    await expect(orch.ensureSession('f1')).rejects.toThrow(/abgeschlossen/);
+  });
+
+  it('verweigert eine neue Session für ein archiviertes Feature', async () => {
+    const { orch } = setup({ feature: { archivedAt: 123 } });
+    await expect(orch.ensureSession('f1')).rejects.toThrow(/abgeschlossen/);
+  });
+
+  it('liefert die bestehende Live-Session eines gemergten Features weiter aus (kein Bruch offener Konsolen)', async () => {
+    const { orch } = setup({ feature: { integration: 'merged' } });
+    const existing = { id: 's-live', exited: false } as unknown as LiveSession;
+    const deps = (orch as unknown as { deps: OrchestratorDeps }).deps;
+    (deps.ptys as unknown as { forFeature: () => LiveSession }).forFeature = () => existing;
+
+    await expect(orch.ensureSession('f1')).resolves.toBe(existing);
+  });
+
+  it('serialisiert parallele ensureSession-Aufrufe (keine Doppel-Spawns)', async () => {
+    const { orch } = setup({ projectExists: false }); // Inner-Aufruf wirft → beide Promises teilen denselben Fehler
+    const p1 = orch.ensureSession('f1').catch((e: Error) => e);
+    const p2 = orch.ensureSession('f1').catch((e: Error) => e);
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(r1).toBeInstanceOf(Error);
+    expect(r2).toBeInstanceOf(Error);
   });
 });

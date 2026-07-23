@@ -74,6 +74,10 @@ export interface ModelPrice {
   outputPerM: number;
 }
 
+/** Cache-Multiplikatoren (Anthropic-Standard): Read = 0.1× Input, Write (5 min) = 1.25× Input. */
+export const CACHE_READ_FACTOR = 0.1;
+export const CACHE_WRITE_FACTOR = 1.25;
+
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   'claude-opus': { inputPerM: 15, outputPerM: 75 },
   'claude-sonnet': { inputPerM: 3, outputPerM: 15 },
