@@ -199,9 +199,9 @@ mit offenen Fragen ⇒ FAIL mit nummerierter Liste (quickstart Stufe 2, i).
 
 ## Phase 12: Polish & Verifikation
 
-- [ ] T053 `pnpm -r typecheck && pnpm -r test` gesamt grün; `grep -rn "PersonaRepo" packages/` leer; `git diff --stat main -- packages/server/src/services/phaseMachine.ts` leer
-- [ ] T054 Migrations-Smoke gegen KOPIE der Dev-DB (quickstart Stufe 2): Boot ohne Fehler, 5 globale Agents sichtbar, Alt-Personas als blockierende review_gate-Gates, Alt-Reviews via Markdown-Fallback
-- [ ] T055 Manuelle End-to-End-Flows aus quickstart.md Stufe 3 (a)–(i) durchgehen und Abweichungen fixen
+- [X] T053 `pnpm -r typecheck && pnpm -r test` gesamt grün; `grep -rn "PersonaRepo" packages/` leer; `git diff --stat main -- packages/server/src/services/phaseMachine.ts` leer
+- [X] T054 Migrations-Smoke gegen KOPIE der Dev-DB (quickstart Stufe 2): Boot ohne Fehler, 5 globale Agents sichtbar, Alt-Personas als blockierende review_gate-Gates, Alt-Reviews via Markdown-Fallback
+- [ ] T055 Manuelle End-to-End-Flows aus quickstart.md Stufe 3 (a)–(i) durchgehen und Abweichungen fixen — OFFEN: braucht laufende Claude-Agents + Nutzer-Interaktion (quickstart Stufe 3)
 
 ---
 
