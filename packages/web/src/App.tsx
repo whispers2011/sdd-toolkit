@@ -24,8 +24,12 @@ export function App() {
     }
   }, []);
 
+  // Badge/Titel-Zähler auf denselben Scope wie die Inbox-Liste bringen (INV-5, FR-011):
+  // ausgewähltes Projekt und ohne Berechtigungs-Rückfragen.
   const openAttention =
-    state.app?.attention.filter((a) => a.kind !== 'permission_request').length ?? 0;
+    state.app?.attention.filter(
+      (a) => a.kind !== 'permission_request' && a.projectId === state.selectedProjectId,
+    ).length ?? 0;
 
   // Titel-Badge (WP9): offene Attention-Items im Browser-Tab sichtbar.
   useEffect(() => {

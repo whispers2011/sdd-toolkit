@@ -35,6 +35,11 @@ import { bus } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
+import {
+  findStaleOnBoot,
+  findStaleRuntime,
+  type ReconcileSnapshot,
+} from './attentionReconciler.js';
 
 export interface OrchestratorDeps {
   projects: ProjectRepo;
@@ -388,6 +393,12 @@ export class Orchestrator {
       });
       bus.emitEvent('attention_resolved', session.id);
     }
+    // Zustandsgekoppelte Bereinigung: jede jetzt überholte Meldung auflösen (auch feature-weit,
+    // z.B. „Agent-Fehler" sobald wieder gearbeitet wird). Nur in Nicht-Warte-Übergängen, damit
+    // eine gerade frisch entstehende Frage nicht sofort wieder entfernt wird.
+    if (status !== 'awaiting_input') {
+      this.reconcileOpenAttention();
+    }
 
     for (const effect of effects) {
       if (effect.kind === 'input_requested') {
@@ -558,6 +569,9 @@ export class Orchestrator {
       return;
     }
     this.deps.sessions.end(session.id);
+    // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
+    this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
+    bus.emitEvent('attention_resolved', session.id);
     if (session.featureId) {
       const running = this.runningPhases.get(session.featureId);
       if (running) {
@@ -613,9 +627,43 @@ export class Orchestrator {
         bus.emitEvent('attention_raised', item);
       }
     }
+    // Attention-Reconcile (US2): session-basierte Meldungen sind nach dem Neustart nicht mehr
+    // bestätigbar und werden konservativ aufgelöst; Merge-Arten werden gegen die persistierte
+    // integration-Stage geprüft.
+    const featureStages = new Map(this.deps.features.listAll().map((f) => [f.id, f.integration]));
+    for (const stale of findStaleOnBoot(this.deps.attention.listOpen(), featureStages)) {
+      this.deps.attention.resolve(stale.id);
+      bus.emitEvent('attention_resolved', stale.id);
+    }
     if (orphaned > 0) {
       console.log(`[reaper] ${orphaned} verwaiste Executions bereinigt`);
     }
+  }
+
+  /**
+   * Zustandsgekoppelte Bereinigung der Exception-Inbox: löst alle offenen Meldungen auf,
+   * deren zugrunde liegender Zustand nicht mehr aktiv ist (Echtzeit-Pflege + Read-Sicherheitsnetz).
+   */
+  reconcileOpenAttention(): void {
+    const snap = this.buildReconcileSnapshot();
+    for (const stale of findStaleRuntime(this.deps.attention.listOpen(), snap)) {
+      this.deps.attention.resolve(stale.id);
+      bus.emitEvent('attention_resolved', stale.id);
+    }
+  }
+
+  private buildReconcileSnapshot(): ReconcileSnapshot {
+    const sessions = this.deps.ptys
+      .list()
+      .filter((s) => !s.exited)
+      .map((s) => ({
+        sessionId: s.id,
+        status: displayStatus(s.machine.state),
+        featureId: s.featureId,
+        conversationId: s.conversationId,
+      }));
+    const featureStages = new Map(this.deps.features.listAll().map((f) => [f.id, f.integration]));
+    return { sessions, featureStages };
   }
 
   /** Disk-Reconciliation: extern erzeugte Artefakte heben idle-Phasen an. */

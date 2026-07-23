@@ -220,6 +220,12 @@ export class ChatWorkService {
       this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input', 'permission_request'] });
       bus.emitEvent('attention_resolved', session.id);
     }
+    // Zustandsgekoppelte Bereinigung (US1): überholte Meldungen (auch der frühere „Agent-Fehler"
+    // dieser Unterhaltung) auflösen, sobald wieder gearbeitet wird. Nicht im Warte-Übergang, damit
+    // eine gerade entstehende Frage nicht sofort wieder entfernt wird.
+    if (status !== 'awaiting_input') {
+      this.deps.orchestrator.reconcileOpenAttention();
+    }
 
     for (const effect of effects) {
       if (effect.kind === 'input_requested') {
@@ -268,6 +274,9 @@ export class ChatWorkService {
   handleExit(session: LiveSession, exitCode: number): void {
     this.deps.sessions.end(session.id);
     this.turnStart.delete(session.id);
+    // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
+    this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
+    bus.emitEvent('attention_resolved', session.id);
     if (exitCode !== 0) {
       const item = this.deps.attention.raise({
         kind: 'agent_errored',
