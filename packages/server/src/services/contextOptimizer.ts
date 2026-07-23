@@ -19,7 +19,16 @@ export interface PhaseContextPlan {
   fellBackToFull: boolean;
   /** Audit der Verdichtung (FR-009); nur wenn verdichtet wurde. */
   report?: CompressionReport;
+  /**
+   * `llm`-Modus gewählt, aber Präambel unter {@link LLM_MIN_TOKENS} — eine
+   * LLM-Zusammenfassung könnte nie Netto-Tokens sparen, es bleibt beim
+   * deterministischen Ergebnis (sichtbar statt still).
+   */
+  llmSkipped?: boolean;
 }
+
+/** Unterhalb dieser (geschätzten) Präambel-Größe kann LLM-Verdichtung nie Netto sparen. */
+export const LLM_MIN_TOKENS = 1500;
 
 /** Erste Phase: nie zurücksetzen (kein Vorkontext vorhanden). */
 const FIRST_PHASE: FeaturePhase = 'specify';
@@ -56,6 +65,7 @@ export function prepareForPhase(input: {
   // --- P3: Verdichtung der toolkit-injizierten Präambel ---
   let preamble = rawPreamble;
   let report: CompressionReport | undefined;
+  let llmSkipped = false;
   if (opt.compression !== 'off' && rawPreamble.trim().length > 0) {
     const result = compress(rawPreamble);
     // Deterministisches Ergebnis nur übernehmen, wenn es tatsächlich kleiner ist.
@@ -63,9 +73,14 @@ export function prepareForPhase(input: {
       preamble = result.text;
       report = result.report;
     }
+    // `llm` lohnt sich erst ab LLM_MIN_TOKENS (der Summarize-Aufruf kostet selbst
+    // Tokens) — darunter explizit deterministisch bleiben und das ausweisen.
+    if (opt.compression === 'llm' && estimateTokens(preamble) < LLM_MIN_TOKENS) {
+      llmSkipped = true;
+    }
   }
 
-  return { reset, preamble, fellBackToFull, ...(report ? { report } : {}) };
+  return { reset, preamble, fellBackToFull, ...(report ? { report } : {}), ...(llmSkipped ? { llmSkipped } : {}) };
 }
 
 /**

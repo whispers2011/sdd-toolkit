@@ -62,6 +62,12 @@ interface RunningPhase {
   scrollbackStart: number;
   /** Transkript-Byte-Offset beim Start — für autoritative Usage-Messung. */
   transcriptOffsetStart: number;
+  /**
+   * Transkript-Pfad beim Start. Wechselt die Claude-Session-ID während der Phase
+   * (z. B. /clear-Reset), gilt der Start-Offset nicht für die neue Datei —
+   * dann wird ab 0 gemessen.
+   */
+  transcriptPathStart: string | null;
   promptText: string;
 }
 
@@ -268,10 +274,15 @@ export class Orchestrator {
         `[optimizer] ${feature.name}/${phase}: Präambel verdichtet ${plan.report.tokensBefore}→${plan.report.tokensAfter} Tokens`,
       );
     }
+    if (plan.llmSkipped) {
+      console.log(
+        `[optimizer] ${feature.name}/${phase}: LLM-Verdichtung übersprungen (Präambel zu klein für Netto-Ersparnis) → deterministisch`,
+      );
+    }
 
     // Offset VOR dem Reset festhalten: die Usage des Resets (z. B. /compact) gehört
     // zur realen Kosten dieses optimierten Laufs und wird so mitgemessen (faires A/B).
-    const transcriptOffsetStart = this.transcriptOffsetFor(session);
+    const { path: transcriptPathStart, offset: transcriptOffsetStart } = this.transcriptMarkFor(session);
     const executionId = this.deps.executions.start({
       projectId: feature.projectId,
       featureId: feature.id,
@@ -289,6 +300,7 @@ export class Orchestrator {
       executionId,
       scrollbackStart: session.scrollback.length,
       transcriptOffsetStart,
+      transcriptPathStart,
       promptText: prompt,
     });
 
@@ -297,11 +309,11 @@ export class Orchestrator {
     this.deps.ptys.sendPrompt(session.id, prompt);
   }
 
-  /** Aktueller Transkript-Byte-Offset der Session (0, wenn Session-ID/Datei fehlen). */
-  private transcriptOffsetFor(session: LiveSession): number {
-    if (!session.claudeSessionId) return 0;
+  /** Aktuelle Transkript-Startmarke der Session (Pfad + Byte-Offset; 0/null wenn unbekannt). */
+  private transcriptMarkFor(session: LiveSession): { path: string | null; offset: number } {
+    if (!session.claudeSessionId) return { path: null, offset: 0 };
     const path = locateTranscript(session.cwd, session.claudeSessionId);
-    return path ? transcriptSize(path) : 0;
+    return { path, offset: path ? transcriptSize(path) : 0 };
   }
 
   private optimizationFor(feature: Feature): OptimizationSettings {
@@ -466,7 +478,7 @@ export class Orchestrator {
       // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
       this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
       // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
-      this.persistTranscriptRange(session, running.executionId);
+      this.persistTranscriptRange(session, running);
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
@@ -517,7 +529,10 @@ export class Orchestrator {
     if (session.claudeSessionId) {
       const path = locateTranscript(session.cwd, session.claudeSessionId);
       if (path) {
-        const usage = sumUsage(readTranscriptDelta(path, running.transcriptOffsetStart));
+        // Session-ID/Datei hat während der Phase gewechselt (/clear-Reset) →
+        // Start-Offset gilt nicht für die neue Datei, ab 0 messen.
+        const offset = path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
+        const usage = sumUsage(readTranscriptDelta(path, offset));
         if (hasUsage(usage)) {
           const { totalTokens, costUsd } = usageToCost(usage);
           return {
@@ -544,14 +559,16 @@ export class Orchestrator {
   /**
    * Transkriptpfad + End-Offset eines abgeschlossenen Phasen-Laufs persistieren, damit
    * der Lauf-Log-Endpoint den Ausschnitt [start, end) auch nach Server-Neustart rendern
-   * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null.
+   * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null. Hat die Datei
+   * während der Phase gewechselt (/clear), wird der Start-Offset auf 0 korrigiert.
    */
-  private persistTranscriptRange(session: LiveSession, executionId: string): void {
+  private persistTranscriptRange(session: LiveSession, running: RunningPhase): void {
     const path = session.claudeSessionId
       ? locateTranscript(session.cwd, session.claudeSessionId)
       : null;
     const offsetEnd = path ? transcriptSize(path) : 0;
-    this.deps.executions.recordTranscriptEnd(executionId, path, offsetEnd);
+    const offsetStartFix = path && path !== running.transcriptPathStart ? 0 : null;
+    this.deps.executions.recordTranscriptEnd(running.executionId, path, offsetEnd, offsetStartFix);
   }
 
   /**
@@ -601,7 +618,7 @@ export class Orchestrator {
         this.runningPhases.delete(session.featureId);
         this.deps.executions.finish(running.executionId, exitCode || 1);
         // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
-        this.persistTranscriptRange(session, running.executionId);
+        this.persistTranscriptRange(session, running);
         const feature = this.deps.features.get(session.featureId);
         if (feature) {
           const t = finishPhase(feature.phases, running.phase, exitCode || 1, Date.now());

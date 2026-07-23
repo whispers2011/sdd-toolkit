@@ -55,4 +55,28 @@ describe('prepareForPhase', () => {
     expect(llmResultIsWorthKeeping(1000, 400, 100)).toBe(true); // 600 gespart > 100 Kosten
     expect(llmResultIsWorthKeeping(1000, 950, 100)).toBe(false); // 50 gespart < 100 Kosten
   });
+
+  it('llm-Modus mit kleiner Präambel → llmSkipped (deterministisch, kein Modellaufruf)', () => {
+    const { root, name } = featureRoot(true);
+    const plan = prepareForPhase({
+      phase: 'plan',
+      worktreeRoot: root,
+      featureName: name,
+      opt: { contextStrategy: 'full', compression: 'llm' },
+      rawPreamble: '[Projektwissen] Konsultiere zuerst .sdd/knowledge/index.md …',
+    });
+    expect(plan.llmSkipped).toBe(true);
+  });
+
+  it('deterministic-Modus setzt llmSkipped nicht', () => {
+    const { root, name } = featureRoot(true);
+    const plan = prepareForPhase({
+      phase: 'plan',
+      worktreeRoot: root,
+      featureName: name,
+      opt: { contextStrategy: 'full', compression: 'deterministic' },
+      rawPreamble: 'kleiner Pointer',
+    });
+    expect(plan.llmSkipped).toBeUndefined();
+  });
 });

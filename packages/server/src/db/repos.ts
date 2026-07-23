@@ -405,8 +405,18 @@ export class ExecutionRepo {
       );
   }
 
-  /** Transkript-Endkoordinaten eines Phasen-Laufs festhalten (Lauf-Log-Attribution). */
-  recordTranscriptEnd(id: string, path: string | null, offsetEnd: number): void {
+  /**
+   * Transkript-Endkoordinaten eines Phasen-Laufs festhalten (Lauf-Log-Attribution).
+   * `offsetStartFix` korrigiert den Start-Offset, wenn die Transkript-Datei während
+   * der Phase gewechselt hat (/clear-Reset → neue Session-Datei, Messung ab 0).
+   */
+  recordTranscriptEnd(id: string, path: string | null, offsetEnd: number, offsetStartFix: number | null = null): void {
+    if (offsetStartFix !== null) {
+      this.db
+        .prepare('UPDATE executions SET transcript_path=?, transcript_offset_end=?, transcript_offset_start=? WHERE id=?')
+        .run(path, offsetEnd, offsetStartFix, id);
+      return;
+    }
     this.db
       .prepare('UPDATE executions SET transcript_path=?, transcript_offset_end=? WHERE id=?')
       .run(path, offsetEnd, id);
