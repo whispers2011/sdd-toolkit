@@ -6,7 +6,7 @@ import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
-import { KnowledgeIcon } from './icons.js';
+import { KnowledgeIcon, SettingsIcon } from './icons.js';
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
@@ -14,6 +14,7 @@ export function Sidebar() {
   const [newFeatureFor, setNewFeatureFor] = useState<string | null>(null);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [showJiraSettings, setShowJiraSettings] = useState(false);
+  const [showToolSettings, setShowToolSettings] = useState(false);
   const [jiraImportFor, setJiraImportFor] = useState<string | null>(null);
   if (!state.app) return null;
 
@@ -153,16 +154,15 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Benutzereinstellungen (nutzerweit, nicht projektgebunden): Jira-Anbindung (FR-001). */}
+      {/* Tool-weite Einstellungen (nutzerweit, nicht projektgebunden) — Heimat z. B. der Jira-Anbindung. */}
       <div className="border-t border-zinc-800 px-2 py-2">
-        <p className="mb-1 px-2 text-[10px] font-semibold tracking-wide text-zinc-600 uppercase">
-          Benutzereinstellungen
-        </p>
         <button
-          onClick={() => setShowJiraSettings(true)}
-          className="w-full rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+          onClick={() => setShowToolSettings(true)}
+          title="Einstellungen"
+          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
         >
-          Jira-Verbindung …
+          <SettingsIcon className="text-base" />
+          <span>Einstellungen</span>
         </button>
       </div>
 
@@ -174,6 +174,15 @@ export function Sidebar() {
         const project = state.app!.projects.find((p) => p.id === settingsFor);
         return project ? <ProjectSettings project={project} onClose={() => setSettingsFor(null)} /> : null;
       })()}
+      {showToolSettings && (
+        <ToolSettings
+          onClose={() => setShowToolSettings(false)}
+          onOpenJira={() => {
+            setShowToolSettings(false);
+            setShowJiraSettings(true);
+          }}
+        />
+      )}
       {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
       {jiraImportFor && (
         <JiraImportDialog
@@ -186,6 +195,30 @@ export function Sidebar() {
         />
       )}
     </aside>
+  );
+}
+
+/**
+ * Tool-weite Einstellungen (Zentrale): nutzerweite, projektübergreifende Konfiguration.
+ * Aktuell die Jira-Anbindung — hier künftig um weitere Tool-Einstellungen erweiterbar.
+ */
+function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira: () => void }) {
+  return (
+    <Dialog title="Einstellungen" onClose={onClose}>
+      <p className="mb-3 text-xs text-zinc-500">Tool-weite Einstellungen (nutzerweit, projektübergreifend).</p>
+      <div className="space-y-1">
+        <button
+          onClick={onOpenJira}
+          className="flex w-full items-center gap-3 rounded border border-zinc-700 px-3 py-2 text-left hover:bg-zinc-800"
+        >
+          <span className="flex-1">
+            <span className="block text-sm font-medium text-zinc-200">Jira-Verbindung</span>
+            <span className="block text-xs text-zinc-500">Atlassian-Konto verbinden, Sites &amp; Projekte wählen</span>
+          </span>
+          <span className="text-zinc-500">→</span>
+        </button>
+      </div>
+    </Dialog>
   );
 }
 
