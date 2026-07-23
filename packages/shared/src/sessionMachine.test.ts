@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   displayStatus,
   initialSession,
+  isReadyForInput,
+  isTerminal,
   reduceSession,
   type SessionMachine,
   type SessionSignal,
+  type SessionState,
 } from './sessionMachine.js';
 
 function run(signals: SessionSignal[], from: SessionMachine = initialSession) {
@@ -115,5 +118,35 @@ describe('sessionMachine', () => {
     ]);
     expect(machine.state.kind).toBe('stopped');
     expect(effects).toEqual([{ kind: 'session_ended' }]);
+  });
+});
+
+describe('isReadyForInput / isTerminal', () => {
+  const ready: SessionState[] = [
+    { kind: 'ready' },
+    { kind: 'working' },
+    { kind: 'turn_done' },
+    { kind: 'awaiting_input', awaiting: 'question' },
+  ];
+  const notReady: SessionState[] = [{ kind: 'created' }, { kind: 'launching' }];
+  const terminal: SessionState[] = [{ kind: 'stopped' }, { kind: 'errored' }];
+
+  it('erkennt eingabebereite Zustände', () => {
+    for (const s of ready) expect(isReadyForInput(s)).toBe(true);
+  });
+
+  it('erkennt noch-nicht-bereite Zustände', () => {
+    for (const s of notReady) expect(isReadyForInput(s)).toBe(false);
+  });
+
+  it('erkennt terminale Zustände als weder bereit noch sendbar', () => {
+    for (const s of terminal) {
+      expect(isReadyForInput(s)).toBe(false);
+      expect(isTerminal(s)).toBe(true);
+    }
+  });
+
+  it('terminal ist false für lebende Zustände', () => {
+    for (const s of [...ready, ...notReady]) expect(isTerminal(s)).toBe(false);
   });
 });

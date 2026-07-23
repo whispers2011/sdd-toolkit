@@ -4,6 +4,8 @@ import {
   initialSession,
   reduceSession,
   displayStatus,
+  isReadyForInput,
+  isTerminal,
   type SessionEffect,
   type SessionMachine,
   type SessionSignal,
@@ -14,7 +16,14 @@ import { ensureSpawnHelperExecutable } from './ptyFix.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
-import { bracketedPaste, SUBMIT_DELAY_MS, SUBMIT_KEY } from './commandBuilder.js';
+import {
+  bracketedPaste,
+  SUBMIT_DELAY_MS,
+  SUBMIT_KEY,
+  SUBMIT_CONFIRM_MS,
+  MAX_SUBMIT_RETRIES,
+  READY_TIMEOUT_MS,
+} from './commandBuilder.js';
 
 const SCROLLBACK_LIMIT = 2 * 1024 * 1024; // 2 MB Ring-Puffer pro Session
 
@@ -40,6 +49,14 @@ export interface LiveSession {
   snapshotPrefix: string | null;
   subscribers: Set<Subscriber>;
   exited: boolean;
+  /** Prompts, die eingereiht wurden, weil die Session (noch) nicht eingabebereit war. */
+  pendingPrompts: string[];
+  /** Aktuell abgeschickter Prompt, dessen Zustellung noch nicht bestätigt ist. */
+  submitPending: { text: string; attempts: number } | null;
+  /** Timer für Paste→CR bzw. Bestätigungsfenster/Retry des aktuellen Submits. */
+  submitTimer: NodeJS.Timeout | null;
+  /** Timer, der eine nie eingabebereit werdende Session als Fehlschlag beendet. */
+  readyTimer: NodeJS.Timeout | null;
 }
 
 /**
@@ -67,6 +84,12 @@ export interface SessionCallbacks {
   onClaudeSessionId: (session: LiveSession, claudeSessionId: string) => void;
   /** Volltext einer abgeschlossenen Assistant-Nachricht (Marker-Erkennung, nur Chat-Work). */
   onAssistantText?: (session: LiveSession, text: string) => void;
+  /**
+   * Ein Prompt konnte nicht zugestellt werden, obwohl die Session lebt (Retries
+   * erschöpft bzw. nie eingabebereit). Der Aufrufer rollt z. B. den Phasenstatus
+   * zurück und erzeugt ein „braucht dich"-Item.
+   */
+  onSubmitFailed?: (session: LiveSession, text: string) => void;
 }
 
 /**
@@ -146,6 +169,10 @@ export class PtySessionManager {
       snapshotPrefix: snapshotKey ? this.snapshots.load(snapshotKey) : null,
       subscribers: new Set(),
       exited: false,
+      pendingPrompts: [],
+      submitPending: null,
+      submitTimer: null,
+      readyTimer: null,
     };
     this.sessions.set(id, session);
 
@@ -171,6 +198,11 @@ export class PtySessionManager {
 
     pty.onExit(({ exitCode }) => {
       session.exited = true;
+      // Sendekontrolle stilllegen: der Exit-Pfad (handleExit) übernimmt Rollback/Attention.
+      this.clearSubmitTimer(session);
+      this.clearReadyTimer(session);
+      session.submitPending = null;
+      session.pendingPrompts = [];
       if (session.snapshotKey) this.snapshots.save(session.snapshotKey, session.scrollback);
       this.dispatch(session, { type: 'process_exited', code: exitCode });
       void session.hookWatcher?.stop();
@@ -225,12 +257,18 @@ export class PtySessionManager {
   }
 
   private dispatch(session: LiveSession, signal: SessionSignal): void {
+    // Zustellung bestätigen, sobald der abgeschickte Prompt nachweislich angenommen wurde.
+    if (session.submitPending && isSubmitConfirming(signal)) {
+      this.clearSubmitPending(session);
+    }
     const before = session.machine.state;
     const { machine, effects } = reduceSession(session.machine, signal);
     session.machine = machine;
     if (before !== machine.state || effects.length > 0) {
       this.callbacks.onStatusChange(session, effects);
     }
+    // Warteschlange antreiben (z. B. nachdem die Session eingabebereit wurde).
+    this.pump(session);
   }
 
   get(id: string): LiveSession | undefined {
@@ -291,14 +329,97 @@ export class PtySessionManager {
     this.sessions.get(id)?.pty.write(data);
   }
 
-  /** Prompt senden: Bracketed Paste + verzögertes CR (WhisperM8-Send-Pipeline). */
+  /**
+   * Prompt zuverlässig senden: einreihen und antreiben. Das eigentliche Absenden
+   * (Bracketed Paste + bestätigtes CR mit Retry) erfolgt, sobald die Session
+   * eingabebereit ist — siehe pump()/deliver(). Ersetzt das frühere „blind nach
+   * 80 ms CR", das bei frisch gespawnter TUI ins Leere lief.
+   */
   sendPrompt(id: string, text: string): void {
     const s = this.sessions.get(id);
-    if (!s) return;
+    if (!s || s.exited) return;
+    s.pendingPrompts.push(text);
+    this.pump(s);
+  }
+
+  /** Nächsten eingereihten Prompt zustellen, sobald die Session bereit ist. */
+  private pump(s: LiveSession): void {
+    if (s.exited || s.submitPending || s.pendingPrompts.length === 0) return;
+    if (isTerminal(s.machine.state)) {
+      // Session nimmt nie wieder Eingaben an → der Exit-Pfad behandelt den Rest.
+      s.pendingPrompts = [];
+      return;
+    }
+    if (!isReadyForInput(s.machine.state)) {
+      this.armReadyTimeout(s);
+      return;
+    }
+    this.clearReadyTimer(s);
+    const text = s.pendingPrompts.shift()!;
+    this.deliver(s, text);
+  }
+
+  /** Paste schreiben und den bestätigten Submit anstoßen. */
+  private deliver(s: LiveSession, text: string): void {
     s.pty.write(bracketedPaste(text));
-    setTimeout(() => {
-      if (!s.exited) s.pty.write(SUBMIT_KEY);
-    }, SUBMIT_DELAY_MS);
+    s.submitPending = { text, attempts: 0 };
+    this.armSubmit(s, SUBMIT_DELAY_MS);
+  }
+
+  private armSubmit(s: LiveSession, delay: number): void {
+    this.clearSubmitTimer(s);
+    s.submitTimer = setTimeout(() => this.fireSubmit(s), delay);
+  }
+
+  /** CR schicken, dann auf ein Bestätigungssignal warten (sonst Retry). */
+  private fireSubmit(s: LiveSession): void {
+    if (s.exited || !s.submitPending) return;
+    s.pty.write(SUBMIT_KEY);
+    this.clearSubmitTimer(s);
+    s.submitTimer = setTimeout(() => this.onSubmitUnconfirmed(s), SUBMIT_CONFIRM_MS);
+  }
+
+  private onSubmitUnconfirmed(s: LiveSession): void {
+    const sp = s.submitPending;
+    if (!sp || s.exited) return;
+    if (sp.attempts < MAX_SUBMIT_RETRIES) {
+      sp.attempts += 1;
+      this.armSubmit(s, 0); // CR erneut senden, danach wieder auf Bestätigung warten
+      return;
+    }
+    // Aufgegeben: Session lebt, nimmt den Prompt aber nicht an → Aufrufer informieren.
+    const text = sp.text;
+    this.clearSubmitPending(s);
+    this.callbacks.onSubmitFailed?.(s, text);
+    this.pump(s);
+  }
+
+  private clearSubmitPending(s: LiveSession): void {
+    this.clearSubmitTimer(s);
+    s.submitPending = null;
+  }
+
+  private clearSubmitTimer(s: LiveSession): void {
+    if (s.submitTimer) clearTimeout(s.submitTimer);
+    s.submitTimer = null;
+  }
+
+  /** Eine nie eingabebereit werdende Session als Zustell-Fehlschlag beenden. */
+  private armReadyTimeout(s: LiveSession): void {
+    if (s.readyTimer) return;
+    s.readyTimer = setTimeout(() => {
+      s.readyTimer = null;
+      if (s.exited || s.submitPending) return;
+      if (!isReadyForInput(s.machine.state) && s.pendingPrompts.length > 0) {
+        const failed = s.pendingPrompts.splice(0);
+        for (const t of failed) this.callbacks.onSubmitFailed?.(s, t);
+      }
+    }, READY_TIMEOUT_MS);
+  }
+
+  private clearReadyTimer(s: LiveSession): void {
+    if (s.readyTimer) clearTimeout(s.readyTimer);
+    s.readyTimer = null;
   }
 
   resize(id: string, cols: number, rows: number): void {
@@ -326,6 +447,13 @@ export class PtySessionManager {
   remove(id: string): void {
     this.sessions.delete(id);
   }
+}
+
+/** Signale, die belegen, dass ein abgeschickter Prompt angenommen wurde. */
+function isSubmitConfirming(signal: SessionSignal): boolean {
+  if (signal.type === 'hook') return signal.event.name === 'user_prompt_submit';
+  if (signal.type === 'transcript') return signal.event === 'working';
+  return false;
 }
 
 function shellQuote(arg: string): string {

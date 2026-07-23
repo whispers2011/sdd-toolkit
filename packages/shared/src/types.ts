@@ -160,7 +160,8 @@ export type AttentionKind =
   | 'gate_failed'
   | 'merge_conflict_escalated'
   | 'review_due'
-  | 'agent_errored';
+  | 'agent_errored'
+  | 'run_interrupted';
 
 export interface AttentionItem {
   id: string;

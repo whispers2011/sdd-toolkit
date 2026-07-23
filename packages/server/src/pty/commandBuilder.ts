@@ -86,3 +86,13 @@ export function bracketedPaste(text: string): string {
 
 export const SUBMIT_DELAY_MS = 80;
 export const SUBMIT_KEY = '\r';
+
+/**
+ * Zuverlässiges, bestätigtes Absenden (Feature „Kommandos direkt ausführen"):
+ * Nach dem CR wird auf ein Bestätigungssignal (user_prompt_submit / working)
+ * gewartet; bleibt es aus, wird das CR bis MAX_SUBMIT_RETRIES-mal wiederholt.
+ * READY_TIMEOUT_MS begrenzt das Warten auf eine noch nicht eingabebereite Session.
+ */
+export const SUBMIT_CONFIRM_MS = 500;
+export const MAX_SUBMIT_RETRIES = 3;
+export const READY_TIMEOUT_MS = 30_000;

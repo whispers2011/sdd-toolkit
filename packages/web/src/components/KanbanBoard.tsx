@@ -56,7 +56,11 @@ export function KanbanBoard() {
   const columns: Column[] = [...phaseColumns, 'integration', ...(state.showCompleted ? (['done'] as Column[]) : [])];
 
   const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+    fn().catch((e: Error) => {
+      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
+      if (/läuft bereits/i.test(e.message)) return;
+      dispatch({ type: 'error', message: e.message });
+    });
 
   const onDrop = (column: Column) => (e: DragEvent) => {
     e.preventDefault();
@@ -148,7 +152,11 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
 
   const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+    fn().catch((e: Error) => {
+      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
+      if (/läuft bereits/i.test(e.message)) return;
+      dispatch({ type: 'error', message: e.message });
+    });
 
   const phaseState = column !== 'integration' && column !== 'done' ? feature.phases[column] : undefined;
 
@@ -210,11 +218,16 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         </div>
       )}
 
-      {phaseState?.status === 'running' && (
-        <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-          <span className="status-dot status-working" /> läuft …
-        </div>
-      )}
+      {phaseState?.status === 'running' &&
+        (session && (session.status === 'working' || session.status === 'awaiting_input') ? (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
+            <span className="status-dot status-working" /> läuft …
+          </div>
+        ) : session && session.status === 'idle' ? (
+          <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-400">
+            <span className="status-dot status-idle" /> wird gestartet …
+          </div>
+        ) : null)}
       {phaseState?.stale && <div className="mt-1 text-xs text-amber-500">⚠ stale — Upstream geändert</div>}
       {feature.tasksTotal > 0 && (
         <div className="mt-2">

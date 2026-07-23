@@ -10,6 +10,7 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   merge_conflict_escalated: { label: 'Merge-Konflikt', icon: '⚡', tone: 'text-red-400' },
   review_due: { label: 'Review fällig', icon: '👀', tone: 'text-sky-400' },
   agent_errored: { label: 'Agent-Fehler', icon: '💥', tone: 'text-red-400' },
+  run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
 };
 
 /** Exception-Inbox: Monitoring by exception — der Level-3-Arbeitsmodus. */

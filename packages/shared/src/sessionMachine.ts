@@ -162,6 +162,28 @@ function sameState(a: SessionState, b: SessionState): boolean {
   return true;
 }
 
+/**
+ * Kann die Session gerade eine Eingabe (Prompt + Submit) zuverlässig annehmen?
+ * Nur wenn die Claude-TUI hochgefahren ist — nicht während created/launching und
+ * nicht in terminalen Zuständen. Grundlage des bereitschaftsgesteuerten Absendens.
+ */
+export function isReadyForInput(state: SessionState): boolean {
+  switch (state.kind) {
+    case 'ready':
+    case 'working':
+    case 'turn_done':
+    case 'awaiting_input':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Terminaler Zustand: die Session nimmt nie wieder Eingaben an. */
+export function isTerminal(state: SessionState): boolean {
+  return state.kind === 'stopped' || state.kind === 'errored';
+}
+
 /** UI-Abbildung: launching/ready/turn_done erscheinen als idle (WhisperM8-Regel). */
 export function displayStatus(state: SessionState): SessionDisplayStatus {
   switch (state.kind) {

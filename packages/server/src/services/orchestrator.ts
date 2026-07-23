@@ -182,10 +182,40 @@ export class Orchestrator {
     const t = startPhase(feature.phases, phase, Date.now());
     this.deps.features.savePhases(featureId, t.phases);
 
-    const session = await this.ensureSession(featureId);
-    const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
-    const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
-    this.launchPhase(feature, phase, session, base);
+    try {
+      const session = await this.ensureSession(featureId);
+      const slash = phaseSlashCommand(phase, `specs/${feature.name}`, this.commandPrefixFor(feature));
+      const base = extraPrompt ? `${slash} ${extraPrompt}` : slash;
+      this.launchPhase(feature, phase, session, base);
+      this.emitFeature(featureId);
+    } catch (err) {
+      // Start fehlgeschlagen → kein hängendes „läuft": Phase zurückrollen + „braucht dich".
+      this.failPhaseStart(
+        featureId,
+        phase,
+        `${feature.name}: Phase ${phase} konnte nicht gestartet werden (${(err as Error).message})`,
+      );
+      throw err;
+    }
+  }
+
+  /** Fehlgeschlagenen Phasenstart zurückrollen (running → idle) und ein „braucht dich"-Item erzeugen. */
+  private failPhaseStart(featureId: string, phase: FeaturePhase, message: string): void {
+    this.runningPhases.delete(featureId);
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return;
+    if (feature.phases[phase]?.status === 'running') {
+      const t = finishPhase(feature.phases, phase, 1, Date.now());
+      this.deps.features.savePhases(featureId, t.phases);
+    }
+    const item = this.deps.attention.raise({
+      kind: 'agent_errored',
+      projectId: feature.projectId,
+      featureId,
+      sessionId: null,
+      message,
+    });
+    bus.emitEvent('attention_raised', item);
     this.emitFeature(featureId);
   }
 
@@ -491,6 +521,37 @@ export class Orchestrator {
     this.deps.executions.recordTranscriptEnd(executionId, path, offsetEnd);
   }
 
+  /**
+   * Callback der Send-Pipeline: ein Prompt konnte nicht zugestellt werden (Session
+   * lebt, nimmt ihn aber nicht an). Laufende Phase zurückrollen + „braucht dich".
+   */
+  handleSubmitFailed(session: LiveSession, _text: string): void {
+    if (session.kind === 'chat_work') return; // Arbeits-Chat läuft über einen anderen Pfad
+    const featureId = session.featureId;
+    if (!featureId) return;
+    const feature = this.deps.features.get(featureId);
+    const running = this.runningPhases.get(featureId);
+    if (running) {
+      this.runningPhases.delete(featureId);
+      this.deps.executions.finish(running.executionId, 1);
+      if (feature) {
+        const t = finishPhase(feature.phases, running.phase, 1, Date.now());
+        this.deps.features.savePhases(featureId, t.phases);
+        this.emitFeature(featureId);
+      }
+    }
+    const item = this.deps.attention.raise({
+      kind: 'agent_errored',
+      projectId: session.projectId,
+      featureId,
+      sessionId: session.id,
+      message: running
+        ? `${feature?.name ?? 'Feature'}: Kommando für Phase ${running.phase} konnte nicht gestartet werden`
+        : `${feature?.name ?? 'Feature'}: Prompt konnte nicht abgeschickt werden`,
+    });
+    bus.emitEvent('attention_raised', item);
+  }
+
   handleExit(session: LiveSession, exitCode: number): void {
     if (session.kind === 'chat_work' && this.chatWork) {
       this.chatWork.handleExit(session, exitCode);
@@ -535,8 +596,22 @@ export class Orchestrator {
       this.deps.sessions.end(s.id);
     }
     for (const f of this.deps.features.listAll()) {
+      // Vor dem Reap merken, welche Läufe unterbrochen wurden → als „braucht dich" (fortsetzbar) melden.
+      const interrupted = (Object.keys(f.phases) as FeaturePhase[]).filter(
+        (p) => f.phases[p]?.status === 'running',
+      );
       const reaped = reapOrphanedRunning(f.phases, () => false);
       if (reaped !== f.phases) this.deps.features.savePhases(f.id, reaped);
+      for (const p of interrupted) {
+        const item = this.deps.attention.raise({
+          kind: 'run_interrupted',
+          projectId: f.projectId,
+          featureId: f.id,
+          sessionId: null,
+          message: `${f.name}: Lauf „${p}" unterbrochen — per Run fortsetzbar`,
+        });
+        bus.emitEvent('attention_raised', item);
+      }
     }
     if (orphaned > 0) {
       console.log(`[reaper] ${orphaned} verwaiste Executions bereinigt`);

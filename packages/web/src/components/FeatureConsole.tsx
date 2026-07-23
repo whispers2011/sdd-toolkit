@@ -145,10 +145,17 @@ function PromptBar({ featureId }: { featureId: string }) {
 function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPhase: FeaturePhase | null }) {
   const { state, dispatch } = useStore();
   const feature = state.app?.features.find((f) => f.id === featureId);
+  const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
   if (!feature) return null;
 
   const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => dispatch({ type: 'error', message: e.message }));
+    fn().catch((e: Error) => {
+      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
+      if (/läuft bereits/i.test(e.message)) return;
+      dispatch({ type: 'error', message: e.message });
+    });
+
+  const live = !!session && (session.status === 'working' || session.status === 'awaiting_input');
 
   return (
     <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-800 px-4 py-1.5">
@@ -158,7 +165,9 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
           ps.status === 'approved'
             ? 'text-emerald-500 border-emerald-900'
             : ps.status === 'running'
-              ? 'text-emerald-300 border-emerald-700 animate-pulse'
+              ? live
+                ? 'text-emerald-300 border-emerald-700 animate-pulse'
+                : 'text-zinc-400 border-zinc-700'
               : ps.status === 'awaiting_review'
                 ? 'text-amber-400 border-amber-800'
                 : 'text-zinc-500 border-zinc-800';
@@ -171,7 +180,11 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
                 ? `/speckit.${phase} starten`
                 : ps.status === 'awaiting_review'
                   ? 'Klick = approven'
-                  : ps.status
+                  : ps.status === 'running'
+                    ? live
+                      ? 'läuft …'
+                      : 'wird gestartet …'
+                    : ps.status
             }
             onClick={() => {
               if (ps.status === 'idle') void call(() => api.startPhase(featureId, phase));

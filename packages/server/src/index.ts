@@ -52,6 +52,7 @@ async function main(): Promise<void> {
     onAssistantText: (s, text) => {
       if (s.kind === 'chat_work') chatWork.onAssistantText(s, text);
     },
+    onSubmitFailed: (s, text) => orchestrator.handleSubmitFailed(s, text),
   });
 
   orchestrator = new Orchestrator({
