@@ -4,6 +4,8 @@ import { api, type LiveSessionInfo } from '../api.js';
 import { useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
+import { JiraSettings } from './JiraSettings.js';
+import { JiraImportDialog } from './JiraImportDialog.js';
 import { KnowledgeIcon } from './icons.js';
 
 export function Sidebar() {
@@ -11,6 +13,8 @@ export function Sidebar() {
   const [showNewProject, setShowNewProject] = useState(false);
   const [newFeatureFor, setNewFeatureFor] = useState<string | null>(null);
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
+  const [showJiraSettings, setShowJiraSettings] = useState(false);
+  const [jiraImportFor, setJiraImportFor] = useState<string | null>(null);
   if (!state.app) return null;
 
   const sessionFor = (featureId: string): LiveSessionInfo | undefined =>
@@ -57,6 +61,16 @@ export function Sidebar() {
                 title="Feature anlegen"
               >
                 +
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setJiraImportFor(project.id);
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-sky-400 group-hover:block"
+                title="Aus Jira importieren"
+              >
+                ⬇J
               </button>
               <button
                 onClick={(e) => {
@@ -139,6 +153,19 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* Benutzereinstellungen (nutzerweit, nicht projektgebunden): Jira-Anbindung (FR-001). */}
+      <div className="border-t border-zinc-800 px-2 py-2">
+        <p className="mb-1 px-2 text-[10px] font-semibold tracking-wide text-zinc-600 uppercase">
+          Benutzereinstellungen
+        </p>
+        <button
+          onClick={() => setShowJiraSettings(true)}
+          className="w-full rounded px-2 py-1 text-left text-xs text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+        >
+          Jira-Verbindung …
+        </button>
+      </div>
+
       <CompletedToggle />
 
       {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
@@ -147,6 +174,17 @@ export function Sidebar() {
         const project = state.app!.projects.find((p) => p.id === settingsFor);
         return project ? <ProjectSettings project={project} onClose={() => setSettingsFor(null)} /> : null;
       })()}
+      {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
+      {jiraImportFor && (
+        <JiraImportDialog
+          projectId={jiraImportFor}
+          onClose={() => setJiraImportFor(null)}
+          onOpenSettings={() => {
+            setJiraImportFor(null);
+            setShowJiraSettings(true);
+          }}
+        />
+      )}
     </aside>
   );
 }

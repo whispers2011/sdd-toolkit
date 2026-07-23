@@ -132,8 +132,70 @@ export interface Feature {
   /** Fortschritt aus tasks.md-Checkboxen. */
   tasksDone: number;
   tasksTotal: number;
+  /** Referenz auf das Jira-Ursprungsticket (Schnappschuss, unveränderlich nach Anlage). */
+  jiraRef?: JiraRef;
   createdAt: number;
   archivedAt: number | null;
+}
+
+// ---------- Jira-Import (Feature "erstellen-eines-features-basierend-auf-einem-jira-ticket") ----------
+
+/** Dauerhafte Ticket-Referenz eines importierten Features (FR-012). */
+export interface JiraRef {
+  key: string;
+  url: string;
+  importedAt: number;
+}
+
+export type JiraConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reauth_required';
+
+export interface JiraConnectionStatus {
+  state: JiraConnectionState;
+  account?: { name: string; email?: string };
+  site?: { id: string; name: string; url: string };
+}
+
+export interface JiraSite {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface JiraProject {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export interface JiraSprint {
+  id: number;
+  name: string;
+  state: 'active' | 'future';
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface JiraIssueSummary {
+  key: string;
+  title: string;
+  type: string;
+  status: string;
+  /** FR-010: bereits als Feature im aktuellen Toolkit-Projekt übernommen. */
+  imported: boolean;
+}
+
+export interface JiraImportResult {
+  issueKey: string;
+  status: 'created' | 'failed' | 'skipped_duplicate';
+  featureId?: string;
+  error?: string;
+}
+
+/** Letzte Auswahl im Import-Dialog (Settings-Key `jira.lastSelection`, FR-009). */
+export interface JiraSelection {
+  siteId?: string;
+  projectKey?: string;
+  sprintId?: number;
 }
 
 /** Laufzeitstatus einer Agent-/Terminal-Session (ephemer, nie persistiert). */

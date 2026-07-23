@@ -24,6 +24,13 @@ import type {
   SaveFeatureArtifactRequest,
   SaveFeatureArtifactResult,
   FeatureProposalStatus,
+  JiraConnectionStatus,
+  JiraImportResult,
+  JiraIssueSummary,
+  JiraProject,
+  JiraSelection,
+  JiraSite,
+  JiraSprint,
   KnowledgeBundle,
   KnowledgeEntry,
   KnowledgeIndex,
@@ -80,6 +87,40 @@ export interface AppState {
   queues: Record<string, MergeQueueItem[]>;
   automation: AutomationSettings;
   optimization: OptimizationSettings;
+}
+
+/** Jira-Routen-Fehler mit HTTP-Status + Verbindungszustand (401 → reauth/disconnected). */
+export class JiraApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly state?: 'disconnected' | 'reauth_required',
+  ) {
+    super(message);
+    this.name = 'JiraApiError';
+  }
+}
+
+async function jiraRequest<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+    body: body !== undefined ? JSON.stringify(body) : null,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let message = text;
+    let state: 'disconnected' | 'reauth_required' | undefined;
+    try {
+      const data = JSON.parse(text) as { message?: string; state?: 'disconnected' | 'reauth_required' };
+      message = data.message ?? text;
+      state = data.state;
+    } catch {
+      /* raw text */
+    }
+    throw new JiraApiError(message || `${method} ${url} → ${res.status}`, res.status, state);
+  }
+  return res.json() as Promise<T>;
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -352,6 +393,28 @@ export const api = {
     request<unknown>('PUT', `/api/features/${featureId}/agents/selection`, { agentId, decision }),
   runAgent: (featureId: string, agentId: string) =>
     request<{ started: true }>('POST', `/api/features/${featureId}/agents/${agentId}/run`),
+  // Jira-Anbindung & Import (US1–US4)
+  jiraStatus: () => jiraRequest<JiraConnectionStatus>('GET', '/api/jira/status'),
+  jiraConnect: () => jiraRequest<{ authUrl: string | null }>('POST', '/api/jira/connect'),
+  jiraDisconnect: () => jiraRequest<{ state: 'disconnected' }>('POST', '/api/jira/disconnect'),
+  jiraSites: () => jiraRequest<JiraSite[]>('GET', '/api/jira/sites'),
+  jiraProjects: (siteId: string) =>
+    jiraRequest<JiraProject[]>('GET', `/api/jira/projects?siteId=${encodeURIComponent(siteId)}`),
+  jiraSprints: (siteId: string, projectKey: string) =>
+    jiraRequest<JiraSprint[]>(
+      'GET',
+      `/api/jira/sprints?siteId=${encodeURIComponent(siteId)}&projectKey=${encodeURIComponent(projectKey)}`,
+    ),
+  jiraIssues: (siteId: string, projectKey: string, sprintId?: number, projectId?: string) => {
+    const params = new URLSearchParams({ siteId, projectKey });
+    if (sprintId !== undefined) params.set('sprintId', String(sprintId));
+    if (projectId) params.set('projectId', projectId);
+    return jiraRequest<JiraIssueSummary[]>('GET', `/api/jira/issues?${params.toString()}`);
+  },
+  getJiraSelection: () => jiraRequest<JiraSelection>('GET', '/api/settings/jira'),
+  saveJiraSelection: (sel: JiraSelection) => jiraRequest<JiraSelection>('PUT', '/api/settings/jira', sel),
+  jiraImport: (projectId: string, payload: { siteId: string; issueKeys: string[]; confirmedReimports?: string[] }) =>
+    jiraRequest<JiraImportResult[]>('POST', `/api/projects/${projectId}/jira-import`, payload),
 };
 
 export interface KnowledgeResponse {

@@ -89,6 +89,39 @@ Beschreibung — die Anlage läuft über denselben Weg wie manuell angelegte Fea
 (Worktree, Branch, optional direkt `/speckit.specify`). Ablehnen oder Dialog-Abbruch
 haben keine Seiteneffekte.
 
+## Jira-Import
+
+Features lassen sich direkt aus Jira-Cloud-Tickets erstellen — die Übernahme ist ein
+**Schnappschuss** (keine Synchronisation) und mündet in den normalen Feature-Workflow
+(Worktree, Branch, `/speckit-specify` mit dem Ticketinhalt als Ausgangsmaterial).
+
+**Voraussetzungen:** Jira-Cloud-Konto mit Zugriff auf mindestens ein Projekt. Die Anbindung
+läuft über den **offiziellen Atlassian MCP** (Rovo MCP, `mcp.atlassian.com`) mit
+OAuth-Freigabe im Browser — das Toolkit speichert weder Jira-Passwörter noch eigene
+API-Token.
+
+**Verbindung einrichten:** Sidebar → **Benutzereinstellungen → Jira-Verbindung** →
+„Mit Jira verbinden". Die Freigabe wird im Browser erteilt; danach zeigt der Bereich
+Konto + Jira-Instanz. Die Autorisierung gilt **auf Nutzerebene** (alle Toolkit-Projekte),
+überlebt Neustarts und liegt unter `~/.sdd-toolkit/atlassian-mcp.json` — „Verbindung
+trennen" entfernt genau diese Datei. Läuft die Autorisierung ab, bieten die Einstellungen
+direkt „Erneut autorisieren" an.
+
+**Tickets übernehmen:** In der Sidebar am Projekt **„Aus Jira importieren" (⬇J)** →
+Site, Projekt und Sprint wählen (aktive + zukünftige Sprints aller Boards zusammengeführt;
+Projekte ohne Sprints zeigen die Backlog-/Projektsicht). Ein oder mehrere Tickets per
+Checkbox auswählen → „Übernehmen (n)". Je Ticket entsteht **genau ein Feature** mit
+Ticket-Titel, -Beschreibung und dauerhaft sichtbarem Jira-Key (klickbarer Link auf Karte
+und Konsole). Bereits übernommene Tickets sind markiert; ein Re-Import verlangt eine
+ausdrückliche Bestätigung und erzeugt ein weiteres, unabhängiges Feature. Fehler einzelner
+Tickets stoppen die übrigen nicht — das Ergebnis wird pro Ticket ausgewiesen.
+
+**Ticketkontext:** Die Übernahme liest den vollständigen Kontext ein: alle ausgefüllten
+Standard-/Custom-Felder, sämtliche Kommentare (Autor + Zeitpunkt) und alle zugänglichen
+Anhänge. Im Feature-Worktree liegt das Material unter `specs/<slug>/jira/` (`ticket.md`
+als Markdown-Dossier, `attachments/` mit den Dateien); nicht abrufbare Anhänge werden im
+Dossier mit Name + Quell-URL vermerkt.
+
 ## Automation-Dial (Level 2 ↔ Level 3)
 
 | Automation | Level 2 (aus) | Level 3 (an) |

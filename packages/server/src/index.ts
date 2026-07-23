@@ -14,6 +14,9 @@ import {
 import { AgentRepo, AgentRunRepo } from './db/agentRepo.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { KnowledgeService } from './services/knowledgeService.js';
+import { AtlassianMcpClient } from './services/atlassianMcpClient.js';
+import { JiraBrowseService } from './services/jiraBrowseService.js';
+import { JiraImportService } from './services/jiraImportService.js';
 import { ChatService } from './services/chatService.js';
 import { ChatWorkService } from './services/chatWorkService.js';
 import { AgentGateService } from './services/agentGateService.js';
@@ -114,6 +117,14 @@ async function main(): Promise<void> {
   });
   orchestrator.attachChatWork(chatWork);
 
+  // Jira-Import (US1–US4): MCP-Client auf Nutzerebene + Browse-/Import-Services.
+  const jira = new AtlassianMcpClient({
+    dataDir: config.dataDir,
+    callbackUrl: `http://127.0.0.1:${config.port}/api/jira/oauth/callback`,
+  });
+  const jiraBrowse = new JiraBrowseService(jira);
+  const jiraImport = new JiraImportService({ jira, features, orchestrator });
+
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
   // Merge-Queue-Recovery SEQUENZIELL (nie unawaited parallel): zwei gleichzeitige
@@ -164,6 +175,9 @@ async function main(): Promise<void> {
     onboarding,
     chat,
     chatWork,
+    jira,
+    jiraBrowse,
+    jiraImport,
     ptys,
     dataDir: config.dataDir,
   });

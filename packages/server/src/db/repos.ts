@@ -14,6 +14,7 @@ import type {
   FeaturePhase,
   FeatureProposal,
   IntegrationStage,
+  JiraRef,
   MergeQueueItem,
   OptimizationSettings,
   Project,
@@ -153,6 +154,9 @@ interface FeatureRow {
   optimization: string;
   tasks_done: number;
   tasks_total: number;
+  jira_key: string | null;
+  jira_url: string | null;
+  jira_imported_at: number | null;
   created_at: number;
   archived_at: number | null;
 }
@@ -171,6 +175,9 @@ function toFeature(r: FeatureRow): Feature {
     optimization: parseOptimizationPartial(JSON.parse(r.optimization ?? '{}')),
     tasksDone: r.tasks_done,
     tasksTotal: r.tasks_total,
+    ...(r.jira_key && r.jira_url
+      ? { jiraRef: { key: r.jira_key, url: r.jira_url, importedAt: r.jira_imported_at ?? 0 } }
+      : {}),
     createdAt: r.created_at,
     archivedAt: r.archived_at,
   };
@@ -259,6 +266,22 @@ export class FeatureRepo {
     this.db
       .prepare('UPDATE features SET optimization=? WHERE id=?')
       .run(JSON.stringify(parseOptimizationPartial(optimization)), id);
+  }
+
+  /** Ticket-Referenz eines importierten Features persistieren (Schnappschuss, FR-012). */
+  setJiraRef(featureId: string, ref: JiraRef): void {
+    this.db
+      .prepare('UPDATE features SET jira_key=?, jira_url=?, jira_imported_at=? WHERE id=?')
+      .run(ref.key, ref.url, ref.importedAt, featureId);
+  }
+
+  /** Bereits importierte Ticketschlüssel eines Projekts (Duplikat-Kennzeichnung, FR-010/FR-014). */
+  listJiraKeys(projectId: string): string[] {
+    return (
+      this.db
+        .prepare('SELECT DISTINCT jira_key FROM features WHERE project_id=? AND jira_key IS NOT NULL')
+        .all(projectId) as { jira_key: string }[]
+    ).map((r) => r.jira_key);
   }
 
   archive(id: string): void {

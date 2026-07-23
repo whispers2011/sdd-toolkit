@@ -920,7 +920,8 @@ export class Orchestrator {
   }
 }
 
-function slugify(name: string): string {
+/** Feature-Name → Slug (Ordnername unter specs/); auch vom Jira-Import genutzt (FR-013). */
+export function slugify(name: string): string {
   return name
     .toLowerCase()
     .trim()

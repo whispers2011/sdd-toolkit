@@ -320,6 +320,14 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   ALTER TABLE features ADD COLUMN integration_target TEXT;
   ALTER TABLE merge_queue ADD COLUMN force_verify INTEGER NOT NULL DEFAULT 0;
   `,
+  // Feature "erstellen-eines-features-basierend-auf-einem-jira-ticket": Ticket-Referenz
+  // importierter Features (Schnappschuss) + Index für Duplikat-Lookup (FR-010/FR-014).
+  `
+  ALTER TABLE features ADD COLUMN jira_key TEXT;
+  ALTER TABLE features ADD COLUMN jira_url TEXT;
+  ALTER TABLE features ADD COLUMN jira_imported_at INTEGER;
+  CREATE INDEX idx_features_jira ON features(project_id, jira_key);
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

@@ -34,6 +34,11 @@ import type { KnowledgeService } from '../services/knowledgeService.js';
 import type { Applicability, SelectionDecision } from '@sdd/shared';
 import type { Orchestrator } from '../services/orchestrator.js';
 import { MergeApprovalError, type MergeQueueService } from '../services/mergeQueueService.js';
+import { JiraAuthRequiredError, JiraUnreachableError } from '../services/atlassianMcpClient.js';
+import type { AtlassianMcpClient } from '../services/atlassianMcpClient.js';
+import type { JiraBrowseService } from '../services/jiraBrowseService.js';
+import type { JiraImportService } from '../services/jiraImportService.js';
+import type { JiraSelection } from '@sdd/shared';
 import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
@@ -73,6 +78,9 @@ export interface ApiDeps {
   onboarding: OnboardingService;
   chat: ChatService;
   chatWork: ChatWorkService;
+  jira: AtlassianMcpClient;
+  jiraBrowse: JiraBrowseService;
+  jiraImport: JiraImportService;
   ptys: PtySessionManager;
   dataDir: string;
 }
@@ -613,6 +621,119 @@ export async function buildServer(deps: ApiDeps) {
     if (!project) throw httpError(404, 'Projekt nicht gefunden');
     return { feature, project, cwd: feature.worktreePath ?? project.path };
   }
+
+  // ---------- Jira-Anbindung & Import (US1–US4) ----------
+
+  /** Fehler-Mapping des Contracts: Auth → 401 {message, state}, nicht erreichbar → 503. */
+  async function jiraGuarded<T>(
+    reply: { code(statusCode: number): unknown },
+    fn: () => Promise<T>,
+  ): Promise<T | { message: string; state?: string }> {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof JiraAuthRequiredError) {
+        void reply.code(401);
+        return { message: err.message, state: err.state };
+      }
+      if (err instanceof JiraUnreachableError) {
+        void reply.code(503);
+        return { message: err.message };
+      }
+      throw err;
+    }
+  }
+
+  /** Verbindungsstatus — immer 200, auch unverbunden (Contract US1). */
+  app.get('/api/jira/status', () => deps.jira.getStatus());
+
+  /** OAuth-Browser-Flow starten; authUrl=null, wenn Tokens noch gültig sind. */
+  app.post('/api/jira/connect', (_req, reply) => jiraGuarded(reply, () => deps.jira.startConnect()));
+
+  /** OAuth-Callback des Anbieters — antwortet mit minimaler HTML-Seite. */
+  app.get<{ Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
+    '/api/jira/oauth/callback',
+    async (req, reply) => {
+      void reply.type('text/html; charset=utf-8');
+      const { code, state, error, error_description: errorDescription } = req.query;
+      if (error || !code) {
+        void reply.code(400);
+        return oauthCallbackHtml(false, errorDescription || error || 'Kein Autorisierungscode erhalten');
+      }
+      try {
+        await deps.jira.handleCallback(code, state);
+        return oauthCallbackHtml(true);
+      } catch (err) {
+        void reply.code(400);
+        return oauthCallbackHtml(false, (err as Error).message);
+      }
+    },
+  );
+
+  /** Verbindung trennen: Persistenzdatei entfernen (FR-005). */
+  app.post('/api/jira/disconnect', async () => {
+    await deps.jira.disconnect();
+    return { state: 'disconnected' };
+  });
+
+  app.get('/api/jira/sites', (_req, reply) => jiraGuarded(reply, () => deps.jiraBrowse.listSites()));
+
+  app.get<{ Querystring: { siteId?: string } }>('/api/jira/projects', (req, reply) => {
+    const siteId = req.query.siteId;
+    if (!siteId) throw httpError(400, 'siteId erforderlich');
+    return jiraGuarded(reply, () => deps.jiraBrowse.listProjects(siteId));
+  });
+
+  app.get<{ Querystring: { siteId?: string; projectKey?: string } }>('/api/jira/sprints', (req, reply) => {
+    const { siteId, projectKey } = req.query;
+    if (!siteId || !projectKey) throw httpError(400, 'siteId und projectKey erforderlich');
+    return jiraGuarded(reply, () => deps.jiraBrowse.listSprints(siteId, projectKey));
+  });
+
+  /** Ticketliste (Sprint- oder Projekt-/Backlog-Ebene); imported je Toolkit-Projekt (FR-010). */
+  app.get<{ Querystring: { siteId?: string; projectKey?: string; sprintId?: string; projectId?: string } }>(
+    '/api/jira/issues',
+    (req, reply) => {
+      const { siteId, projectKey, sprintId, projectId } = req.query;
+      if (!siteId || !projectKey) throw httpError(400, 'siteId und projectKey erforderlich');
+      return jiraGuarded(reply, async () => {
+        const issues = await deps.jiraBrowse.listIssues(
+          siteId,
+          projectKey,
+          sprintId ? Number(sprintId) : undefined,
+        );
+        const imported = new Set(projectId ? deps.features.listJiraKeys(projectId) : []);
+        return issues.map((i) => ({ ...i, imported: imported.has(i.key) }));
+      });
+    },
+  );
+
+  /** Letzte Auswahl (FR-009): Settings-Key jira.lastSelection. */
+  app.get('/api/settings/jira', () => deps.settings.getJson<JiraSelection>('jira.lastSelection') ?? {});
+  app.put<{ Body: JiraSelection }>('/api/settings/jira', (req) => {
+    const sel: JiraSelection = {};
+    if (typeof req.body?.siteId === 'string') sel.siteId = req.body.siteId;
+    if (typeof req.body?.projectKey === 'string') sel.projectKey = req.body.projectKey;
+    if (typeof req.body?.sprintId === 'number') sel.sprintId = req.body.sprintId;
+    deps.settings.setJson('jira.lastSelection', sel);
+    return sel;
+  });
+
+  /** Ticket(s) als Feature(s) übernehmen (US3/US4); Teilfehler ⇒ trotzdem 200 (FR-015). */
+  app.post<{
+    Params: { id: string };
+    Body: { siteId?: string; issueKeys?: string[]; confirmedReimports?: string[] };
+  }>('/api/projects/:id/jira-import', (req, reply) => {
+    const project = deps.projects.get(req.params.id);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+    const { siteId, issueKeys, confirmedReimports } = req.body ?? {};
+    if (!siteId || !Array.isArray(issueKeys) || issueKeys.length === 0) {
+      throw httpError(400, 'siteId und issueKeys erforderlich');
+    }
+    return jiraGuarded(reply, () =>
+      deps.jiraImport.importIssues(project.id, siteId, issueKeys, confirmedReimports ?? []),
+    );
+  });
 
   // ---------- Attention / Queue / Settings / Executions ----------
 
@@ -1175,6 +1296,21 @@ export async function buildServer(deps: ApiDeps) {
 
 function shellQuotePath(p: string): string {
   return `'${p.replaceAll("'", `'\\''`)}'`;
+}
+
+/** Minimale Abschluss-Seite des OAuth-Flows („Fenster kann geschlossen werden"). */
+function oauthCallbackHtml(ok: boolean, message?: string): string {
+  const title = ok ? 'Jira verbunden' : 'Autorisierung fehlgeschlagen';
+  const body = ok
+    ? 'Die Verbindung wurde hergestellt. Dieses Fenster kann geschlossen werden — zurück zum SDD Toolkit.'
+    : `Die Autorisierung konnte nicht abgeschlossen werden: ${escapeHtml(message ?? 'Unbekannter Fehler')}. Bitte im SDD Toolkit erneut versuchen.`;
+  return `<!doctype html><html lang="de"><head><meta charset="utf-8"><title>${title}</title>
+<style>body{font-family:-apple-system,sans-serif;background:#18181b;color:#e4e4e7;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}main{max-width:26rem;text-align:center;padding:2rem}h1{font-size:1.1rem}p{color:#a1a1aa;font-size:.9rem}</style>
+</head><body><main><h1>${ok ? '✓' : '✕'} ${title}</h1><p>${body}</p></main></body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
 function validatePhase(phase: string): FeaturePhase {

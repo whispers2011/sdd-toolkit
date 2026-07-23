@@ -33,6 +33,17 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           {project?.name} / {feature.name}
         </span>
         <span className="text-xs text-zinc-500">{feature.branch}</span>
+        {feature.jiraRef && (
+          <a
+            href={feature.jiraRef.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded bg-sky-950 px-1.5 py-0.5 font-mono text-xs text-sky-400 hover:bg-sky-900 hover:text-sky-300"
+            title={`Jira-Ticket ${feature.jiraRef.key} öffnen`}
+          >
+            {feature.jiraRef.key}
+          </a>
+        )}
         {feature.worktreePath && (
           <span className="truncate text-xs text-zinc-600" title={feature.worktreePath}>
             {feature.worktreePath}

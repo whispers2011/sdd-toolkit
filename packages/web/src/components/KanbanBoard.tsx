@@ -224,7 +224,21 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
           ⚙
         </button>
       </div>
-      <div className="mt-1 text-xs text-zinc-500">{project?.name}</div>
+      <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
+        <span>{project?.name}</span>
+        {feature.jiraRef && (
+          <a
+            href={feature.jiraRef.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="rounded bg-sky-950 px-1.5 py-0.5 font-mono text-[10px] text-sky-400 hover:bg-sky-900 hover:text-sky-300"
+            title={`Jira-Ticket ${feature.jiraRef.key} öffnen`}
+          >
+            {feature.jiraRef.key}
+          </a>
+        )}
+      </div>
 
       {steps.length > 0 && (
         <div className="mt-1.5 flex items-center gap-1">

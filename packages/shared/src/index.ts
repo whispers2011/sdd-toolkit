@@ -20,3 +20,5 @@ export * from './diffParse.js';
 export * from './branchSuggest.js';
 export * from './reviewPrompt.js';
 export * from './agentSelect.js';
+export * from './jiraSprints.js';
+export * from './jiraContent.js';
