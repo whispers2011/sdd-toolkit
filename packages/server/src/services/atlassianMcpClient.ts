@@ -13,8 +13,12 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { JiraConnectionStatus } from '@sdd/shared';
 
-/** Offizieller Atlassian Rovo MCP (per Spec-Clarification fixiert). */
-export const ROVO_MCP_URL = 'https://mcp.atlassian.com/v1/sse';
+/**
+ * Offizieller Atlassian Rovo MCP (per Spec-Clarification fixiert).
+ * Streamable HTTP ist der aktuelle Endpoint; der SSE-Endpoint (/v1/sse) ist
+ * seit 30.06.2026 abgekündigt und dient nur noch als Rückfallebene.
+ */
+export const ROVO_MCP_URL = 'https://mcp.atlassian.com/v1/mcp';
 
 /** Autorisierung fehlt oder ist abgelaufen → HTTP 401 mit Zustand (FR-004). */
 export class JiraAuthRequiredError extends Error {
@@ -74,12 +78,12 @@ class RovoTransportFactory implements McpTransportFactory {
       };
     };
     try {
-      return await attempt(new SSEClientTransport(new URL(this.mcpUrl), { authProvider }));
+      return await attempt(new StreamableHTTPClientTransport(new URL(this.mcpUrl), { authProvider }));
     } catch (err) {
       if (err instanceof UnauthorizedError) throw err;
-      // SSE-Endpunkt abgekündigt/gestört → Streamable HTTP als Rückfallebene (R2).
+      // Streamable HTTP gestört → abgekündigter SSE-Endpunkt als Rückfallebene (R2).
       return attempt(
-        new StreamableHTTPClientTransport(new URL(this.mcpUrl.replace(/\/sse\/?$/, '/mcp')), {
+        new SSEClientTransport(new URL(this.mcpUrl.replace(/\/mcp\/?$/, '/sse')), {
           authProvider,
         }),
       );
@@ -88,7 +92,7 @@ class RovoTransportFactory implements McpTransportFactory {
 
   async finishAuth(authProvider: OAuthClientProvider, code: string): Promise<void> {
     // finishAuth tauscht den Code über den Provider — unabhängig vom Verbindungszustand.
-    const transport = new SSEClientTransport(new URL(this.mcpUrl), { authProvider });
+    const transport = new StreamableHTTPClientTransport(new URL(this.mcpUrl), { authProvider });
     await transport.finishAuth(code);
   }
 }
@@ -429,6 +433,27 @@ function extractText(result: McpToolResult): string {
     .join('\n');
 }
 
+/**
+ * Führende einzeilige `[Hinweis]`-Blöcke des MCP-Servers entfernen (der Rovo MCP
+ * stellt Tool-Antworten z. B. eine Deprecation-Notiz vor dem JSON voran).
+ */
+function stripLeadingNotices(text: string): string {
+  let rest = text.trimStart();
+  for (;;) {
+    const nl = rest.indexOf('\n');
+    if (nl === -1) break;
+    const line = rest.slice(0, nl).trimEnd();
+    if (!line.startsWith('[') || !line.endsWith(']')) break;
+    try {
+      JSON.parse(line);
+      break; // einzeiliges JSON-Array, keine Notiz
+    } catch {
+      rest = rest.slice(nl + 1).trimStart();
+    }
+  }
+  return rest;
+}
+
 /** Tool-Ergebnis auf Nutzdaten reduzieren: structuredContent > JSON-Text > Rohtext. */
 export function parseToolResult(result: McpToolResult): unknown {
   if (result.structuredContent !== undefined) return result.structuredContent;
@@ -437,6 +462,14 @@ export function parseToolResult(result: McpToolResult): unknown {
   try {
     return JSON.parse(text) as unknown;
   } catch {
+    const stripped = stripLeadingNotices(text);
+    if (stripped !== text) {
+      try {
+        return JSON.parse(stripped) as unknown;
+      } catch {
+        /* Rohtext unten */
+      }
+    }
     return text;
   }
 }

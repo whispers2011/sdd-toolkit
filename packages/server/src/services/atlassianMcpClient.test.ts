@@ -200,4 +200,21 @@ describe('parseToolResult', () => {
   it('liefert null ohne Inhalt', () => {
     expect(parseToolResult({})).toBeNull();
   });
+  it('überspringt vorangestellte [Hinweis]-Blöcke vor JSON-Objekten (Rovo-Deprecation-Notiz)', () => {
+    const text = '[IMPORTANT: After 30th June 2026, usage of the HTTP+SSE transport endpoint will no longer be supported.]\n{"name":"Louis Michel","email":"l@iwf.ch"}';
+    expect(parseToolResult({ content: [{ type: 'text', text }] })).toEqual({
+      name: 'Louis Michel',
+      email: 'l@iwf.ch',
+    });
+  });
+  it('überspringt vorangestellte [Hinweis]-Blöcke vor JSON-Arrays', () => {
+    const text = '[IMPORTANT: notice]\n[{"id":"site-1","url":"https://x.atlassian.net","scopes":["read:jira-work"]}]';
+    expect(parseToolResult({ content: [{ type: 'text', text }] })).toEqual([
+      { id: 'site-1', url: 'https://x.atlassian.net', scopes: ['read:jira-work'] },
+    ]);
+  });
+  it('lässt einzeiliges JSON-Array mit Folgezeilen unangetastet (kein Fehl-Stripping)', () => {
+    const text = 'kein json\nnur text';
+    expect(parseToolResult({ content: [{ type: 'text', text }] })).toBe(text);
+  });
 });
