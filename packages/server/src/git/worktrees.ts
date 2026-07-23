@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
-import { git, gitOk, isCleanWorkingTree, isGitRepo } from './git.js';
+import { git, gitOk, isCleanWorkingTree, isGitRepo, localBranchExists } from './git.js';
 
 /** Zustand eines Worktrees nach der Gesundheitsprüfung. */
 export type WorktreeHealth = 'ok' | 'repaired' | 'missing';
@@ -13,11 +13,27 @@ export type WorktreeHealth = 'ok' | 'repaired' | 'missing';
 export class WorktreeManager {
   constructor(private dataDir: string) {}
 
+  /** Läufe pro Schlüssel serialisieren: der nächste startet erst, wenn der vorige fertig ist. */
+  private locks = new Map<string, Promise<unknown>>();
+  private serialize<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.locks.get(key) ?? Promise.resolve()).then(fn, fn);
+    this.locks.set(
+      key,
+      run.catch(() => {}),
+    );
+    return run;
+  }
+
   pathFor(projectId: string, featureName: string): string {
     return join(this.dataDir, 'worktrees', projectId, featureName);
   }
 
-  /** Worktree + Feature-Branch anlegen (Branch von defaultBranch abgezweigt). */
+  /**
+   * Worktree + Feature-Branch anlegen (Branch von defaultBranch abgezweigt).
+   * Idempotent und race-fest: serialisiert pro (Repo, Branch), sodass zwei parallele
+   * Aufrufe (Boot-Recovery + reconnectender Client) nicht beide „Branch fehlt" lesen
+   * und beide `add -b` rufen — die Ursache von „cannot lock ref … reference already exists".
+   */
   async create(opts: {
     projectId: string;
     projectPath: string;
@@ -25,17 +41,60 @@ export class WorktreeManager {
     branch: string;
     defaultBranch: string;
   }): Promise<string> {
+    return this.serialize(`${opts.projectPath}::${opts.branch}`, () => this.createUnlocked(opts));
+  }
+
+  private async createUnlocked(opts: {
+    projectId: string;
+    projectPath: string;
+    featureName: string;
+    branch: string;
+    defaultBranch: string;
+  }): Promise<string> {
     const dest = this.pathFor(opts.projectId, opts.featureName);
-    if (existsSync(dest)) return dest; // idempotent
     mkdirSync(join(this.dataDir, 'worktrees', opts.projectId), { recursive: true });
 
-    const branchExists =
-      (await git(opts.projectPath, ['show-ref', '--verify', `refs/heads/${opts.branch}`])).code === 0;
-    const args = branchExists
+    // Registry-Leichen entfernen (Verzeichnis weg, Admin-Eintrag geblieben) — sonst
+    // scheitert `worktree add` mit „already used by worktree".
+    await git(opts.projectPath, ['worktree', 'prune']).catch(() => {});
+
+    // Bereits ein gültiger Worktree am Ziel? → idempotent zurück; kaputte Hülle entfernen.
+    if (existsSync(dest)) {
+      const health = await this.ensureValid(opts.projectPath, dest);
+      if (health === 'ok' || health === 'repaired') return dest;
+      await this.remove(opts.projectPath, dest, { force: true }).catch(() => {});
+    }
+
+    // Ist der Branch schon in einem Worktree ausgecheckt? → dessen Pfad nutzen (idempotent).
+    const worktreeForBranch = async (): Promise<string | null> => {
+      const w = (await this.list(opts.projectPath).catch(() => [])).find((e) => e.branch === opts.branch);
+      return w && existsSync(w.path) ? w.path : null;
+    };
+    const existing = await worktreeForBranch();
+    if (existing) return existing;
+
+    const branchExists = await localBranchExists(opts.projectPath, opts.branch);
+    const addArgs = branchExists
       ? ['worktree', 'add', dest, opts.branch]
       : ['worktree', 'add', dest, '-b', opts.branch, opts.defaultBranch];
-    await gitOk(opts.projectPath, args);
-    return dest;
+
+    const res = await git(opts.projectPath, addArgs);
+    if (res.code === 0) return dest;
+
+    // Rest-Race: Branch/Worktree wurde zwischen Prüfung und add doch angelegt.
+    const msg = `${res.stderr}\n${res.stdout}`;
+    if (/already exists|already checked out|already used by worktree/i.test(msg)) {
+      await git(opts.projectPath, ['worktree', 'prune']).catch(() => {});
+      const now = await worktreeForBranch();
+      if (now) return now;
+      // Branch existiert jetzt, aber ohne Worktree → auf bestehenden Branch aufsetzen.
+      const retry = await git(opts.projectPath, ['worktree', 'add', dest, opts.branch]);
+      if (retry.code === 0) return dest;
+      throw new Error(
+        `git worktree add fehlgeschlagen: ${retry.stderr.trim() || retry.stdout.trim() || msg.trim()}`,
+      );
+    }
+    throw new Error(`git worktree add fehlgeschlagen (${res.code}): ${res.stderr.trim() || res.stdout.trim()}`);
   }
 
   /**

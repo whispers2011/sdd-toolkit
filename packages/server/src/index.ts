@@ -105,10 +105,18 @@ async function main(): Promise<void> {
 
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
-  // Merge-Queue-Recovery: bei merging/conflict_resolving abgebrochene Items wieder aufnehmen.
-  void mergeQueue.resumeInterruptedOnBoot();
-  // Restanzen-Cleanup: gemergte Features mit übrig gebliebenem Worktree/Branch/DB-Rest abräumen.
-  void mergeQueue.reconcileMergedLeftovers();
+  // Merge-Queue-Recovery SEQUENZIELL (nie unawaited parallel): zwei gleichzeitige
+  // Worktree-Reparaturen würden sonst denselben feature/<name>-Branch doppelt anlegen
+  // → „cannot lock ref … reference already exists". Erst Restanzen bereits gemergter
+  // Features abräumen, dann unterbrochene Items selbstheilend wieder aufnehmen.
+  void (async () => {
+    try {
+      await mergeQueue.reconcileMergedLeftovers();
+      await mergeQueue.resumeInterruptedOnBoot();
+    } catch (err) {
+      console.error('[boot] Merge-Queue-Recovery fehlgeschlagen:', err);
+    }
+  })();
   chat.interruptStreamingOnBoot();
 
   // Change-Guard (WP12): specs/** beobachten, Watcher-Menge bei Änderungen angleichen.
