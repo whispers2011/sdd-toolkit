@@ -102,4 +102,18 @@ export class MergeEngine {
   async deleteBranch(projectPath: string, branch: string): Promise<void> {
     await git(projectPath, ['branch', '-D', branch]);
   }
+
+  /** Existiert der Branch lokal noch? */
+  async branchExists(projectPath: string, branch: string): Promise<boolean> {
+    return (await git(projectPath, ['show-ref', '--verify', `refs/heads/${branch}`])).code === 0;
+  }
+
+  /**
+   * Ist der Branch vollständig in den Default-Branch integriert? Schutz vor
+   * Datenverlust: nur ein wirklich gemergter Branch darf gelöscht werden.
+   */
+  async isBranchMerged(projectPath: string, branch: string, defaultBranch: string): Promise<boolean> {
+    if (!(await this.branchExists(projectPath, branch))) return false;
+    return (await git(projectPath, ['merge-base', '--is-ancestor', branch, defaultBranch])).code === 0;
+  }
 }

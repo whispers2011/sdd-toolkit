@@ -107,6 +107,8 @@ async function main(): Promise<void> {
   orchestrator.reapOnBoot();
   // Merge-Queue-Recovery: bei merging/conflict_resolving abgebrochene Items wieder aufnehmen.
   void mergeQueue.resumeInterruptedOnBoot();
+  // Restanzen-Cleanup: gemergte Features mit übrig gebliebenem Worktree/Branch/DB-Rest abräumen.
+  void mergeQueue.reconcileMergedLeftovers();
   chat.interruptStreamingOnBoot();
 
   // Change-Guard (WP12): specs/** beobachten, Watcher-Menge bei Änderungen angleichen.

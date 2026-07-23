@@ -71,6 +71,69 @@ export class MergeQueueService {
   }
 
   /**
+   * Boot: Features, die als 'merged' markiert sind, aber noch Worktree/Branch/DB-Reste
+   * tragen, sauber abräumen. Behebt „Restanzen, die in der DB stehen und nicht
+   * aktualisiert werden" — Cleanup nach Merge kann früher unvollständig geblieben sein
+   * (Crash/Neustart, Fehler beim Branch-Löschen, ältere Version).
+   */
+  async reconcileMergedLeftovers(): Promise<void> {
+    let cleaned = 0;
+    for (const project of this.deps.projects.list()) {
+      for (const feature of this.deps.features.listByProject(project.id, true)) {
+        if (feature.integration !== 'merged') continue;
+        const branchThere = await this.engine.branchExists(project.path, feature.branch);
+        if (!feature.worktreePath && !branchThere) continue; // bereits sauber
+        if (await this.cleanupMerged(feature, project, { safeOnly: true })) cleaned++;
+      }
+    }
+    if (cleaned > 0) console.log(`[merge-queue] ${cleaned} gemergte Feature-Restanz(en) bereinigt`);
+  }
+
+  /**
+   * Worktree + Branch eines integrierten Features restlos entfernen und die DB
+   * angleichen. Robust: Worktree-Rest → prune.
+   *
+   * `safeOnly` (Reconcile-Pfad): fasst ein Feature nur an, wenn sein Branch
+   * nachweislich in den Default-Branch integriert ist oder gar nicht mehr existiert.
+   * Ein als 'merged' markiertes Feature, dessen Branch NICHT in main liegt, bleibt
+   * unangetastet (könnte ungemergte Arbeit sein) — kein Force, kein Datenverlust.
+   * Ohne `safeOnly` (direkt nach erfolgreichem Merge) wird bedingungslos aufgeräumt —
+   * korrekt auch für Squash-Merges, deren Branch-Tip kein main-Vorfahre ist.
+   *
+   * @returns true, wenn aufgeräumt wurde.
+   */
+  private async cleanupMerged(feature: Feature, project: Project, opts: { safeOnly?: boolean } = {}): Promise<boolean> {
+    const branchExists = await this.engine.branchExists(project.path, feature.branch);
+    if (opts.safeOnly && branchExists) {
+      const merged = await this.engine.isBranchMerged(project.path, feature.branch, project.defaultBranch);
+      if (!merged) {
+        console.warn(
+          `[merge-queue] ${feature.name}: als 'merged' markiert, aber Branch nicht in ${project.defaultBranch} — Cleanup übersprungen`,
+        );
+        return false;
+      }
+    }
+
+    const session = this.deps.ptys.forFeature(feature.id);
+    if (session) await this.deps.ptys.terminate(session.id);
+
+    if (feature.worktreePath) {
+      try {
+        await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true });
+      } catch {
+        await git(project.path, ['worktree', 'prune']).catch(() => {});
+      }
+    }
+    if (branchExists) await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
+
+    this.deps.features.setWorktree(feature.id, null);
+    this.deps.ptys.snapshots.remove(feature.id);
+    const fresh = this.deps.features.get(feature.id);
+    if (fresh) bus.emitEvent('feature_updated', fresh);
+    return true;
+  }
+
+  /**
    * Integration eines Features beginnen: Worktree committen, verifizieren,
    * dann (autoMerge) einreihen oder auf menschliches Review warten.
    */
@@ -299,17 +362,8 @@ export class MergeQueueService {
       return false;
     }
 
-    // 4) Cleanup: Session beenden, Worktree + Branch entfernen.
-    const session = this.deps.ptys.forFeature(featureId);
-    if (session) await this.deps.ptys.terminate(session.id);
-    try {
-      await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true });
-    } catch {
-      // Worktree-Reste sind nicht fatal — git worktree prune räumt später auf.
-    }
-    await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
-    this.deps.features.setWorktree(featureId, null);
-    this.deps.ptys.snapshots.remove(featureId);
+    // 4) Cleanup: Session beenden, Worktree + Branch entfernen, DB angleichen.
+    await this.cleanupMerged(feature, project);
     this.setStage(feature, 'merged');
     this.deps.queue.remove(queueId);
     this.emitQueue(projectId);
