@@ -24,6 +24,7 @@ import {
   InsertThematicBreak,
 } from '@mdxeditor/editor';
 import '@mdxeditor/editor/style.css';
+import { useTheme } from '../theme.js';
 
 /** Fallback-Rendering (kein WYSIWYG-Crash): gerendertes Markdown bzw. Klartext-Editor. */
 const MD: Components = {
@@ -72,8 +73,14 @@ type Props = {
 };
 
 function Wysiwyg({ value, readOnly, onChange }: Props) {
+  // MDXEditor bringt eigene Styles mit und ist per Default hell (dunkle Schrift auf
+  // hellem Grund). Im Dark-Mode fehlte die Umschaltung → dunkle Schrift auf dunklem
+  // Modal-Grund. `dark-theme` aktiviert die Dark-Palette der Bibliothek; im Light-Mode
+  // bleibt der helle Default. Beides ist damit lesbar.
+  const dark = useTheme() === 'dark';
   return (
     <MDXEditor
+      {...(dark ? { className: 'dark-theme' } : {})}
       markdown={value}
       readOnly={readOnly}
       onChange={(md) => onChange?.(md)}
