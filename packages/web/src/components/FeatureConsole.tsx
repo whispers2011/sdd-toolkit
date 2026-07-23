@@ -178,10 +178,12 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
         return (
           <button
             key={phase}
-            disabled={runningPhase !== null}
+            disabled={runningPhase !== null || (ps.status === 'idle' && live)}
             title={
               ps.status === 'idle'
-                ? `/speckit.${phase} starten`
+                ? live
+                  ? 'Session ist beschäftigt — läuft gerade'
+                  : `/speckit.${phase} starten`
                 : ps.status === 'awaiting_review'
                   ? 'Klick = approven'
                   : ps.status === 'running'

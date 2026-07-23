@@ -168,6 +168,10 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
   const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
   const project = state.app?.projects.find((p) => p.id === feature.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
+  // „Lebt gerade" = Session arbeitet oder wartet auf Eingabe. Dann ist der Start
+  // eines Phasenlaufs unsinnig (die Session ist beschäftigt) — der Grund, warum eine
+  // laufende Session sonst trotzdem „▶ Start" anbot.
+  const live = !!session && (session.status === 'working' || session.status === 'awaiting_input');
 
   // Ergebnis-Artefakte laden; neu laden, wenn sich ein Phasen-Status ändert (z. B. spec.md entsteht).
   const phaseSig = FEATURE_PHASES.map((p) => feature.phases[p]?.status ?? '-').join(',');
@@ -289,16 +293,15 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         </div>
       )}
 
-      {phaseState?.status === 'running' &&
-        (session && (session.status === 'working' || session.status === 'awaiting_input') ? (
-          <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
-            <span className="status-dot status-working" /> läuft …
-          </div>
-        ) : session && session.status === 'idle' ? (
-          <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-400">
-            <span className="status-dot status-idle" /> wird gestartet …
-          </div>
-        ) : null)}
+      {live ? (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
+          <span className="status-dot status-working" /> läuft …
+        </div>
+      ) : phaseState?.status === 'running' ? (
+        <div className="mt-2 flex items-center gap-1.5 text-xs text-zinc-400">
+          <span className="status-dot status-idle" /> wird gestartet …
+        </div>
+      ) : null}
       {phaseState?.stale && <div className="mt-1 text-xs text-amber-500">⚠ stale — Upstream geändert</div>}
       {feature.tasksTotal > 0 && (
         <div className="mt-2">
@@ -315,7 +318,7 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
       )}
 
       <div className="mt-2 flex flex-wrap gap-1">
-        {phaseState?.status === 'idle' && column !== 'integration' && column !== 'done' && (
+        {phaseState?.status === 'idle' && !live && column !== 'integration' && column !== 'done' && (
           <CardAction onClick={() => void call(() => api.startPhase(feature.id, column))}>▶ Start</CardAction>
         )}
         {phaseState?.status === 'awaiting_review' && column !== 'integration' && column !== 'done' && (
