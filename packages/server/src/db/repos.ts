@@ -23,6 +23,7 @@ import type {
 } from '@sdd/shared';
 import {
   LEVEL2_DEFAULTS,
+  OPTIMIZATION_DEFAULTS,
   OPTIMIZATION_OFF_DEFAULTS,
   parseOptimizationPartial,
   type PhaseMap,
@@ -980,14 +981,20 @@ export class SettingsRepo {
       .run(JSON.stringify(a));
   }
 
-  /** Globaler Optimierungs-Default (Token-Reduktion). Fehlt der Key → OFF (Alt-Verhalten). */
+  /**
+   * Globaler Optimierungs-Default (Token-Reduktion). Fehlt der Key → sicherer
+   * Empfehlungs-Default (compact + deterministic): Downstream-Phasen setzen den
+   * Kontext per /compact zurück (spec liegt auf Disk, die Phase rekonstruiert von
+   * dort) statt den ganzen Verlauf pro Step erneut mitzuschleppen. Ein explizit
+   * gespeicherter Wert (auch OFF/full) hat weiterhin Vorrang.
+   */
   getOptimization(): OptimizationSettings {
     const r = this.db.prepare(`SELECT value FROM settings WHERE key='optimization'`).get() as
       | { value: string }
       | undefined;
     return r
       ? { ...OPTIMIZATION_OFF_DEFAULTS, ...parseOptimizationPartial(JSON.parse(r.value)) }
-      : OPTIMIZATION_OFF_DEFAULTS;
+      : OPTIMIZATION_DEFAULTS;
   }
 
   setOptimization(patch: Partial<OptimizationSettings>): OptimizationSettings {

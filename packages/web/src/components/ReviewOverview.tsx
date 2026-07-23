@@ -10,6 +10,7 @@ const STAGE_LABEL: Record<string, string> = {
   verify_failed: 'Verifikation fehlgeschlagen',
   gate_failed: 'Review-Gate FAIL',
   conflict_escalated: 'Konflikt eskaliert',
+  none: 'In Entwicklung',
 };
 
 /**
@@ -42,10 +43,22 @@ export function ReviewOverview() {
   if (!items) return <p className="p-6 text-sm text-zinc-600">Lade Review-Übersicht …</p>;
 
   const ready = items.filter((i) => i.stage === 'awaiting_human_review');
-  const blocked = items.filter((i) => i.stage !== 'awaiting_human_review');
+  const inProgress = items.filter((i) => i.stage === 'none');
+  const blocked = items.filter((i) => i.stage !== 'awaiting_human_review' && i.stage !== 'none');
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-sm font-semibold text-zinc-100">Review &amp; Änderungen</h1>
+        <button
+          onClick={load}
+          title="Aktualisieren (erfasst auch neue uncommittete Änderungen)"
+          className="rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          ↻ Aktualisieren
+        </button>
+      </div>
+
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-200">
           Bereit zum Review <span className="text-zinc-500">({ready.length})</span>
@@ -62,6 +75,19 @@ export function ReviewOverview() {
           </ul>
         )}
       </section>
+
+      {inProgress.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-zinc-200">
+            In Entwicklung (ungemergt) <span className="text-zinc-500">({inProgress.length})</span>
+          </h2>
+          <ul className="space-y-2">
+            {inProgress.map((item) => (
+              <OverviewRow key={item.feature.id} item={item} onOpen={() => setPortalFeature(item.feature.id)} />
+            ))}
+          </ul>
+        </section>
+      )}
 
       {blocked.length > 0 && (
         <section>
@@ -101,7 +127,12 @@ function OverviewRow({
   onRetry?: () => void;
 }) {
   const f = item.feature;
-  const stageTone = item.stage === 'awaiting_human_review' ? 'text-sky-400' : 'text-red-400';
+  const stageTone =
+    item.stage === 'awaiting_human_review'
+      ? 'text-sky-400'
+      : item.stage === 'none'
+        ? 'text-zinc-400'
+        : 'text-red-400';
   return (
     <li className="flex items-center gap-4 rounded border border-zinc-800 bg-zinc-900/60 px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -114,6 +145,11 @@ function OverviewRow({
             {item.filesChanged} Dateien · <span className="text-emerald-500">+{item.additions}</span>{' '}
             <span className="text-red-500">−{item.deletions}</span>
           </span>
+          {item.hasUncommitted && (
+            <span className="rounded bg-amber-950/60 px-1.5 py-0.5 text-[10px] text-amber-300" title="Worktree hat uncommittete Änderungen">
+              uncommittet
+            </span>
+          )}
           {item.openComments > 0 && <span>💬 {item.openComments}</span>}
         </div>
       </div>

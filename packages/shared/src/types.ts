@@ -473,6 +473,8 @@ export interface ReviewOverviewItem {
   audits: { passed: number; failed: number; total: number };
   openComments: number;
   verify: { status: 'passed' | 'failed' | 'none'; executionId?: string };
+  /** Der Worktree hat uncommittete Änderungen (Arbeitsbaum ≠ HEAD). */
+  hasUncommitted: boolean;
 }
 
 /** Branch eines Projekts (Ziel-Auswahl im Portal). */

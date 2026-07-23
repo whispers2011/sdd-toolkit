@@ -75,6 +75,13 @@ export async function isAncestor(cwd: string, ancestor: string, ref: string): Pr
   return r.code === 0;
 }
 
+/** Abzweigpunkt (Merge-Base) von `a` und `b`; null wenn nicht bestimmbar. */
+export async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {
+  const r = await git(cwd, ['merge-base', a, b]);
+  const sha = r.stdout.trim();
+  return r.code === 0 && sha ? sha : null;
+}
+
 /**
  * Ist `branch` bereits vollständig in `defaultBranch` enthalten (also integriert)?
  * Läuft im Haupt-Checkout (`projectPath`) — nie im evtl. entfernten/kaputten Worktree.

@@ -41,6 +41,7 @@ import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
+import { collectUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
 import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
 import {
@@ -557,42 +558,24 @@ export async function buildServer(deps: ApiDeps) {
     return { ok: true };
   });
 
-  /** Strukturierter Diff des Feature-Branches gegen den Default-Branch (Review-Portal, WP5). */
+  /**
+   * Strukturierter Diff des Feature-Branches gegen den Default-Branch (Review-Portal, WP5).
+   * Basis ist der Abzweigpunkt OHNE End-Ref → committete UND uncommittete/untracked
+   * Änderungen werden sichtbar (nicht nur bereits committete).
+   */
   app.get<{ Params: { id: string } }>('/api/features/:id/diff', async (req) => {
     const { cwd, project } = featureCwd(req.params.id);
-    const range = `${project.defaultBranch}...HEAD`;
-    const numstat = await git(cwd, ['diff', range, '--numstat']);
-    const files = numstat.stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [additions, deletions, ...path] = line.split('\t');
-        return {
-          path: path.join('\t'),
-          additions: additions === '-' ? 0 : Number(additions),
-          deletions: deletions === '-' ? 0 : Number(deletions),
-          binary: additions === '-',
-        };
-      });
-    const log = await git(cwd, ['log', '--format=%H%x09%ct%x09%s', `${project.defaultBranch}..HEAD`]);
-    const commits = log.stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [sha, ts, ...subject] = line.split('\t');
-        return { sha, date: Number(ts) * 1000, subject: subject.join('\t') };
-      });
-    return { files, commits };
+    return collectUnmergedChanges(cwd, project.defaultBranch);
   });
 
-  /** Einzeldiff einer Datei (Review-Portal). */
+  /** Einzeldiff einer Datei (Review-Portal) — inkl. uncommitteter/untracked Dateien. */
   app.get<{ Params: { id: string }; Querystring: { path: string } }>(
     '/api/features/:id/diff/file',
     async (req) => {
       const { cwd, project } = featureCwd(req.params.id);
       if (!req.query.path || req.query.path.includes('..')) throw httpError(400, 'Ungültiger Pfad');
-      const r = await git(cwd, ['diff', `${project.defaultBranch}...HEAD`, '--', req.query.path]);
-      return { diff: r.stdout };
+      const diff = await unmergedFileDiff(cwd, project.defaultBranch, req.query.path);
+      return { diff };
     },
   );
 

@@ -77,6 +77,7 @@ export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private runningGates = new Set<string>(); // `${featureId}:${phase}` — Doppelstart-Guard für before-Gates
   private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
+  private lastPreamble = new Map<string, string>(); // featureId → zuletzt injizierte Wissens-Präambel
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
@@ -378,7 +379,17 @@ export class Orchestrator {
       optCompression: opt.compression,
     });
 
-    const prompt = base + plan.preamble;
+    // Wissens-Präambel nur anhängen, wenn nötig: bei erster Injektion, geändertem
+    // Wissen oder nach einem Kontext-Reset (nach /clear ist sie weg, nach /compact
+    // evtl. aus der Zusammenfassung gefallen). Ohne Reset (contextStrategy=full)
+    // bleibt die früher gesendete Präambel im Verlauf → nicht Phase für Phase erneut
+    // mitschicken (das war reine, mit jedem Step wachsende Token-Redundanz).
+    const prevPreamble = this.lastPreamble.get(feature.id);
+    const injectPreamble =
+      plan.preamble.trim().length > 0 && (plan.reset !== null || plan.preamble !== prevPreamble);
+    const prompt = injectPreamble ? base + plan.preamble : base;
+    if (injectPreamble) this.lastPreamble.set(feature.id, plan.preamble);
+
     this.runningPhases.set(feature.id, {
       phase,
       executionId,
@@ -754,6 +765,9 @@ export class Orchestrator {
     this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
     bus.emitEvent('attention_resolved', session.id);
     if (session.featureId) {
+      // Session ist tot → die injizierte Präambel steckt nicht mehr garantiert im
+      // Kontext der (evtl. frisch gestarteten) Nachfolge-Session → einmalig neu erlauben.
+      this.lastPreamble.delete(session.featureId);
       const running = this.runningPhases.get(session.featureId);
       if (running) {
         // Session starb mitten in einer Phase → Phase zurücksetzen.

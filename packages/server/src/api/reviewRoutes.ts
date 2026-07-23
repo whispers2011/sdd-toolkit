@@ -15,6 +15,7 @@ import type {
 import type { ExecutionRepo, FeatureRepo, ProjectRepo, ReviewCommentRepo } from '../db/repos.js';
 import type { AgentRunRepo } from '../db/agentRepo.js';
 import { git } from '../git/git.js';
+import { collectUnmergedChanges } from '../services/unmergedChanges.js';
 import { bus } from '../events.js';
 
 /** Stages, die in der Review-Übersicht erscheinen. */
@@ -75,20 +76,32 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
     const project = mustProject(req.query.projectId);
     const items: ReviewOverviewItem[] = [];
     for (const feature of deps.features.listByProject(project.id)) {
-      if (!REVIEW_STAGES.includes(feature.integration)) continue;
+      const isReviewStage = REVIEW_STAGES.includes(feature.integration);
+      const isInProgress = feature.integration === 'none';
+      // Merged o. Ä. raus; sonst Gate-Features UND in Entwicklung befindliche Features.
+      if (!isReviewStage && !isInProgress) continue;
 
       let filesChanged = 0;
       let additions = 0;
       let deletions = 0;
+      let hasUncommitted = false;
+      let hasCommits = false;
       if (feature.worktreePath && existsSync(feature.worktreePath)) {
-        const numstat = await git(feature.worktreePath, ['diff', `${project.defaultBranch}...HEAD`, '--numstat']);
-        for (const line of numstat.stdout.split('\n').filter(Boolean)) {
-          const [add, del] = line.split('\t');
-          filesChanged++;
-          if (add !== '-') additions += Number(add);
-          if (del !== '-') deletions += Number(del);
+        try {
+          // Merge-Base-Diff → committete UND uncommittete/untracked Änderungen zählen.
+          const d = await collectUnmergedChanges(feature.worktreePath, project.defaultBranch);
+          filesChanged = d.files.length;
+          additions = d.files.reduce((s, f) => s + f.additions, 0);
+          deletions = d.files.reduce((s, f) => s + f.deletions, 0);
+          hasUncommitted = d.hasUncommitted;
+          hasCommits = d.commits.length > 0;
+        } catch {
+          // Worktree defekt/verschwunden → mit 0 weiter statt die Übersicht zu killen.
         }
       }
+
+      // In-Entwicklung-Features nur listen, wenn es überhaupt ungemergte Arbeit gibt.
+      if (isInProgress && filesChanged === 0 && !hasCommits) continue;
 
       const latest = [...(await collectAuditRuns(feature, project, deps.agentRuns)).values()];
       const passed = latest.filter((r) => r.verdict === 'PASS').length;
@@ -112,6 +125,7 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
         audits: { passed, failed, total: latest.length },
         openComments: deps.reviewComments.countOpen(feature.id),
         verify,
+        hasUncommitted,
       });
     }
     return items;
