@@ -433,6 +433,12 @@ export class ExecutionRepo {
     return (rows as Record<string, unknown>[]).map((r) => this.map(r));
   }
 
+  /** Ungekappte Liste für die Läufe-Aggregation (Lauf = Feature/Worktree). */
+  listAll(): ExecutionRecord[] {
+    const rows = this.db.prepare('SELECT * FROM executions ORDER BY started_at ASC').all();
+    return (rows as Record<string, unknown>[]).map((r) => this.map(r));
+  }
+
   private map(r: Record<string, unknown>): ExecutionRecord {
     return {
       id: r.id as string,

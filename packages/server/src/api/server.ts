@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES, aggregateBreakdown, detectCycle, renderTranscriptLog } from '@sdd/shared';
+import { FEATURE_PHASES, aggregateBreakdown, buildRunSummaries, detectCycle, renderTranscriptLog } from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
@@ -503,9 +503,13 @@ export async function buildServer(deps: ApiDeps) {
   });
 
   /** Extern/vorher gebaute Features als abgeschlossen markieren (kein Merge nötig). */
-  app.post<{ Params: { id: string } }>('/api/features/:id/mark-done', (req) => {
+  app.post<{ Params: { id: string } }>('/api/features/:id/mark-done', async (req) => {
     const feature = deps.features.get(req.params.id);
     if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    // Abgeschlossen heißt abgeschlossen: laufende Konsole beenden, sonst bleibt
+    // eine offene Session zurück (wie beim Archive-Endpoint).
+    const session = deps.ptys.forFeature(feature.id);
+    if (session) await deps.ptys.terminate(session.id);
     deps.features.setIntegration(feature.id, 'merged');
     deps.attention.resolveFor({ featureId: feature.id });
     const fresh = deps.features.get(feature.id);
@@ -960,6 +964,11 @@ export async function buildServer(deps: ApiDeps) {
   app.get<{ Querystring: { featureId?: string } }>('/api/executions', (req) =>
     deps.executions.list(req.query.featureId),
   );
+
+  /** Läufe-Sicht: Lauf = Worktree/Feature, aggregiert über alle Executions (Token-Dashboard). */
+  app.get('/api/runs', () => ({
+    runs: buildRunSummaries(deps.features.listAll(), deps.executions.listAll()),
+  }));
 
   /** Aggregierte Verbrauchssicht eines Features nach Phase/Art (P1, SC-003). */
   app.get<{ Params: { featureId: string }; Querystring: { groupByOptimization?: string } }>(

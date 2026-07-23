@@ -25,10 +25,13 @@ import type {
   PhaseDefinition,
   Project,
   ResolvedSelection,
+  RunSummary,
   SavePhaseDefinitionRequest,
   SavePhaseDefinitionResult,
   SelectionDecision,
 } from '@sdd/shared';
+
+export type { RunSummary };
 
 /** Konflikt beim Speichern einer Definition: Datei wurde extern geändert. */
 export class SaveConflictError extends Error {
@@ -136,6 +139,7 @@ export const api = {
     request<Feature>('POST', `/api/features/${featureId}/reject-review`, { comment }),
   executions: (featureId?: string) =>
     request<ExecutionInfo[]>('GET', featureId ? `/api/executions?featureId=${featureId}` : '/api/executions'),
+  runs: () => request<{ runs: RunSummary[] }>('GET', '/api/runs'),
   executionLog: (id: string) => request<{ log: string }>('GET', `/api/executions/${id}/log`),
   resolutionDiff: (id: string) =>
     request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
@@ -322,6 +326,10 @@ export interface ExecutionInfo {
   exitCode: number | null;
   costUsd: number | null;
   tokens: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
   tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
   logPath: string | null;
 }

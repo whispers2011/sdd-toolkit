@@ -7,6 +7,7 @@ export * from './costMeter.js';
 export * from './optimization.js';
 export * from './transcriptUsage.js';
 export * from './costBreakdown.js';
+export * from './runSummary.js';
 export * from './contextCompressor.js';
 export * from './linkResolver.js';
 export * from './knowledge.js';
