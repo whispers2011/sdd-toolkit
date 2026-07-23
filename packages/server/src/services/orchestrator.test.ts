@@ -50,7 +50,7 @@ function setup(opts: { projectExists?: boolean; running?: boolean } = {}) {
           ? undefined
           : { id: 'p1', name: 'proj', path: '/p', defaultBranch: 'main', enabledPhases: ['specify', 'plan'] },
     },
-    attention: { raise, resolveFor: vi.fn() },
+    attention: { raise, resolveFor: vi.fn(), listOpen: () => [], resolve: vi.fn() },
     executions: { finish, reapOrphans: () => 0, start: vi.fn(), finishWithUsage: vi.fn() },
     sessions: { listOpen: () => [], end: vi.fn(), latestForFeature: () => undefined, create: vi.fn() },
     settings: {},
