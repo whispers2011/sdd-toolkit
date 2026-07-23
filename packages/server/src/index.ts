@@ -180,10 +180,12 @@ async function main(): Promise<void> {
     jiraImport,
     ptys,
     dataDir: config.dataDir,
+    webDir: config.webDir,
   });
 
   await app.listen({ port: config.port, host: config.host });
   console.log(`sdd-toolkit Server läuft auf http://${config.host}:${config.port}`);
+  console.log(config.webDir ? `Web-Bundle wird ausgeliefert aus ${config.webDir}` : 'Web: Dev-Modus (Vite)');
 
   const shutdown = async () => {
     console.log('Fahre herunter — beende Sessions …');

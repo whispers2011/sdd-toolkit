@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import multipart from '@fastify/multipart';
+import fastifyStatic from '@fastify/static';
 import { readFile } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -83,6 +84,8 @@ export interface ApiDeps {
   jiraImport: JiraImportService;
   ptys: PtySessionManager;
   dataDir: string;
+  /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
+  webDir?: string | null;
 }
 
 export async function buildServer(deps: ApiDeps) {
@@ -1290,6 +1293,19 @@ export async function buildServer(deps: ApiDeps) {
     });
     socket.on('close', () => handle.unsubscribe());
   });
+
+  // Prod-Ein-Prozess-Modus: gebautes Web-Bundle ausliefern, unbekannte Nicht-API-Pfade
+  // fallen per SPA-Fallback auf index.html zurück. API/WS-404 bleiben JSON. In Dev
+  // (webDir leer) liefert Vite das Web selbst und proxyt /api + /ws hierher.
+  if (deps.webDir) {
+    await app.register(fastifyStatic, { root: deps.webDir, wildcard: false });
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith('/api') || req.url.startsWith('/ws')) {
+        return reply.code(404).send({ error: 'not_found' });
+      }
+      return reply.sendFile('index.html');
+    });
+  }
 
   return app;
 }
