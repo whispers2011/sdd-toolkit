@@ -213,6 +213,68 @@ const MIGRATIONS: string[] = [
   ALTER TABLE executions ADD COLUMN transcript_path TEXT;
   ALTER TABLE executions ADD COLUMN transcript_offset_end INTEGER;
   `,
+  // Feature "review-portal-und-agent-verwaltung" (Teil B): Personas → Agents.
+  // Verlustfreies RENAME; die Defaults bilden das bisherige Verhalten exakt ab
+  // (jede Alt-Persona wird ein blockierender review_gate-Agent).
+  `
+  ALTER TABLE personas RENAME TO agents;
+  ALTER TABLE agents ADD COLUMN description TEXT NOT NULL DEFAULT '';
+  ALTER TABLE agents ADD COLUMN model TEXT;
+  ALTER TABLE agents ADD COLUMN trigger_kind TEXT NOT NULL DEFAULT 'review_gate'
+    CHECK (trigger_kind IN ('manual','review_gate','after_phase','before_phase'));
+  ALTER TABLE agents ADD COLUMN trigger_phase TEXT;
+  ALTER TABLE agents ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1;
+
+  UPDATE agents SET description='Adversariales Code-Review des Feature-Diffs (Korrektheit, Randfälle, Lesbarkeit).'
+    WHERE id='default-code-review';
+  UPDATE agents SET description='Security-Review des Feature-Diffs (Injection, Secrets, unsichere Defaults).'
+    WHERE id='default-security-review';
+
+  CREATE TABLE agent_feature_selection (
+    feature_id TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    agent_id   TEXT NOT NULL REFERENCES agents(id)   ON DELETE CASCADE,
+    decision   TEXT NOT NULL CHECK (decision IN ('include','exclude')),
+    PRIMARY KEY (feature_id, agent_id)
+  );
+
+  CREATE TABLE agent_runs (
+    id             TEXT PRIMARY KEY,
+    agent_id       TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    agent_name     TEXT NOT NULL,
+    project_id     TEXT NOT NULL,
+    feature_id     TEXT NOT NULL,
+    execution_id   TEXT,
+    trigger_kind   TEXT NOT NULL,
+    trigger_phase  TEXT,
+    blocking       INTEGER NOT NULL,
+    verdict        TEXT,
+    decision_label TEXT,
+    summary        TEXT,
+    report_path    TEXT,
+    created_at     INTEGER NOT NULL,
+    finished_at    INTEGER
+  );
+  CREATE INDEX idx_agent_runs_feature ON agent_runs(feature_id, created_at);
+  `,
+  // Feature "review-portal-und-agent-verwaltung" (Teil A): Reviewer-Kommentare,
+  // Integrations-Zielwahl und erzwungene Re-Verifikation nach Reviewer-Edits.
+  `
+  CREATE TABLE review_comments (
+    id          TEXT PRIMARY KEY,
+    feature_id  TEXT NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    file_path   TEXT,
+    line        INTEGER,
+    side        TEXT CHECK (side IN ('old','new')),
+    text        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX idx_review_comments_feature ON review_comments(feature_id, status);
+
+  ALTER TABLE features ADD COLUMN integration_target TEXT;
+  ALTER TABLE merge_queue ADD COLUMN force_verify INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

@@ -65,6 +65,7 @@ export class OnboardingService {
         worktreePath: null,
         phases,
         integration: 'none',
+        integrationTarget: null,
         automation: {},
         optimization: {},
         tasksDone: progress.done,

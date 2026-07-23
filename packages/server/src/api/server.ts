@@ -8,18 +8,20 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
-import type { FeaturePhase } from '@sdd/shared';
+import type { AgentDefinition, FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES, aggregateBreakdown, buildRunSummaries, detectCycle, renderTranscriptLog } from '@sdd/shared';
 import type {
   AttentionRepo,
   ExecutionRepo,
   FeatureRepo,
-  PersonaRepo,
   ProjectRepo,
   QueueRepo,
+  ReviewCommentRepo,
   SessionRepo,
   SettingsRepo,
 } from '../db/repos.js';
+import type { AgentRepo, AgentRunRepo } from '../db/agentRepo.js';
+import type { AgentGateService } from '../services/agentGateService.js';
 import type { KnowledgeRepo } from '../db/knowledgeRepo.js';
 import type { KnowledgeService } from '../services/knowledgeService.js';
 import type { Applicability, SelectionDecision } from '@sdd/shared';
@@ -51,7 +53,10 @@ export interface ApiDeps {
   attention: AttentionRepo;
   queue: QueueRepo;
   settings: SettingsRepo;
-  personas: PersonaRepo;
+  agents: AgentRepo;
+  agentRuns: AgentRunRepo;
+  agentGate: AgentGateService;
+  reviewComments: ReviewCommentRepo;
   knowledge: KnowledgeRepo;
   knowledgeService: KnowledgeService;
   orchestrator: Orchestrator;
@@ -665,15 +670,32 @@ export async function buildServer(deps: ApiDeps) {
     return { path };
   });
 
-  // ---------- Personas (WP4) ----------
+  // ---------- Agents (Generalisierung der Review-Personas) ----------
 
-  app.get('/api/personas', () => deps.personas.list());
-  app.put<{ Body: { id?: string; projectId: string | null; name: string; prompt: string; sortOrder: number; enabled: boolean } }>(
-    '/api/personas',
-    (req) => ({ id: deps.personas.upsert(req.body) }),
-  );
-  app.delete<{ Params: { id: string } }>('/api/personas/:id', (req) => {
-    deps.personas.remove(req.params.id);
+  /** Validierung: Phasen-Trigger brauchen eine gültige Phase, andere keine. */
+  const validateAgent = (a: AgentDefinition): void => {
+    if (!a.name?.trim()) throw httpError(400, 'Agent-Name fehlt');
+    if (!a.prompt?.trim()) throw httpError(400, 'Agent-Prompt fehlt');
+    const kinds: AgentDefinition['trigger']['kind'][] = ['manual', 'review_gate', 'after_phase', 'before_phase'];
+    if (!kinds.includes(a.trigger?.kind)) throw httpError(400, 'Unbekannte Trigger-Art');
+    const needsPhase = a.trigger.kind === 'after_phase' || a.trigger.kind === 'before_phase';
+    if (needsPhase && !FEATURE_PHASES.includes(a.trigger.phase as FeaturePhase)) {
+      throw httpError(400, 'Phasen-Trigger braucht eine gültige Phase');
+    }
+    if (!needsPhase && a.trigger.phase) throw httpError(400, 'Trigger-Art erlaubt keine Phase');
+  };
+
+  app.get<{ Querystring: { projectId?: string } }>('/api/agents', (req) => {
+    const { projectId } = req.query;
+    if (projectId && projectId !== 'global') return deps.agents.forProject(projectId);
+    return deps.agents.list();
+  });
+  app.put<{ Body: AgentDefinition }>('/api/agents', (req) => {
+    validateAgent(req.body);
+    return deps.agents.upsert(req.body);
+  });
+  app.delete<{ Params: { id: string } }>('/api/agents/:id', (req) => {
+    deps.agents.remove(req.params.id);
     return { ok: true };
   });
 

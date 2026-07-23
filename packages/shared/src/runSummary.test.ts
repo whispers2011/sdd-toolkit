@@ -42,6 +42,7 @@ function feature(patch: Partial<Feature>): Feature {
     worktreePath: null,
     phases: initialPhases(['specify', 'plan', 'tasks', 'implement']),
     integration: 'none',
+    integrationTarget: null,
     automation: {},
     optimization: {},
     tasksDone: 0,

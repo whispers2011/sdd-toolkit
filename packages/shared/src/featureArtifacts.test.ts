@@ -24,6 +24,7 @@ function makeFeature(overrides: Partial<Record<FeaturePhase, PhaseStatus>> = {})
     worktreePath: null,
     phases,
     integration: 'none',
+    integrationTarget: null,
     automation: {},
     optimization: {},
     tasksDone: 0,

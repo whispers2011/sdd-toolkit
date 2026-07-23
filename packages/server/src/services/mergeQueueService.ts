@@ -9,7 +9,7 @@ import type { PtySessionManager } from '../pty/sessionManager.js';
 import { git, isBranchMergedInto, isCleanWorkingTree, run } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
-import type { ReviewGateService } from './reviewGateService.js';
+import type { AgentGateService } from './agentGateService.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
 import { bus } from '../events.js';
 
@@ -24,7 +24,7 @@ export interface MergeQueueDeps {
   settings: SettingsRepo;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
-  reviewGate: ReviewGateService;
+  agentGate: AgentGateService;
   dataDir: string;
 }
 
@@ -185,15 +185,18 @@ export class MergeQueueService {
 
       const automation = this.automationFor(feature);
 
-      // Review-Gate (WP4): Personas sequentiell, erster FAIL eskaliert.
+      // Review-Gate (WP4 → Agents): review_gate-Agents sequentiell; erster
+      // blockierender FAIL eskaliert, beratende FAILs werden nur verbucht.
       if (automation.autoReviewAgents) {
         this.setStage(feature, 'review_gate');
-        const gate = await this.deps.reviewGate.run(this.mustFeature(featureId), project);
+        const gate = await this.deps.agentGate.runTrigger(this.mustFeature(featureId), project, {
+          kind: 'review_gate',
+        });
         // Review-Berichte gehören versioniert zum Feature.
         await this.commitWorktree(this.mustFeature(featureId), `docs(${feature.name}): review-berichte`);
         if (!gate.ok) {
           this.setStage(feature, 'gate_failed');
-          this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedPersona}`);
+          this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedAgent}`);
           return;
         }
       }

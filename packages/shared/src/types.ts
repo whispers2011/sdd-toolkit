@@ -124,6 +124,8 @@ export interface Feature {
   worktreePath: string | null;
   phases: Record<FeaturePhase, PhaseState>;
   integration: IntegrationStage;
+  /** Integrations-Ziel-Branch (Review-Portal-Wahl); null = Projekt-Default-Branch. */
+  integrationTarget: string | null;
   automation: Partial<AutomationSettings>;
   /** Token-Optimierungs-Override auf Feature-Ebene (leer = Projekt/global erben). */
   optimization: Partial<OptimizationSettings>;
@@ -161,7 +163,9 @@ export type AttentionKind =
   | 'merge_conflict_escalated'
   | 'review_due'
   | 'agent_errored'
-  | 'run_interrupted';
+  | 'run_interrupted'
+  | 'phase_gate_failed'
+  | 'approval_required';
 
 export interface AttentionItem {
   id: string;
@@ -184,6 +188,8 @@ export interface MergeQueueItem {
   stage: IntegrationStage;
   attempts: number;
   lastError: string | null;
+  /** Re-Verifikation vor dem Merge erzwingen (Reviewer-Edits beim Approve). */
+  forceVerify: boolean;
   enqueuedAt: number;
 }
 
@@ -371,6 +377,116 @@ export interface ChatMessage {
   costUsd: number | null;
   tokens: number | null;
   createdAt: number;
+}
+
+// ---------- Agents (Generalisierung der Review-Personas) ----------
+
+/** Auslöser-Arten eines Agents. */
+export type AgentTriggerKind = 'manual' | 'review_gate' | 'after_phase' | 'before_phase';
+
+/** Auslöser eines Agents; `phase` nur bei after_phase/before_phase gesetzt. */
+export interface AgentTrigger {
+  kind: AgentTriggerKind;
+  phase?: FeaturePhase;
+}
+
+/** Konfigurierbare Prüf-/Arbeitseinheit (Nachfolger der Review-Persona). */
+export interface AgentDefinition {
+  id: string;
+  /** null = global (gilt via Union in allen Projekten). */
+  projectId: string | null;
+  name: string;
+  description: string;
+  prompt: string;
+  /** null = CLI-Default-Modell. */
+  model: string | null;
+  trigger: AgentTrigger;
+  /** true = Gate (FAIL stoppt), false = beratend (FAIL wird nur verbucht). */
+  blocking: boolean;
+  enabled: boolean;
+  sortOrder: number;
+}
+
+/** Per-Feature-Override der Agent-Geltung; kein Eintrag = 'auto'. */
+export type AgentFeatureDecision = 'include' | 'exclude';
+
+/** Strukturiertes, dauerhaftes Ergebnis eines Agent-Laufs. */
+export interface AgentRunSummary {
+  id: string;
+  /** null wenn der Agent inzwischen gelöscht wurde (agentName bleibt lesbar). */
+  agentId: string | null;
+  agentName: string;
+  featureId: string;
+  executionId: string | null;
+  trigger: AgentTrigger;
+  blocking: boolean;
+  /** null = kein auswertbares Urteil (wird NIE als bestanden gewertet). */
+  verdict: 'PASS' | 'FAIL' | null;
+  /** z. B. 'FREIGEGEBEN MIT ÄNDERUNGEN' (GESAMTENTSCHEIDUNG:-Zeile). */
+  decisionLabel: string | null;
+  summary: string | null;
+  /** Repo-relativer Pfad des Berichts (specs/<feature>/reviews/<agent-id>.md). */
+  reportPath: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+  /** Aus der verknüpften Execution (Join); nur in API-Antworten gefüllt. */
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  /** 'markdown' = Alt-Bericht aus der Zeit vor der strukturierten Ablage. */
+  source?: 'db' | 'markdown';
+}
+
+/** Effektive Agent-Sicht eines Features (Verwaltung + „Jetzt ausführen"). */
+export interface FeatureAgentView {
+  agent: AgentDefinition;
+  decision: AgentFeatureDecision | 'auto';
+  /** Läuft der Agent für dieses Feature beim nächsten passenden Trigger? */
+  effective: boolean;
+  lastRun: AgentRunSummary | null;
+}
+
+// ---------- Review-Portal ----------
+
+/** Flacher, persistierter Reviewer-Kommentar mit optionalem Datei-/Zeilen-Anker. */
+export interface ReviewComment {
+  id: string;
+  featureId: string;
+  /** null = Feature-genereller Kommentar. */
+  filePath: string | null;
+  /** null = Datei-genereller Kommentar; nur mit filePath gesetzt. */
+  line: number | null;
+  /** Diff-Seite des Ankers; nur mit line gesetzt. */
+  side: 'old' | 'new' | null;
+  text: string;
+  status: 'open' | 'resolved';
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+/** Verdichtete Sicht eines integrationsnahen Features für die Review-Übersicht. */
+export interface ReviewOverviewItem {
+  feature: Feature;
+  stage: IntegrationStage;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  audits: { passed: number; failed: number; total: number };
+  openComments: number;
+  verify: { status: 'passed' | 'failed' | 'none'; executionId?: string };
+}
+
+/** Branch eines Projekts (Ziel-Auswahl im Portal). */
+export interface BranchInfo {
+  name: string;
+  isDefault: boolean;
+  /** Von einem Feature dieses Projekts belegter Branch (kein gültiges Ziel). */
+  isFeatureBranch: boolean;
+}
+
+/** Integrations-Entscheidung des Reviewers; leer = Default-Branch (heutiges Verhalten). */
+export interface ApproveMergeRequest {
+  targetBranch?: string;
+  createBranch?: boolean;
 }
 
 export function resolveAutomation(

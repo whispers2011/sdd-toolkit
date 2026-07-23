@@ -113,6 +113,7 @@ export class Orchestrator {
       worktreePath,
       phases: initialPhases(project.enabledPhases),
       integration: 'none',
+      integrationTarget: null,
       automation: {},
       optimization: {},
       tasksDone: 0,

@@ -17,6 +17,7 @@ import type {
   MergeQueueItem,
   OptimizationSettings,
   Project,
+  ReviewComment,
   VerifyCommand,
   WorkflowPhase,
 } from '@sdd/shared';
@@ -146,6 +147,7 @@ interface FeatureRow {
   worktree_path: string | null;
   phases: string;
   integration: string;
+  integration_target: string | null;
   automation: string;
   optimization: string;
   tasks_done: number;
@@ -163,6 +165,7 @@ function toFeature(r: FeatureRow): Feature {
     worktreePath: r.worktree_path,
     phases: JSON.parse(r.phases) as PhaseMap,
     integration: r.integration as IntegrationStage,
+    integrationTarget: r.integration_target ?? null,
     automation: JSON.parse(r.automation) as Partial<AutomationSettings>,
     optimization: parseOptimizationPartial(JSON.parse(r.optimization ?? '{}')),
     tasksDone: r.tasks_done,
@@ -180,8 +183,8 @@ export class FeatureRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO features (id, project_id, name, branch, worktree_path, phases, integration, automation, optimization, tasks_done, tasks_total, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO features (id, project_id, name, branch, worktree_path, phases, integration, integration_target, automation, optimization, tasks_done, tasks_total, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -191,6 +194,7 @@ export class FeatureRepo {
         f.worktreePath,
         JSON.stringify(f.phases),
         f.integration,
+        f.integrationTarget ?? null,
         JSON.stringify(f.automation),
         JSON.stringify(f.optimization ?? {}),
         f.tasksDone,
@@ -231,6 +235,11 @@ export class FeatureRepo {
 
   setIntegration(id: string, stage: IntegrationStage): void {
     this.db.prepare('UPDATE features SET integration=? WHERE id=?').run(stage, id);
+  }
+
+  /** Integrations-Ziel der Review-Freigabe; null = Projekt-Default-Branch. */
+  setIntegrationTarget(id: string, target: string | null): void {
+    this.db.prepare('UPDATE features SET integration_target=? WHERE id=?').run(target, id);
   }
 
   setWorktree(id: string, worktreePath: string | null): void {
@@ -482,7 +491,7 @@ export class ExecutionRepo {
 export class QueueRepo {
   constructor(private db: DB) {}
 
-  enqueue(projectId: string, featureId: string): MergeQueueItem {
+  enqueue(projectId: string, featureId: string, opts: { forceVerify?: boolean } = {}): MergeQueueItem {
     const id = nanoid(10);
     const max = this.db
       .prepare('SELECT COALESCE(MAX(position), 0) AS m FROM merge_queue WHERE project_id=?')
@@ -495,14 +504,15 @@ export class QueueRepo {
       stage: 'queued',
       attempts: 0,
       lastError: null,
+      forceVerify: opts.forceVerify ?? false,
       enqueuedAt: Date.now(),
     };
     this.db
       .prepare(
-        `INSERT INTO merge_queue (id, project_id, feature_id, position, stage, attempts, enqueued_at)
-         VALUES (?, ?, ?, ?, 'queued', 0, ?)`,
+        `INSERT INTO merge_queue (id, project_id, feature_id, position, stage, attempts, force_verify, enqueued_at)
+         VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)`,
       )
-      .run(id, projectId, featureId, item.position, item.enqueuedAt);
+      .run(id, projectId, featureId, item.position, item.forceVerify ? 1 : 0, item.enqueuedAt);
     return item;
   }
 
@@ -544,6 +554,7 @@ function toQueueItem(r: Record<string, unknown>): MergeQueueItem {
     stage: r.stage as IntegrationStage,
     attempts: r.attempts as number,
     lastError: r.last_error as string | null,
+    forceVerify: (r.force_verify as number | null) === 1,
     enqueuedAt: r.enqueued_at as number,
   };
 }
@@ -855,49 +866,89 @@ export class ChatRepo {
   }
 }
 
-// ---------- Personas (WP4) ----------
+// ---------- Reviewer-Kommentare (Review-Portal) ----------
 
-export interface PersonaRow {
-  id: string;
-  project_id: string | null;
-  name: string;
-  prompt: string;
-  sort_order: number;
-  enabled: number;
-}
-
-export class PersonaRepo {
+export class ReviewCommentRepo {
   constructor(private db: DB) {}
 
-  /** Personas eines Projekts: projektspezifische, sonst die globalen Defaults. */
-  forProject(projectId: string): PersonaRow[] {
-    const own = this.db
-      .prepare('SELECT * FROM personas WHERE project_id=? AND enabled=1 ORDER BY sort_order')
-      .all(projectId) as PersonaRow[];
-    if (own.length > 0) return own;
-    return this.db
-      .prepare('SELECT * FROM personas WHERE project_id IS NULL AND enabled=1 ORDER BY sort_order')
-      .all() as PersonaRow[];
-  }
-
-  list(): PersonaRow[] {
-    return this.db.prepare('SELECT * FROM personas ORDER BY project_id NULLS FIRST, sort_order').all() as PersonaRow[];
-  }
-
-  upsert(p: { id?: string; projectId: string | null; name: string; prompt: string; sortOrder: number; enabled: boolean }): string {
-    const id = p.id ?? nanoid(10);
+  create(c: {
+    featureId: string;
+    filePath?: string | null;
+    line?: number | null;
+    side?: 'old' | 'new' | null;
+    text: string;
+  }): ReviewComment {
+    const item: ReviewComment = {
+      id: nanoid(10),
+      featureId: c.featureId,
+      filePath: c.filePath ?? null,
+      line: c.filePath != null ? (c.line ?? null) : null,
+      side: c.filePath != null && c.line != null ? (c.side ?? 'new') : null,
+      text: c.text,
+      status: 'open',
+      createdAt: Date.now(),
+      resolvedAt: null,
+    };
     this.db
       .prepare(
-        `INSERT INTO personas (id, project_id, name, prompt, sort_order, enabled) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name=excluded.name, prompt=excluded.prompt, sort_order=excluded.sort_order, enabled=excluded.enabled`,
+        `INSERT INTO review_comments (id, feature_id, file_path, line, side, text, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
       )
-      .run(id, p.projectId, p.name, p.prompt, p.sortOrder, p.enabled ? 1 : 0);
-    return id;
+      .run(item.id, item.featureId, item.filePath, item.line, item.side, item.text, item.createdAt);
+    return item;
+  }
+
+  update(id: string, patch: { text?: string; status?: 'open' | 'resolved' }): ReviewComment | null {
+    const cur = this.get(id);
+    if (!cur) return null;
+    const text = patch.text ?? cur.text;
+    const status = patch.status ?? cur.status;
+    const resolvedAt = status === 'resolved' ? (cur.resolvedAt ?? Date.now()) : null;
+    this.db
+      .prepare('UPDATE review_comments SET text=?, status=?, resolved_at=? WHERE id=?')
+      .run(text, status, resolvedAt, id);
+    return this.get(id);
   }
 
   remove(id: string): void {
-    this.db.prepare('DELETE FROM personas WHERE id=?').run(id);
+    this.db.prepare('DELETE FROM review_comments WHERE id=?').run(id);
   }
+
+  get(id: string): ReviewComment | null {
+    const r = this.db.prepare('SELECT * FROM review_comments WHERE id=?').get(id) as
+      | Record<string, unknown>
+      | undefined;
+    return r ? toReviewComment(r) : null;
+  }
+
+  listForFeature(featureId: string): ReviewComment[] {
+    return (
+      this.db
+        .prepare('SELECT * FROM review_comments WHERE feature_id=? ORDER BY created_at')
+        .all(featureId) as Record<string, unknown>[]
+    ).map(toReviewComment);
+  }
+
+  countOpen(featureId: string): number {
+    const r = this.db
+      .prepare(`SELECT COUNT(*) AS n FROM review_comments WHERE feature_id=? AND status='open'`)
+      .get(featureId) as { n: number };
+    return r.n;
+  }
+}
+
+function toReviewComment(r: Record<string, unknown>): ReviewComment {
+  return {
+    id: r.id as string,
+    featureId: r.feature_id as string,
+    filePath: r.file_path as string | null,
+    line: r.line as number | null,
+    side: r.side as ReviewComment['side'],
+    text: r.text as string,
+    status: r.status as ReviewComment['status'],
+    createdAt: r.created_at as number,
+    resolvedAt: r.resolved_at as number | null,
+  };
 }
 
 // ---------- Settings ----------

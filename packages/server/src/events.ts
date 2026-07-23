@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type {
+  AgentTrigger,
   AttentionItem,
   Feature,
   MergeQueueItem,
@@ -41,6 +42,15 @@ export interface BusEvents {
   }) => void;
   /** Invalidierungssignal: Turn fertig, Vorschlag (Feature-Karte) geändert oder Unterhaltung zurückgesetzt. */
   chat_updated: (payload: { projectId: string; conversationId: string }) => void;
+  /** Reviewer-Kommentare eines Features geändert (Portal lädt die Liste neu). */
+  review_comments_updated: (payload: { featureId: string }) => void;
+  /** Start/Abschluss eines Agent-Gate-Laufs (gateRunning-Badge, Audit-Refresh). */
+  agent_gate: (payload: {
+    featureId: string;
+    projectId: string;
+    trigger: AgentTrigger;
+    status: 'running' | 'pass' | 'fail';
+  }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -65,4 +75,6 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'knowledge_updated',
   'chat_stream',
   'chat_updated',
+  'review_comments_updated',
+  'agent_gate',
 ];

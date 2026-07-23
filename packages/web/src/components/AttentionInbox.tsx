@@ -11,6 +11,8 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   review_due: { label: 'Review fällig', icon: '👀', tone: 'text-sky-400' },
   agent_errored: { label: 'Agent-Fehler', icon: '💥', tone: 'text-red-400' },
   run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
+  phase_gate_failed: { label: 'Phasen-Gate FAIL', icon: '🚧', tone: 'text-red-400' },
+  approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
 };
 
 /** Exception-Inbox: Monitoring by exception — der Level-3-Arbeitsmodus. */

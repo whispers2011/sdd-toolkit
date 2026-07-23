@@ -5,17 +5,18 @@ import {
   ChatRepo,
   ExecutionRepo,
   FeatureRepo,
-  PersonaRepo,
   ProjectRepo,
   QueueRepo,
+  ReviewCommentRepo,
   SessionRepo,
   SettingsRepo,
 } from './db/repos.js';
+import { AgentRepo, AgentRunRepo } from './db/agentRepo.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { KnowledgeService } from './services/knowledgeService.js';
 import { ChatService } from './services/chatService.js';
 import { ChatWorkService } from './services/chatWorkService.js';
-import { ReviewGateService } from './services/reviewGateService.js';
+import { AgentGateService } from './services/agentGateService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
 import { Orchestrator } from './services/orchestrator.js';
@@ -36,7 +37,9 @@ async function main(): Promise<void> {
   const attention = new AttentionRepo(db);
   const queue = new QueueRepo(db);
   const settings = new SettingsRepo(db);
-  const personas = new PersonaRepo(db);
+  const agents = new AgentRepo(db);
+  const agentRuns = new AgentRunRepo(db);
+  const reviewComments = new ReviewCommentRepo(db);
   const knowledge = new KnowledgeRepo(db);
   const worktrees = new WorktreeManager(config.dataDir);
 
@@ -68,7 +71,13 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
   });
 
-  const reviewGate = new ReviewGateService(personas, executions, config.dataDir);
+  const agentGate = new AgentGateService({
+    agents,
+    agentRuns,
+    executions,
+    attention,
+    dataDir: config.dataDir,
+  });
   const mergeQueue = new MergeQueueService({
     projects,
     features,
@@ -78,7 +87,7 @@ async function main(): Promise<void> {
     settings,
     worktrees,
     ptys,
-    reviewGate,
+    agentGate,
     dataDir: config.dataDir,
   });
   orchestrator.attachMergeQueue(mergeQueue);
@@ -138,7 +147,10 @@ async function main(): Promise<void> {
     attention,
     queue,
     settings,
-    personas,
+    agents,
+    agentRuns,
+    agentGate,
+    reviewComments,
     knowledge,
     knowledgeService,
     orchestrator,
