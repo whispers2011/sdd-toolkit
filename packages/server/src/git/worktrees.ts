@@ -1,6 +1,9 @@
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
-import { git, gitOk, isCleanWorkingTree } from './git.js';
+import { git, gitOk, isCleanWorkingTree, isGitRepo } from './git.js';
+
+/** Zustand eines Worktrees nach der Gesundheitsprüfung. */
+export type WorktreeHealth = 'ok' | 'repaired' | 'missing';
 
 /**
  * Worktree-Lifecycle pro Feature (WhisperM8-AgentWorktreeManager-Muster).
@@ -33,6 +36,22 @@ export class WorktreeManager {
       : ['worktree', 'add', dest, '-b', opts.branch, opts.defaultBranch];
     await gitOk(opts.projectPath, args);
     return dest;
+  }
+
+  /**
+   * Prüft die Git-Verknüpfung eines Worktrees und repariert sie bei Bedarf.
+   * - Verzeichnis fehlt → 'missing'.
+   * - Verzeichnis da, aber `.git`-Verknüpfung defekt (z. B. Admin-Eintrag
+   *   `git worktree prune`d) → `git worktree repair` im Haupt-Checkout versuchen,
+   *   dann erneut prüfen ('repaired' bei Erfolg, sonst 'missing').
+   * Wirft nie — der Aufrufer entscheidet, wie er mit dem Zustand umgeht.
+   */
+  async ensureValid(projectPath: string, worktreePath: string): Promise<WorktreeHealth> {
+    if (!existsSync(worktreePath)) return 'missing';
+    if (await isGitRepo(worktreePath)) return 'ok';
+    // `git worktree repair` ist idempotent und harmlos, wenn nichts zu tun ist.
+    await git(projectPath, ['worktree', 'repair', worktreePath]).catch(() => {});
+    return (await isGitRepo(worktreePath)) ? 'repaired' : 'missing';
   }
 
   /** Entfernen mit Sauberkeitsprüfung; force nur explizit. */
