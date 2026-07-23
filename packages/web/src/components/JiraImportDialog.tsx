@@ -10,7 +10,7 @@ import type {
 } from '@sdd/shared';
 import { api, JiraApiError } from '../api.js';
 import { useStore } from '../store.js';
-import { ConfirmDialog, Dialog } from './Sidebar.js';
+import { ConfirmDialog, Dialog, FeatureSourceToggle } from './Sidebar.js';
 
 type SprintSelection = number | 'backlog';
 
@@ -30,10 +30,13 @@ export function JiraImportDialog({
   projectId,
   onClose,
   onOpenSettings,
+  onSwitchToManual,
 }: {
   projectId: string;
   onClose: () => void;
   onOpenSettings: () => void;
+  /** Wenn gesetzt: Umschalter auf die manuelle Feature-Erfassung anzeigen. */
+  onSwitchToManual?: () => void;
 }) {
   const { dispatch } = useStore();
   const [status, setStatus] = useState<JiraConnectionStatus | null>(null);
@@ -225,6 +228,7 @@ export function JiraImportDialog({
 
   return (
     <Dialog title="Aus Jira importieren" onClose={onClose}>
+      {onSwitchToManual && <FeatureSourceToggle mode="jira" onJira={() => {}} onManual={onSwitchToManual} />}
       <div className="max-h-[75vh] space-y-3 overflow-y-auto pr-1">
         {status === null ? (
           <p className="py-4 text-sm text-zinc-500">Verbindungsstatus wird geprüft …</p>

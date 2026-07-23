@@ -15,7 +15,6 @@ export function Sidebar() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [showJiraSettings, setShowJiraSettings] = useState(false);
   const [showToolSettings, setShowToolSettings] = useState(false);
-  const [jiraImportFor, setJiraImportFor] = useState<string | null>(null);
   if (!state.app) return null;
 
   const sessionFor = (featureId: string): LiveSessionInfo | undefined =>
@@ -62,16 +61,6 @@ export function Sidebar() {
                 title="Feature anlegen"
               >
                 +
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setJiraImportFor(project.id);
-                }}
-                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-sky-400 group-hover:block"
-                title="Aus Jira importieren"
-              >
-                ⬇J
               </button>
               <button
                 onClick={(e) => {
@@ -154,7 +143,9 @@ export function Sidebar() {
         )}
       </div>
 
-      {/* Tool-weite Einstellungen (nutzerweit, nicht projektgebunden) — Heimat z. B. der Jira-Anbindung. */}
+      <CompletedToggle />
+
+      {/* Tool-weite Einstellungen (nutzerweit, nicht projektgebunden) — Heimat z. B. der Jira-Anbindung. Ganz unten. */}
       <div className="border-t border-zinc-800 px-2 py-2">
         <button
           onClick={() => setShowToolSettings(true)}
@@ -166,10 +157,17 @@ export function Sidebar() {
         </button>
       </div>
 
-      <CompletedToggle />
-
       {showNewProject && <NewProjectDialog onClose={() => setShowNewProject(false)} />}
-      {newFeatureFor && <NewFeatureDialog projectId={newFeatureFor} onClose={() => setNewFeatureFor(null)} />}
+      {newFeatureFor && (
+        <NewFeatureFlow
+          projectId={newFeatureFor}
+          onClose={() => setNewFeatureFor(null)}
+          onOpenSettings={() => {
+            setNewFeatureFor(null);
+            setShowJiraSettings(true);
+          }}
+        />
+      )}
       {settingsFor && (() => {
         const project = state.app!.projects.find((p) => p.id === settingsFor);
         return project ? <ProjectSettings project={project} onClose={() => setSettingsFor(null)} /> : null;
@@ -184,17 +182,71 @@ export function Sidebar() {
         />
       )}
       {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
-      {jiraImportFor && (
-        <JiraImportDialog
-          projectId={jiraImportFor}
-          onClose={() => setJiraImportFor(null)}
-          onOpenSettings={() => {
-            setJiraImportFor(null);
-            setShowJiraSettings(true);
-          }}
-        />
-      )}
     </aside>
+  );
+}
+
+/**
+ * Einheitlicher Einstieg „Neues Feature": prüft den Jira-Verbindungsstatus und öffnet
+ * standardmäßig den Jira-Import (wenn verbunden) bzw. die manuelle Erfassung (sonst).
+ * Im verbundenen Fall lässt sich im Dialog zwischen beiden Quellen umschalten.
+ */
+function NewFeatureFlow({
+  projectId,
+  onClose,
+  onOpenSettings,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onOpenSettings: () => void;
+}) {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  const [mode, setMode] = useState<'jira' | 'manual'>('manual');
+
+  useEffect(() => {
+    let alive = true;
+    api
+      .jiraStatus()
+      .then((s) => {
+        if (!alive) return;
+        const c = s.state === 'connected';
+        setConnected(c);
+        setMode(c ? 'jira' : 'manual');
+      })
+      .catch(() => {
+        if (alive) {
+          setConnected(false);
+          setMode('manual');
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (connected === null) {
+    return (
+      <Dialog title="Neues Feature" onClose={onClose}>
+        <p className="py-4 text-sm text-zinc-500">Prüfe Jira-Verbindung …</p>
+      </Dialog>
+    );
+  }
+  if (mode === 'jira') {
+    return (
+      <JiraImportDialog
+        projectId={projectId}
+        onClose={onClose}
+        onOpenSettings={onOpenSettings}
+        onSwitchToManual={() => setMode('manual')}
+      />
+    );
+  }
+  return (
+    <NewFeatureDialog
+      projectId={projectId}
+      onClose={onClose}
+      {...(connected ? { onSwitchToJira: () => setMode('jira') } : {})}
+    />
   );
 }
 
@@ -465,6 +517,34 @@ export function DialogActions({
         className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-50"
       >
         {busy ? '…' : submitLabel}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * Segmentierter Umschalter zwischen Jira-Import und manueller Feature-Erfassung.
+ * Wird oben in beiden „Neues Feature"-Dialogen gezeigt, wenn ein Wechsel möglich
+ * ist (Jira verbunden).
+ */
+export function FeatureSourceToggle({
+  mode,
+  onJira,
+  onManual,
+}: {
+  mode: 'jira' | 'manual';
+  onJira: () => void;
+  onManual: () => void;
+}) {
+  const seg = (active: boolean) =>
+    `flex-1 rounded px-2 py-1 ${active ? 'bg-zinc-700 font-medium text-zinc-100' : 'text-zinc-400 hover:text-zinc-200'}`;
+  return (
+    <div className="mb-3 flex gap-1 rounded-md bg-zinc-800 p-0.5 text-xs">
+      <button onClick={onJira} className={seg(mode === 'jira')}>
+        Aus Jira importieren
+      </button>
+      <button onClick={onManual} className={seg(mode === 'manual')}>
+        Manuell erfassen
       </button>
     </div>
   );

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
-import { Dialog, DialogActions } from './Sidebar.js';
+import { Dialog, DialogActions, FeatureSourceToggle } from './Sidebar.js';
 import { VoiceButton } from './VoiceButton.js';
 
 /**
@@ -15,12 +15,15 @@ export function NewFeatureDialog({
   initialName,
   initialDescription,
   onCreated,
+  onSwitchToJira,
 }: {
   projectId: string;
   onClose: () => void;
   initialName?: string;
   initialDescription?: string;
   onCreated?: (featureId: string) => void;
+  /** Wenn gesetzt (Jira verbunden): Umschalter auf den Jira-Import anzeigen. */
+  onSwitchToJira?: () => void;
 }) {
   const { dispatch } = useStore();
   const [name, setName] = useState(initialName ?? '');
@@ -45,6 +48,7 @@ export function NewFeatureDialog({
 
   return (
     <Dialog title="Neues Feature" onClose={onClose}>
+      {onSwitchToJira && <FeatureSourceToggle mode="manual" onJira={onSwitchToJira} onManual={() => {}} />}
       <input
         autoFocus
         value={name}
