@@ -14,3 +14,4 @@ export * from './chatStream.js';
 export * from './chatProposal.js';
 export * from './chatMode.js';
 export * from './featureArtifacts.js';
+export * from './gridAutoSelect.js';

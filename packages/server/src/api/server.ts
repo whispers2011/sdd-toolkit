@@ -85,6 +85,7 @@ export async function buildServer(deps: ApiDeps) {
       status: displayStatus(s.machine.state),
       awaitingKind: s.machine.state.kind === 'awaiting_input' ? s.machine.state.awaiting : null,
       exited: s.exited,
+      lastActiveAt: s.lastActiveAt,
     }));
     return {
       projects: projects.map((p) => ({ ...p, currentBranch: readBranch(p.path), specKit: hasSpecKit(p.path) })),

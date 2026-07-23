@@ -57,6 +57,8 @@ export interface LiveSessionInfo {
   status: 'idle' | 'working' | 'awaiting_input' | 'stopped' | 'errored';
   awaitingKind: string | null;
   exited: boolean;
+  /** Letzter Aktivitätszeitpunkt (Grid-Auto-Belegung: zuletzt aktiv zuerst). */
+  lastActiveAt: number;
 }
 
 export interface AppState {

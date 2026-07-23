@@ -50,7 +50,7 @@ export interface UiState {
 export type Action =
   | { type: 'bootstrap'; state: AppState }
   | { type: 'feature_updated'; feature: Feature }
-  | { type: 'session_status'; payload: { sessionId: string; featureId: string | null; conversationId: string | null; projectId: string; status: LiveSessionInfo['status']; awaitingKind: string | null } }
+  | { type: 'session_status'; payload: { sessionId: string; featureId: string | null; conversationId: string | null; projectId: string; status: LiveSessionInfo['status']; awaitingKind: string | null; lastActiveAt?: number } }
   | { type: 'attention_raised'; item: AttentionItem }
   | { type: 'attention_resolved'; id: string }
   | { type: 'queue_updated'; payload: { projectId: string; items: MergeQueueItem[] } }
@@ -93,6 +93,8 @@ function reducer(state: UiState, action: Action): UiState {
         status: p.status,
         awaitingKind: p.awaitingKind,
         exited: p.status === 'stopped' || p.status === 'errored',
+        // Zeitstempel darf durch ein Status-Update nie verloren gehen (Grid-Sortierung).
+        lastActiveAt: p.lastActiveAt ?? prev?.lastActiveAt ?? Date.now(),
       };
       return { ...state, app: { ...state.app, sessions: [...others, session] } };
     }

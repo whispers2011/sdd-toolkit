@@ -57,6 +57,8 @@ export interface LiveSession {
   submitTimer: NodeJS.Timeout | null;
   /** Timer, der eine nie eingabebereit werdende Session als Fehlschlag beendet. */
   readyTimer: NodeJS.Timeout | null;
+  /** Letzter Aktivitätszeitpunkt: gesetzt beim Start, aktualisiert bei working/awaiting_input. */
+  lastActiveAt: number;
 }
 
 /**
@@ -173,6 +175,7 @@ export class PtySessionManager {
       submitPending: null,
       submitTimer: null,
       readyTimer: null,
+      lastActiveAt: Date.now(),
     };
     this.sessions.set(id, session);
 
@@ -264,6 +267,10 @@ export class PtySessionManager {
     const before = session.machine.state;
     const { machine, effects } = reduceSession(session.machine, signal);
     session.machine = machine;
+    // „Zuletzt aktiv" = begann zu arbeiten oder stellte eine Rückfrage (Grid-Sortierung).
+    if (machine.state.kind === 'working' || machine.state.kind === 'awaiting_input') {
+      session.lastActiveAt = Date.now();
+    }
     if (before !== machine.state || effects.length > 0) {
       this.callbacks.onStatusChange(session, effects);
     }

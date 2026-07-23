@@ -18,6 +18,8 @@ export interface BusEvents {
     projectId: string;
     status: SessionDisplayStatus;
     awaitingKind: AwaitingKind | null;
+    /** Letzter Aktivitätszeitpunkt (Grid-Sortierung: zuletzt aktiv zuerst). */
+    lastActiveAt: number;
   }) => void;
   attention_raised: (item: AttentionItem) => void;
   attention_resolved: (id: string) => void;
