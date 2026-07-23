@@ -5,6 +5,8 @@ import type {
   ChatConversation,
   ChatFeatureProposal,
   ChatMessage,
+  ChatWorkRestartNeedsConfirm,
+  ChatWorkRestartResult,
   ChatWorkSessionInfo,
   Feature,
   FeatureCostBreakdown,
@@ -224,6 +226,20 @@ export const api = {
   // Projekt-Chat als vollwertige Session
   ensureChatWorkSession: (projectId: string) =>
     request<{ sessionId: string }>('POST', `/api/projects/${projectId}/chat/work/session`),
+  /** Neustart: frische Session. 409 → { needsConfirm, reason }; sonst { sessionId, conversationId }. */
+  restartChatWorkSession: async (
+    projectId: string,
+    confirm: boolean,
+  ): Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm> => {
+    const res = await fetch(`/api/projects/${projectId}/chat/work/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirm }),
+    });
+    if (res.status === 409) return (await res.json()) as ChatWorkRestartNeedsConfirm;
+    if (!res.ok) throw new Error((await res.text()) || `restart → ${res.status}`);
+    return (await res.json()) as ChatWorkRestartResult;
+  },
   createChatFeatures: (projectId: string, names: string[]) =>
     request<{ features: Feature[] }>('POST', `/api/projects/${projectId}/chat/work/features/create`, { names }),
   dismissChatFeatures: (projectId: string) =>

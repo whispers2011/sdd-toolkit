@@ -280,6 +280,19 @@ export interface ChatWorkSessionInfo {
   branch: string;
 }
 
+/** Erfolgreicher Neustart des Wissens-Chats: frische, automatisch gestartete Session. */
+export interface ChatWorkRestartResult {
+  sessionId: string;
+  conversationId: string;
+}
+
+/** Neustart-Guard: Bestätigung nötig, weil laufende Arbeit verloren ginge (nichts verworfen). */
+export interface ChatWorkRestartNeedsConfirm {
+  needsConfirm: true;
+  /** `running` = Session arbeitet gerade; `dirty` = unbestätigte Änderungen in der Arbeitskopie. */
+  reason: 'running' | 'dirty';
+}
+
 export type ChatMessageStatus = 'complete' | 'streaming' | 'error' | 'interrupted';
 
 export type FeatureProposalStatus = 'offen' | 'angenommen' | 'abgelehnt';

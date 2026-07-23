@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, type ChatState } from '../api.js';
 import { useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
-import { CloseIcon, IdeaIcon } from './icons.js';
+import { CloseIcon, IdeaIcon, RestartIcon } from './icons.js';
 
 const MIN_W = 340;
 const MIN_H = 320;
@@ -26,6 +26,8 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
  * Projekt-Chat: eine vollwertige, interaktive Claude-Code-Session (echte Konsole). Man tippt
  * direkt in die Konsole — kein Eingabefeld, keine Modi, keine Steuerbuttons. Das Fenster ist
  * frei größenverstellbar. Schlägt die Session Feature(s) vor, erscheint eine Bestätigungskarte.
+ * Das Neustart-Icon im Kopf verwirft die aktuelle Unterhaltung und startet eine frische Session
+ * (bei laufender Arbeit/dirty Worktree erst nach Bestätigung).
  */
 export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
   const { state } = useStore();
@@ -34,6 +36,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const [ready, setReady] = useState(false);
   const [size, setSize] = useState(loadSize);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [restarting, setRestarting] = useState(false);
 
   const load = () =>
     void api
@@ -96,6 +99,29 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
 
   const dismiss = () => void api.dismissChatFeatures(projectId).catch((e: Error) => setError(e.message));
 
+  // Neustart: frische Session. Bei drohendem Verlust erst bestätigen lassen (FR-006).
+  const runRestart = async (confirm: boolean): Promise<void> => {
+    const res = await api.restartChatWorkSession(projectId, confirm);
+    if ('needsConfirm' in res) {
+      const msg =
+        res.reason === 'running'
+          ? 'Der Chat arbeitet gerade. Ein Neustart verwirft die laufende Arbeit. Trotzdem neu starten?'
+          : 'Die Arbeitskopie enthält unbestätigte Änderungen, die beim Neustart verloren gehen. Trotzdem neu starten?';
+      if (window.confirm(msg)) await runRestart(true);
+      return;
+    }
+    load(); // neue conversationId → TerminalPane remountet auf die frische Session
+  };
+
+  const onRestart = () => {
+    if (restarting) return;
+    setRestarting(true);
+    setError(null);
+    void runRestart(false)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setRestarting(false));
+  };
+
   const startResize = (e: React.PointerEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -149,9 +175,17 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         <span className="text-sm font-semibold text-zinc-100">Projekt-Chat</span>
         <span className="truncate text-xs text-zinc-500">{projectName}</span>
         <button
+          onClick={onRestart}
+          disabled={restarting}
+          title="Chat neu starten (frische Session)"
+          className="ml-auto rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+        >
+          <RestartIcon />
+        </button>
+        <button
           onClick={onClose}
           title="Schließen (Session läuft weiter)"
-          className="ml-auto rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+          className="rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
         >
           <CloseIcon />
         </button>
@@ -175,7 +209,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       <div className="min-h-0 flex-1 bg-zinc-950">
         {ready ? (
           <TerminalPane
-            key={projectId}
+            key={conversationId ?? 'boot'}
             featureId={null}
             getSession={() => api.ensureChatWorkSession(projectId)}
             focused

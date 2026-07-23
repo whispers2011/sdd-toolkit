@@ -8,6 +8,8 @@ import {
   resolveAutomation,
   type ChatConversation,
   type ChatFeatureProposal,
+  type ChatWorkRestartNeedsConfirm,
+  type ChatWorkRestartResult,
   type ChatWorkSessionInfo,
   type Feature,
   type Project,
@@ -18,6 +20,7 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
 import { locateTranscript } from '../pty/transcriptWatcher.js';
+import { isCleanWorkingTree } from '../git/git.js';
 import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
@@ -54,6 +57,10 @@ export class ChatWorkService {
   private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
   /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
   private lastMarker = new Map<string, string>();
+  /** Laufender Neustart je Projekt — koalesziert schnelle Doppelklicks (FR-008). */
+  private restarting = new Map<string, Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm>>();
+  /** Sessions, die für einen Neustart absichtlich beendet werden — kein Fehler-Alarm beim Exit. */
+  private terminating = new Set<string>();
 
   constructor(private deps: ChatWorkDeps) {
     mkdirSync(join(deps.dataDir, 'logs'), { recursive: true });
@@ -125,6 +132,74 @@ export class ChatWorkService {
       pid: session.pty.pid,
     });
     return { sessionId: session.id };
+  }
+
+  /**
+   * Wissens-Chat neu starten: aktive Unterhaltung deaktivieren (Verlauf bleibt erhalten),
+   * ihre Session/Worktree/Branch verwerfen und eine frische, automatisch gestartete Session
+   * beginnen. Liegt laufende Arbeit vor (Session arbeitet ODER Arbeitskopie dirty) und fehlt
+   * `confirm`, wird ohne etwas zu verwerfen ein Bestätigungssignal zurückgegeben (FR-006).
+   */
+  restart(
+    projectId: string,
+    opts: { confirm?: boolean } = {},
+  ): Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm> {
+    const inflight = this.restarting.get(projectId);
+    if (inflight) return inflight; // Doppelklick-Schutz (FR-008)
+    const run = this.doRestart(projectId, opts.confirm === true).finally(() =>
+      this.restarting.delete(projectId),
+    );
+    this.restarting.set(projectId, run);
+    return run;
+  }
+
+  private async doRestart(
+    projectId: string,
+    confirm: boolean,
+  ): Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm> {
+    const project = this.mustProject(projectId);
+    const old = this.deps.chatRepo.getActive(projectId);
+
+    if (old) {
+      const worktreePath = this.deps.worktrees.pathFor(project.id, `chat-${old.id}`);
+
+      // Guard (FR-006): arbeitet die Session ODER hat die Arbeitskopie unbestätigte Änderungen?
+      const live = this.deps.ptys.forConversation(old.id);
+      const status = live ? displayStatus(live.machine.state) : null;
+      const running = status === 'working' || status === 'awaiting_input';
+      let dirty = false;
+      try {
+        dirty = !(await isCleanWorkingTree(worktreePath));
+      } catch {
+        dirty = false; // Worktree existiert (noch) nicht → nichts zu verlieren
+      }
+      if (!confirm && (running || dirty)) {
+        return { needsConfirm: true, reason: running ? 'running' : 'dirty' };
+      }
+
+      // Verwerfen: Session beenden, Worktree + Branch fallenlassen (FR-007).
+      if (live) {
+        this.terminating.add(live.id); // absichtlicher Exit → kein Fehler-Alarm in handleExit
+        await this.deps.ptys.terminate(live.id);
+        this.deps.ptys.remove(live.id);
+        this.deps.sessions.end(live.id);
+      }
+      await this.deps.worktrees
+        .remove(project.path, worktreePath, { force: true })
+        .catch(() => {});
+      await this.deps.worktrees.deleteBranch(project.path, this.branchFor(old.id)).catch(() => {});
+
+      // Flüchtigen Feature-Vorschlag entfernen (FR-009) und Unterhaltung deaktivieren (behalten).
+      this.proposals.delete(old.id);
+      this.lastMarker.delete(old.id);
+      this.deps.chatRepo.endConversation(old.id);
+    }
+
+    // Frische, aktive Unterhaltung → automatisch gestartete Session (FR-002/003/004).
+    const fresh = this.deps.chatRepo.createConversation(projectId, 'work');
+    const { sessionId } = await this.ensure(projectId);
+    bus.emitEvent('chat_updated', { projectId, conversationId: fresh.id });
+    return { sessionId, conversationId: fresh.id };
   }
 
   /** Laufzeit-Info der Session (null, wenn keine läuft) — für den Status-Indikator. */
@@ -277,7 +352,8 @@ export class ChatWorkService {
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
     this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
     bus.emitEvent('attention_resolved', session.id);
-    if (exitCode !== 0) {
+    const intentional = this.terminating.delete(session.id); // Neustart-Termination → kein Alarm
+    if (exitCode !== 0 && !intentional) {
       const item = this.deps.attention.raise({
         kind: 'agent_errored',
         projectId: session.projectId,

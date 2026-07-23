@@ -47,6 +47,11 @@ export class WorktreeManager {
     await gitOk(projectPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
   }
 
+  /** Branch löschen (best-effort; wirft nicht bei fehlendem Branch). */
+  async deleteBranch(projectPath: string, branch: string): Promise<void> {
+    await git(projectPath, ['branch', '-D', branch]);
+  }
+
   async list(projectPath: string): Promise<{ path: string; branch: string | null }[]> {
     const out = await gitOk(projectPath, ['worktree', 'list', '--porcelain']);
     const entries: { path: string; branch: string | null }[] = [];

@@ -1,14 +1,21 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Feature } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
+import { isCleanWorkingTree } from '../git/git.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
 import { ChatWorkService } from './chatWorkService.js';
+
+// Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
+vi.mock('../git/git.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../git/git.js')>();
+  return { ...actual, isCleanWorkingTree: vi.fn() };
+});
 
 const marker = (feats: { name: string; description: string }[]) =>
   `Klingt nach eigenen Features.\n<sdd:features>${JSON.stringify(feats)}</sdd:features>`;
@@ -107,5 +114,115 @@ describe('ChatWorkService — Feature-Vorschläge aus der Session', () => {
     svc.dismissProposal(projectId);
     expect(svc.proposalForProject(projectId)).toBeNull();
     expect(created).toEqual([]);
+  });
+});
+
+describe('ChatWorkService — Neustart (restart)', () => {
+  let db: DB;
+  let chat: ChatRepo;
+  let dataDir: string;
+  let projectId: string;
+  let oldConvId: string;
+  let svc: ChatWorkService;
+  let wt: { remove: number; deleteBranch: string[] };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-restart-'));
+    db = openMemoryDatabase();
+    chat = new ChatRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo',
+      path: '/tmp/demo',
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: [],
+      verifyCommands: [],
+      automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+    oldConvId = chat.createConversation(projectId, 'work').id;
+    wt = { remove: 0, deleteBranch: [] };
+
+    const worktrees = {
+      pathFor: (pid: string, name: string) => join(dataDir, 'worktrees', pid, name),
+      remove: async () => {
+        wt.remove++;
+      },
+      deleteBranch: async (_p: string, branch: string) => {
+        wt.deleteBranch.push(branch);
+      },
+    } as unknown as WorktreeManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db),
+      chatRepo: chat,
+      sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db),
+      executions: new ExecutionRepo(db),
+      settings: new SettingsRepo(db),
+      worktrees,
+      ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
+      orchestrator: {} as unknown as Orchestrator,
+      dataDir,
+    });
+    // ensure() stubben: keine echte Worktree/Spawn — nur eine Session-ID liefern.
+    svc.ensure = async () => ({ sessionId: 's-new' });
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(true); // Standard: sauber
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const activeCount = () =>
+    (
+      db
+        .prepare('SELECT COUNT(*) AS c FROM chat_conversations WHERE project_id=? AND ended_at IS NULL')
+        .get(projectId) as { c: number }
+    ).c;
+
+  it('deaktiviert die alte Unterhaltung (Verlauf bleibt) und startet frisch & clean (INV-1/2/3)', async () => {
+    chat.createMessage({ conversationId: oldConvId, role: 'user', content: 'BANANE', status: 'complete' });
+
+    const res = await svc.restart(projectId, { confirm: false });
+
+    expect('sessionId' in res).toBe(true);
+    if ('sessionId' in res) {
+      const active = chat.getActive(projectId)!;
+      expect(active.id).toBe(res.conversationId);
+      expect(active.id).not.toBe(oldConvId); // INV-1: neue aktive Unterhaltung
+      expect(active.claudeSessionId).toBeNull(); // INV-3: kein Resume ⇒ clean
+    }
+    const old = chat.getConversation(oldConvId)!;
+    expect(old.endedAt).not.toBeNull(); // INV-1: alt deaktiviert
+    expect(chat.listMessages(oldConvId).map((m) => m.content)).toContain('BANANE'); // INV-2: Verlauf erhalten
+  });
+
+  it('Guard: dirty Arbeitskopie ohne confirm → needsConfirm, nichts verworfen (FR-006)', async () => {
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(false); // dirty
+
+    const res = await svc.restart(projectId, { confirm: false });
+
+    expect(res).toEqual({ needsConfirm: true, reason: 'dirty' });
+    expect(chat.getActive(projectId)!.id).toBe(oldConvId); // nichts verworfen
+    expect(wt.remove).toBe(0);
+    expect(wt.deleteBranch).toEqual([]);
+
+    const ok = await svc.restart(projectId, { confirm: true }); // mit Bestätigung
+    expect('sessionId' in ok).toBe(true);
+    expect(chat.getActive(projectId)!.id).not.toBe(oldConvId);
+  });
+
+  it('räumt Worktree/Branch der alten Unterhaltung auf; genau eine aktive Session (INV-4/5)', async () => {
+    const r1 = await svc.restart(projectId, { confirm: true });
+    expect(wt.remove).toBe(1);
+    expect(wt.deleteBranch).toContain(`chat/${oldConvId}`); // INV-5
+
+    await svc.restart(projectId, { confirm: true });
+    if ('conversationId' in r1) expect(wt.deleteBranch).toContain(`chat/${r1.conversationId}`);
+    expect(activeCount()).toBe(1); // INV-4: nach mehreren Neustarts genau eine aktive
   });
 });
