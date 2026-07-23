@@ -27,6 +27,13 @@ import { NotificationThrottle } from './notificationThrottle.js';
 import { ChatError } from './chatService.js';
 import { bus } from '../events.js';
 
+/**
+ * Ein Projekt-Chat ohne Aktivität für diese Dauer wird automatisch beendet, damit
+ * keine Leerlauf-Session im Hintergrund weiterläuft. Beim nächsten Öffnen resumt
+ * `ensure()` die Unterhaltung nahtlos (Scrollback-Snapshot + Claude-Resume).
+ */
+export const CHAT_IDLE_TIMEOUT_MS = 5 * 60_000;
+
 export interface ChatWorkDeps {
   projects: ProjectRepo;
   chatRepo: ChatRepo;
@@ -365,6 +372,25 @@ export class ChatWorkService {
       bus.emitEvent('attention_raised', item);
     }
     this.deps.ptys.remove(session.id);
+  }
+
+  /**
+   * Leerlauf-Reaper: beendet Projekt-Chat-Sessions, die seit `maxIdleMs` nicht mehr
+   * gearbeitet haben (weder `working` noch zwischenzeitlich aktiv). Eine gerade
+   * arbeitende Session wird nie abgewürgt. Der Exit läuft über den regulären Pfad
+   * (`handleExit`); dank `terminating` gibt es dabei keinen Fehler-Alarm.
+   */
+  reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_IDLE_TIMEOUT_MS): void {
+    for (const s of this.deps.ptys.list()) {
+      if (s.kind !== 'chat_work' || s.exited) continue;
+      if (displayStatus(s.machine.state) === 'working') continue; // aktiver Turn → laufen lassen
+      if (now - s.lastActiveAt < maxIdleMs) continue;
+      this.terminating.add(s.id); // erwarteter Exit → kein „braucht dich"-Alarm
+      void this.deps.ptys.terminate(s.id);
+      if (s.conversationId) {
+        bus.emitEvent('chat_updated', { projectId: s.projectId, conversationId: s.conversationId });
+      }
+    }
   }
 
   killAll(): void {

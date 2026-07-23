@@ -140,6 +140,10 @@ async function main(): Promise<void> {
   });
   const guardInterval = setInterval(() => changeGuard.sync(), 30_000);
 
+  // Projekt-Chat-Leerlauf-Reaper: inaktive chat_work-Sessions nach 5 min beenden,
+  // damit keine Session im Hintergrund weiterläuft (Ressourcen-Hygiene).
+  const chatIdleInterval = setInterval(() => chatWork.reapIdleSessions(), 60_000);
+
   const onboarding = new OnboardingService(projects, features);
   const app = await buildServer({
     projects,
@@ -170,6 +174,7 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     console.log('Fahre herunter — beende Sessions …');
     clearInterval(guardInterval);
+    clearInterval(chatIdleInterval);
     await changeGuard.stop();
     ptys.saveAllSnapshots();
     chat.killAll();

@@ -9,7 +9,7 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import { isCleanWorkingTree } from '../git/git.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
-import { ChatWorkService } from './chatWorkService.js';
+import { ChatWorkService, CHAT_IDLE_TIMEOUT_MS } from './chatWorkService.js';
 
 // Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
 vi.mock('../git/git.js', async (importOriginal) => {
@@ -224,5 +224,94 @@ describe('ChatWorkService — Neustart (restart)', () => {
     await svc.restart(projectId, { confirm: true });
     if ('conversationId' in r1) expect(wt.deleteBranch).toContain(`chat/${r1.conversationId}`);
     expect(activeCount()).toBe(1); // INV-4: nach mehreren Neustarts genau eine aktive
+  });
+});
+
+describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let terminated: string[];
+  let sessions: LiveSession[];
+  let svc: ChatWorkService;
+
+  const mkSession = (over: Partial<LiveSession> & { id: string }): LiveSession =>
+    ({
+      kind: 'chat_work',
+      exited: false,
+      projectId,
+      conversationId: 'c1',
+      machine: { state: { kind: 'ready' } },
+      lastActiveAt: 0,
+      ...over,
+    }) as unknown as LiveSession;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-reap-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo',
+      path: '/tmp/demo',
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: [],
+      verifyCommands: [],
+      automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+    terminated = [];
+    sessions = [];
+
+    const ptys = {
+      list: () => sessions,
+      terminate: async (id: string) => {
+        terminated.push(id);
+      },
+      forConversation: () => undefined,
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db),
+      chatRepo: new ChatRepo(db),
+      sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db),
+      executions: new ExecutionRepo(db),
+      settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager,
+      ptys,
+      orchestrator: {} as unknown as Orchestrator,
+      dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('beendet eine inaktive Chat-Session nach Ablauf der Leerlaufzeit', () => {
+    sessions = [mkSession({ id: 'idle-old', lastActiveAt: 0 })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    expect(terminated).toEqual(['idle-old']);
+  });
+
+  it('würgt eine arbeitende Session nie ab', () => {
+    sessions = [mkSession({ id: 'busy', machine: { state: { kind: 'working' } } as LiveSession['machine'], lastActiveAt: 0 })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 10);
+    expect(terminated).toEqual([]);
+  });
+
+  it('lässt eine noch frische Session in Ruhe', () => {
+    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000 })];
+    svc.reapIdleSessions(1_000 + CHAT_IDLE_TIMEOUT_MS - 1);
+    expect(terminated).toEqual([]);
+  });
+
+  it('ignoriert Nicht-Chat-Sessions (Feature/Shell)', () => {
+    sessions = [mkSession({ id: 'feat', kind: 'feature', lastActiveAt: 0 })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    expect(terminated).toEqual([]);
   });
 });
