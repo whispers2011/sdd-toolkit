@@ -66,6 +66,8 @@ export async function buildServer(deps: ApiDeps) {
   // ---------- Bootstrap ----------
 
   app.get('/api/state', () => {
+    // Read-Sicherheitsnetz: überholte Meldungen vor dem Bootstrap-Snapshot auflösen.
+    deps.orchestrator.reconcileOpenAttention();
     const projects = deps.projects.list();
     const features = deps.features.listAll();
     const liveSessions = deps.ptys.list().map((s) => ({
@@ -509,7 +511,11 @@ export async function buildServer(deps: ApiDeps) {
 
   // ---------- Attention / Queue / Settings / Executions ----------
 
-  app.get('/api/attention', () => deps.attention.listOpen());
+  app.get('/api/attention', () => {
+    // Read-Sicherheitsnetz für verpasste Events: nur (verbleibende) gültige Items ausliefern.
+    deps.orchestrator.reconcileOpenAttention();
+    return deps.attention.listOpen();
+  });
   app.post<{ Params: { id: string } }>('/api/attention/:id/resolve', (req) => {
     deps.attention.resolve(req.params.id);
     bus.emitEvent('attention_resolved', req.params.id);

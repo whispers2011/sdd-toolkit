@@ -10,6 +10,7 @@ import { git, isCleanWorkingTree, run } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { ReviewGateService } from './reviewGateService.js';
+import { STAGE_FOR_KIND } from './attentionReconciler.js';
 import { bus } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
@@ -442,6 +443,17 @@ export class MergeQueueService {
     this.deps.features.setIntegration(feature.id, stage);
     const fresh = this.deps.features.get(feature.id);
     if (fresh) bus.emitEvent('feature_updated', fresh);
+    // Zustandsgekoppelte Bereinigung (US1): Merge-Fluss-Meldungen dieses Features auflösen, die
+    // nicht (mehr) zur neuen Stage passen — so verschwinden review_due/verify_failed/gate_failed/
+    // merge_conflict_escalated auch dann, wenn die Stage anders weiterwandert (nicht nur per Button).
+    for (const it of this.deps.attention.listOpen()) {
+      if (it.featureId !== feature.id) continue;
+      const wanted = STAGE_FOR_KIND[it.kind];
+      if (wanted !== undefined && wanted !== stage) {
+        this.deps.attention.resolve(it.id);
+        bus.emitEvent('attention_resolved', it.id);
+      }
+    }
   }
 
   private escalate(feature: Feature, kind: import('@sdd/shared').AttentionKind, message: string): void {
