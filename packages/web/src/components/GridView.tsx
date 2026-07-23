@@ -1,13 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { selectAutoPanes } from '@sdd/shared';
 import { useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
 
 const MAX_PANES = 9;
-
-/** Panes pro Projekt-Scope gespeichert — Projektwechsel = eigener Grid-Kontext. */
-function storageKey(projectId: string | null): string {
-  return `sdd-grid-panes:${projectId ?? 'none'}`;
-}
 
 function gridClass(count: number): string {
   if (count <= 1) return 'grid-cols-1 grid-rows-1';
@@ -24,21 +20,27 @@ export function GridView() {
   const [panes, setPanes] = useState<string[]>([]);
   const [focusedPane, setFocusedPane] = useState<number>(0);
   const [maximized, setMaximized] = useState<number | null>(null);
+  // Für welchen Scope die Auto-Belegung bereits bestimmt wurde. Sperrt das
+  // Nachrücken bei bloßen Session-Updates (FR-014): nur ein echter Scope-Wechsel
+  // (oder das erste Laden) belegt neu.
+  const initializedScopeRef = useRef<string | null | undefined>(undefined);
 
-  // Projekt-Scope wechselt → Panes des neuen Scopes laden.
+  // Beim Öffnen (bzw. Projektwechsel) automatisch die aufmerksamkeitsbedürftigen
+  // Sessions belegen — ersetzt jede zuvor manuell getroffene Auswahl (FR-001/FR-010).
   useEffect(() => {
-    try {
-      setPanes(JSON.parse(localStorage.getItem(storageKey(scope)) ?? '[]') as string[]);
-    } catch {
-      setPanes([]);
-    }
+    if (!state.app) return; // Warten bis die Session-Daten geladen sind.
+    if (initializedScopeRef.current === scope) return; // Schon belegt → einfrieren.
+    initializedScopeRef.current = scope;
+
+    const visibleFeatureIds = new Set(
+      state.app.features
+        .filter((f) => f.projectId === scope && (state.showCompleted || f.integration !== 'merged'))
+        .map((f) => f.id),
+    );
+    setPanes(selectAutoPanes(state.app.sessions, { projectId: scope, visibleFeatureIds, max: MAX_PANES }));
     setMaximized(null);
     setFocusedPane(0);
-  }, [scope]);
-
-  useEffect(() => {
-    localStorage.setItem(storageKey(scope), JSON.stringify(panes));
-  }, [panes, scope]);
+  }, [scope, state.app, state.showCompleted]);
 
   if (!state.app) return null;
   // Kontext-Trennung: nur Features des gewählten Projekts.
@@ -81,7 +83,7 @@ export function GridView() {
 
       {validPanes.length === 0 ? (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-600">
-          Füge Feature-Konsolen hinzu, um parallel zu orchestrieren.
+          Keine aktiven oder wartenden Sessions — bei Bedarf manuell eine Konsole hinzufügen.
         </div>
       ) : (
         <div className={`grid min-h-0 flex-1 gap-1 p-1 ${maximized !== null ? '' : gridClass(validPanes.length)}`}>

@@ -214,6 +214,7 @@ export class ChatWorkService {
       projectId: session.projectId,
       status,
       awaitingKind: awaiting,
+      lastActiveAt: session.lastActiveAt,
     });
 
     if (status === 'working') {

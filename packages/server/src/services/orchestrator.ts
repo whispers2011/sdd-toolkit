@@ -348,6 +348,7 @@ export class Orchestrator {
       projectId: session.projectId,
       status,
       awaitingKind: awaiting,
+      lastActiveAt: session.lastActiveAt,
     });
 
     // Wieder aktiv → offene Aufmerksamkeits-Items dieser Session sind erledigt.

@@ -40,6 +40,8 @@ export interface LiveSession {
   snapshotPrefix: string | null;
   subscribers: Set<Subscriber>;
   exited: boolean;
+  /** Letzter Aktivitätszeitpunkt: gesetzt beim Start, aktualisiert bei working/awaiting_input. */
+  lastActiveAt: number;
 }
 
 /**
@@ -146,6 +148,7 @@ export class PtySessionManager {
       snapshotPrefix: snapshotKey ? this.snapshots.load(snapshotKey) : null,
       subscribers: new Set(),
       exited: false,
+      lastActiveAt: Date.now(),
     };
     this.sessions.set(id, session);
 
@@ -228,6 +231,10 @@ export class PtySessionManager {
     const before = session.machine.state;
     const { machine, effects } = reduceSession(session.machine, signal);
     session.machine = machine;
+    // „Zuletzt aktiv" = begann zu arbeiten oder stellte eine Rückfrage (Grid-Sortierung).
+    if (machine.state.kind === 'working' || machine.state.kind === 'awaiting_input') {
+      session.lastActiveAt = Date.now();
+    }
     if (before !== machine.state || effects.length > 0) {
       this.callbacks.onStatusChange(session, effects);
     }
