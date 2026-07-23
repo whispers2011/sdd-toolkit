@@ -23,7 +23,7 @@ export interface JiraImportDeps {
   features: Pick<FeatureRepo, 'get' | 'getByName' | 'setJiraRef' | 'listJiraKeys'>;
   orchestrator: {
     createFeature(projectId: string, name: string, description?: string): Promise<Feature>;
-    startPhaseRun(featureId: string, phase: FeaturePhase, extraPrompt?: string): Promise<void>;
+    startPhaseRun(featureId: string, phase: FeaturePhase, extraPrompt?: string): Promise<{ gateRunning: boolean }>;
   };
   /** Download-Injektion für Tests; Default: authentifizierter fetch (FR-018). */
   fetchAttachment?: (url: string, token: string | null) => Promise<Buffer | null>;
