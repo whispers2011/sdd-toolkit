@@ -63,6 +63,33 @@ export async function isGitRepo(cwd: string): Promise<boolean> {
   return r.code === 0 && r.stdout.trim() === 'true';
 }
 
+/** Existiert der lokale Branch im gegebenen Repo/Checkout? */
+export async function localBranchExists(cwd: string, branch: string): Promise<boolean> {
+  const r = await git(cwd, ['show-ref', '--verify', `refs/heads/${branch}`]);
+  return r.code === 0;
+}
+
+/** Ist `ancestor` ein (nicht notwendig echter) Vorfahre von `ref`? */
+export async function isAncestor(cwd: string, ancestor: string, ref: string): Promise<boolean> {
+  const r = await git(cwd, ['merge-base', '--is-ancestor', ancestor, ref]);
+  return r.code === 0;
+}
+
+/**
+ * Ist `branch` bereits vollständig in `defaultBranch` enthalten (also integriert)?
+ * Läuft im Haupt-Checkout (`projectPath`) — nie im evtl. entfernten/kaputten Worktree.
+ * - Branch existiert: sein Tip muss Vorfahre von `defaultBranch` sein.
+ * - Branch existiert nicht mehr: gilt als integriert/aufgeräumt (nichts mehr zu tun).
+ */
+export async function isBranchMergedInto(
+  projectPath: string,
+  branch: string,
+  defaultBranch: string,
+): Promise<boolean> {
+  if (!(await localBranchExists(projectPath, branch))) return true;
+  return isAncestor(projectPath, branch, defaultBranch);
+}
+
 /** Konfliktdateien während eines Rebase/Merge. */
 export async function conflictedFiles(cwd: string): Promise<string[]> {
   const r = await gitOk(cwd, ['diff', '--name-only', '--diff-filter=U']);

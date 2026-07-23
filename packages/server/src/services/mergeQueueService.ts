@@ -6,7 +6,7 @@ import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo,
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
-import { git, isCleanWorkingTree, run } from '../git/git.js';
+import { git, isBranchMergedInto, isCleanWorkingTree, run } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { ReviewGateService } from './reviewGateService.js';
@@ -48,6 +48,16 @@ export class MergeQueueService {
   async resumeInterruptedOnBoot(): Promise<void> {
     const resumable: IntegrationStage[] = ['queued', 'merging', 'conflict_resolving'];
     for (const project of this.deps.projects.list()) {
+      // Selbstheilung beim Boot: als „hängend" markierte Features gegen die
+      // Git-Realität abgleichen. Ein Feature, dessen Branch bereits im Default-
+      // Branch liegt (z. B. Worktree nach Merge entfernt und die Eskalation nie
+      // abgeglichen), wird hier automatisch auf 'merged' zurückgeführt statt
+      // dauerhaft in verify_failed/conflict_escalated zu verharren.
+      for (const feature of this.deps.features.listByProject(project.id)) {
+        if (feature.integration === 'none' || feature.integration === 'merged') continue;
+        await this.reconcile(feature, project).catch(() => {});
+      }
+
       const items = this.deps.queue.listByProject(project.id);
       let hasWork = false;
       for (const item of items) {
@@ -77,6 +87,10 @@ export class MergeQueueService {
   async beginIntegration(featureId: string): Promise<void> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
+
+    // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
+    // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
+    if ((await this.reconcile(feature, project)) !== 'proceed') return;
     if (!feature.worktreePath) throw new Error(`Feature ${feature.name} hat keinen Worktree`);
 
     this.setStage(feature, 'verifying');
@@ -199,6 +213,15 @@ export class MergeQueueService {
   private async processItem(queueId: string, featureId: string, projectId: string): Promise<boolean> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(projectId);
+
+    // Selbstheilung vor dem Merge: bereits gemergt → finalisieren (weiter);
+    // Worktree unwiederbringlich weg und NICHT gemergt → sauber eskalieren (anhalten).
+    const rec = await this.reconcile(feature, project);
+    if (rec === 'merged') return true;
+    if (rec === 'lost') {
+      this.deps.queue.setStage(queueId, 'conflict_escalated', 'Worktree fehlt und Branch ist nicht gemergt');
+      return false;
+    }
     if (!feature.worktreePath) {
       this.deps.queue.remove(queueId);
       return true;
@@ -373,6 +396,56 @@ export class MergeQueueService {
       message ?? `feat(${feature.name}): implementation`,
     ]);
     if (r.code !== 0) throw new Error(`Commit im Worktree fehlgeschlagen: ${r.stderr}`);
+  }
+
+  /**
+   * Gleicht den gespeicherten Integrationszustand mit der Git-Realität ab, bevor
+   * blind im Worktree gearbeitet wird. Verhindert das Muster „Worktree entfernt →
+   * git schlägt fehl (‚not a git repository') → Dauer-Eskalation":
+   *  - Branch bereits im Default-Branch → als 'merged' finalisieren (Self-Healing).
+   *  - Worktree-Verknüpfung kaputt aber reparierbar → reparieren, weitermachen.
+   *  - Worktree unwiederbringlich weg UND nicht gemergt → einmalig klar eskalieren.
+   * Läuft immer im Haupt-Checkout (`project.path`), nie im evtl. defekten Worktree.
+   */
+  private async reconcile(feature: Feature, project: Project): Promise<'proceed' | 'merged' | 'lost'> {
+    if (await isBranchMergedInto(project.path, feature.branch, project.defaultBranch)) {
+      await this.finalizeMerged(feature, project);
+      return 'merged';
+    }
+    if (feature.worktreePath) {
+      const health = await this.deps.worktrees.ensureValid(project.path, feature.worktreePath);
+      if (health === 'missing') {
+        this.setStage(feature, 'conflict_escalated');
+        this.escalate(
+          feature,
+          'merge_conflict_escalated',
+          `${feature.name}: Worktree fehlt und der Branch ist noch nicht in ${project.defaultBranch}. ` +
+            `Worktree neu erstellen und Integration erneut starten.`,
+        );
+        return 'lost';
+      }
+    }
+    return 'proceed';
+  }
+
+  /** Bereits gemergtes Feature idempotent & best-effort abschließen (Cleanup + Zustände). */
+  private async finalizeMerged(feature: Feature, project: Project): Promise<void> {
+    const session = this.deps.ptys.forFeature(feature.id);
+    if (session) await this.deps.ptys.terminate(session.id).catch(() => {});
+    if (feature.worktreePath) {
+      await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true }).catch(() => {});
+    }
+    await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
+    this.deps.features.setWorktree(feature.id, null);
+    this.deps.ptys.snapshots.remove(feature.id);
+    const item = this.deps.queue.listByProject(feature.projectId).find((i) => i.featureId === feature.id);
+    if (item) this.deps.queue.remove(item.id);
+    this.deps.attention.resolveFor({
+      featureId: feature.id,
+      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed', 'review_due'],
+    });
+    this.setStage(feature, 'merged');
+    this.emitQueue(feature.projectId);
   }
 
   private automationFor(feature: Feature) {
