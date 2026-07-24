@@ -58,6 +58,7 @@ export interface UiState {
 export type Action =
   | { type: 'bootstrap'; state: AppState }
   | { type: 'feature_updated'; feature: Feature }
+  | { type: 'feature_deleted'; payload: { featureId: string; projectId: string } }
   | { type: 'session_status'; payload: { sessionId: string; featureId: string | null; conversationId: string | null; projectId: string; status: LiveSessionInfo['status']; awaitingKind: string | null; lastActiveAt?: number } }
   | { type: 'attention_raised'; item: AttentionItem }
   | { type: 'attention_resolved'; id: string }
@@ -88,6 +89,19 @@ function reducer(state: UiState, action: Action): UiState {
         ? state.app.features.map((f) => (f.id === action.feature.id ? action.feature : f))
         : [...state.app.features, action.feature];
       return { ...state, app: { ...state.app, features: features.filter((f) => !f.archivedAt) } };
+    }
+    case 'feature_deleted': {
+      if (!state.app) return state;
+      const { featureId } = action.payload;
+      const features = state.app.features.filter((f) => f.id !== featureId);
+      const attention = state.app.attention.filter((a) => a.featureId !== featureId);
+      const sessions = state.app.sessions.filter((s) => s.featureId !== featureId);
+      // Ist die Konsole des gelöschten Features offen → zurück aufs Board.
+      const view =
+        state.view.kind === 'console' && state.view.featureId === featureId
+          ? ({ kind: 'board' } as const)
+          : state.view;
+      return { ...state, view, app: { ...state.app, features, attention, sessions } };
     }
     case 'session_status': {
       if (!state.app) return state;
@@ -315,6 +329,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           switch (msg.type) {
             case 'feature_updated':
               dispatch({ type: 'feature_updated', feature: msg.payload as Feature });
+              break;
+            case 'feature_deleted':
+              dispatch({
+                type: 'feature_deleted',
+                payload: msg.payload as Extract<Action, { type: 'feature_deleted' }>['payload'],
+              });
               break;
             case 'session_status':
               dispatch({

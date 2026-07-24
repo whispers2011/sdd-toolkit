@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -105,6 +105,41 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     expect(existsSync(wt)).toBe(false);
     await expect(new MergeEngine().branchExists(repo, branch)).resolves.toBe(false);
     expect(features.get(feature.id)?.worktreePath).toBeNull();
+  });
+
+  it('deleteFeature entfernt Worktree, Branch UND alle DB-Spuren (auch ein ungemergtes Feature)', async () => {
+    const attention = new AttentionRepo(db);
+    const executions = new ExecutionRepo(db);
+    const branch = 'feature/wegdamit';
+    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: 'wegdamit', branch, defaultBranch: 'main' });
+    const feature = features.create({
+      projectId,
+      name: 'wegdamit',
+      branch,
+      worktreePath: wt,
+      phases: {},
+      integration: 'none', // fälschlich angelegt, NICHT gemergt — trotzdem restlos löschbar
+      automation: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    });
+    // Spuren erzeugen: offenes Attention-Item + Lauf-Log auf der Platte.
+    attention.raise({ kind: 'agent_errored', projectId, featureId: feature.id, sessionId: null, message: 'x' });
+    const exId = executions.start({ projectId, featureId: feature.id, kind: 'phase', phase: 'specify', logPath: 'x' });
+    mkdirSync(join(dataDir, 'logs'), { recursive: true });
+    const logFile = join(dataDir, 'logs', `${exId}.log`);
+    writeFileSync(logFile, 'log');
+    expect(existsSync(wt)).toBe(true);
+
+    await svc.deleteFeature(feature.id);
+
+    expect(existsSync(wt)).toBe(false); // Worktree weg
+    await expect(new MergeEngine().branchExists(repo, branch)).resolves.toBe(false); // Branch weg
+    expect(features.get(feature.id)).toBeNull(); // Feature-Row weg
+    expect(attention.listOpen().some((a) => a.featureId === feature.id)).toBe(false); // Attention weg
+    const exCount = db.prepare('SELECT COUNT(*) c FROM executions WHERE feature_id=?').get(feature.id) as { c: number };
+    expect(exCount.c).toBe(0); // Execution-Zeile weg
+    expect(existsSync(logFile)).toBe(false); // Lauf-Log auf Platte weg
   });
 
   it('lässt einen NICHT integrierten Branch stehen (kein Datenverlust)', async () => {

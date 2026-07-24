@@ -164,6 +164,7 @@ export const api = {
   retryIntegration: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
+  deleteFeature: (featureId: string) => request<{ ok: true }>('DELETE', `/api/features/${featureId}`),
   markDone: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/mark-done`),
   updateFeature: (
     featureId: string,

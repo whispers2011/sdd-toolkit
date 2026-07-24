@@ -7,13 +7,15 @@ import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
 import { KnowledgeIcon } from './icons.js';
+import { ConfirmDialog } from './Sidebar.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
-  const { state } = useStore();
+  const { state, dispatch } = useStore();
   const [connected, setConnected] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
@@ -58,11 +60,28 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           >
             📋
           </HeaderIcon>
+          <HeaderIcon title="Feature löschen (Worktree + alle Spuren entfernen)" onClick={() => setShowDelete(true)}>
+            🗑
+          </HeaderIcon>
         </div>
         <span className="text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
       </div>
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
+      {showDelete && (
+        <ConfirmDialog
+          title="Feature löschen?"
+          message={`„${feature.name}" wird endgültig gelöscht: Worktree, Branch, Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`}
+          confirmLabel="Endgültig löschen"
+          onConfirm={() => {
+            setShowDelete(false);
+            void api
+              .deleteFeature(featureId)
+              .catch((e) => dispatch({ type: 'error', message: (e as Error).message }));
+          }}
+          onClose={() => setShowDelete(false)}
+        />
+      )}
 
       <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 

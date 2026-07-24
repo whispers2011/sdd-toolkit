@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { isValidBranchName } from '@sdd/shared';
 import type { ApproveMergeRequest, Feature, IntegrationStage, Project } from '@sdd/shared';
@@ -155,6 +155,43 @@ export class MergeQueueService {
     const fresh = this.deps.features.get(feature.id);
     if (fresh) bus.emitEvent('feature_updated', fresh);
     return true;
+  }
+
+  /**
+   * Feature-Hard-Delete (fälschlich angelegtes Feature spurlos entfernen): beendet die
+   * Session, räumt Worktree + Branch bedingungslos ab, löscht die Lauf-Logs auf der Platte,
+   * den Scrollback-Snapshot und ALLE DB-Spuren (features + executions/agent_runs/attention/
+   * sessions/merge_queue/review_comments/agent_feature_selection). Danach ist nichts mehr da.
+   */
+  async deleteFeature(featureId: string): Promise<void> {
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return;
+    const project = this.deps.projects.get(feature.projectId);
+
+    const session = this.deps.ptys.forFeature(featureId);
+    if (session) await this.deps.ptys.terminate(session.id);
+
+    if (project) {
+      if (feature.worktreePath) {
+        try {
+          await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true });
+        } catch {
+          await git(project.path, ['worktree', 'prune']).catch(() => {});
+        }
+      }
+      if (await this.engine.branchExists(project.path, feature.branch)) {
+        await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
+      }
+    }
+
+    const { executionIds } = this.deps.features.hardDelete(featureId);
+    for (const exId of executionIds) {
+      rmSync(join(this.deps.dataDir, 'logs', `${exId}.log`), { force: true });
+      rmSync(join(this.deps.dataDir, 'logs', exId), { recursive: true, force: true });
+    }
+    this.deps.ptys.snapshots.remove(featureId);
+
+    bus.emitEvent('feature_deleted', { featureId, projectId: feature.projectId });
   }
 
   /**

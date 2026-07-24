@@ -11,6 +11,8 @@ import type {
 /** Server-interne Events, die 1:1 als WS-Broadcast an alle Clients gehen. */
 export interface BusEvents {
   feature_updated: (feature: Feature) => void;
+  /** Feature endgültig gelöscht (Worktree + alle Spuren entfernt). */
+  feature_deleted: (payload: { featureId: string; projectId: string }) => void;
   session_status: (payload: {
     sessionId: string;
     featureId: string | null;
@@ -67,6 +69,7 @@ bus.setMaxListeners(100);
 
 export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'feature_updated',
+  'feature_deleted',
   'session_status',
   'attention_raised',
   'attention_resolved',

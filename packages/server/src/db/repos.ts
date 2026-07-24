@@ -254,6 +254,27 @@ export class FeatureRepo {
     this.db.prepare('UPDATE features SET worktree_path=? WHERE id=?').run(worktreePath, id);
   }
 
+  /**
+   * Hard-Delete: entfernt das Feature samt ALLER DB-Spuren. Der FK-Cascade räumt
+   * merge_queue, review_comments und agent_feature_selection ab; executions, agent_runs,
+   * attention und sessions haben keinen Cascade-FK und werden explizit mitgelöscht (eine
+   * Transaktion → alles oder nichts). Liefert die Execution-IDs zurück, damit der Aufrufer
+   * die zugehörigen Lauf-Logs auf der Platte entfernen kann.
+   */
+  hardDelete(id: string): { executionIds: string[] } {
+    const executionIds = (
+      this.db.prepare('SELECT id FROM executions WHERE feature_id=?').all(id) as { id: string }[]
+    ).map((r) => r.id);
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM executions WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM agent_runs WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM attention WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM sessions WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM features WHERE id=?').run(id);
+    })();
+    return { executionIds };
+  }
+
   setTasks(id: string, done: number, total: number): void {
     this.db.prepare('UPDATE features SET tasks_done=?, tasks_total=? WHERE id=?').run(done, total, id);
   }

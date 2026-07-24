@@ -559,6 +559,11 @@ export async function buildServer(deps: ApiDeps) {
     return fresh;
   });
 
+  app.delete<{ Params: { id: string } }>('/api/features/:id', async (req) => {
+    await deps.mergeQueue.deleteFeature(req.params.id);
+    return { ok: true };
+  });
+
   app.post<{ Params: { id: string } }>('/api/features/:id/archive', async (req) => {
     const feature = deps.features.get(req.params.id);
     if (feature) {
