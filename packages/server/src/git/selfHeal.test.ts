@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { isBranchMergedInto, isGitRepo } from './git.js';
+import { isBranchMergedInto, isGitRepo, uncommittedFileCount } from './git.js';
 import { WorktreeManager } from './worktrees.js';
 
 function sh(cwd: string, args: string[]): string {
@@ -60,6 +60,39 @@ describe('Merge-Queue Self-Healing (git-Layer)', () => {
 
     it('behandelt einen nicht (mehr) existierenden Branch als integriert', async () => {
       expect(await isBranchMergedInto(repo, 'feature/ghost', 'main')).toBe(true);
+    });
+
+    /**
+     * Der Fallstrick, der eine fertige Implementierung gekostet hat: ein Branch OHNE
+     * eigene Commits ist trivial Vorfahre von main und damit von einem echten ff-Merge
+     * NICHT unterscheidbar. Allein aus der Commit-Topologie ist der Fall nicht lösbar —
+     * deshalb entscheidet uncommittedFileCount, ob Aufräumen Arbeit vernichten würde
+     * (Schutz in MergeQueueService.reconcile).
+     */
+    it('meldet einen Branch ohne eigene Commits fälschlich als gemergt — Worktree-Inhalt ist der einzige Unterschied', async () => {
+      const wt = await worktrees.create({
+        projectId: 'p1',
+        projectPath: repo,
+        featureName: 'nocommit',
+        branch: 'feature/nocommit',
+        defaultBranch: 'main',
+      });
+
+      expect(await isBranchMergedInto(repo, 'feature/nocommit', 'main')).toBe(true); // Fehldiagnose
+      expect(await uncommittedFileCount(wt)).toBe(0); // noch nichts zu verlieren
+
+      writeFileSync(join(wt, 'neu.ts'), 'export const a = 1;\n'); // Agent-Arbeit, nie committet
+      expect(await uncommittedFileCount(wt)).toBe(1); // ⇒ reconcile muss eskalieren, nicht aufräumen
+    });
+  });
+
+  describe('uncommittedFileCount', () => {
+    it('zählt geänderte und untracked Dateien, wirft nicht bei fehlendem Verzeichnis', async () => {
+      expect(await uncommittedFileCount(repo)).toBe(0);
+      writeFileSync(join(repo, 'app.txt'), 'geändert\n');
+      writeFileSync(join(repo, 'dazu.txt'), 'neu\n');
+      expect(await uncommittedFileCount(repo)).toBe(2);
+      expect(await uncommittedFileCount(join(tmpdir(), 'gibt-es-nicht-xyz'))).toBe(0);
     });
   });
 

@@ -54,6 +54,17 @@ export async function isCleanWorkingTree(cwd: string): Promise<boolean> {
   return r.trim() === '';
 }
 
+/**
+ * Anzahl uncommitteter Einträge (geändert + untracked) im Arbeitsbaum.
+ * Wirft nicht: fehlendes/defektes Verzeichnis ⇒ 0 (dort ist nichts zu verlieren).
+ * Gedacht als Schutzabfrage VOR destruktivem Aufräumen (`worktree remove --force`).
+ */
+export async function uncommittedFileCount(cwd: string): Promise<number> {
+  const r = await git(cwd, ['status', '--porcelain']);
+  if (r.code !== 0) return 0;
+  return r.stdout.split('\n').filter((l) => l.trim() !== '').length;
+}
+
 export async function currentBranch(cwd: string): Promise<string> {
   return (await gitOk(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 }

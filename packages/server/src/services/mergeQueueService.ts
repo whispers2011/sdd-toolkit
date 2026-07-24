@@ -7,7 +7,7 @@ import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo,
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
-import { git, isBranchMergedInto, isCleanWorkingTree, run } from '../git/git.js';
+import { git, isBranchMergedInto, isCleanWorkingTree, run, uncommittedFileCount } from '../git/git.js';
 import { runVerification } from './verifyService.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
@@ -589,6 +589,22 @@ export class MergeQueueService {
   private async reconcile(feature: Feature, project: Project): Promise<'proceed' | 'merged' | 'lost'> {
     const target = feature.integrationTarget ?? project.defaultBranch;
     if (await isBranchMergedInto(project.path, feature.branch, target)) {
+      // FALLSTRICK: Ein Branch OHNE eigene Commits ist trivial Vorfahre des Ziels und
+      // gilt damit als „gemergt" — nicht unterscheidbar von einem echten ff-Merge.
+      // finalizeMerged() würde den Worktree mit --force entfernen und uncommittete
+      // Arbeit unwiederbringlich löschen (genau so ist eine fertige Implementierung
+      // verloren gegangen). Vorher prüfen, ob dort etwas zu verlieren ist.
+      const pending = feature.worktreePath ? await uncommittedFileCount(feature.worktreePath) : 0;
+      if (pending > 0) {
+        this.setStage(feature, 'conflict_escalated');
+        this.escalate(
+          feature,
+          'merge_conflict_escalated',
+          `${feature.name}: Branch gilt als in ${target} enthalten, aber der Worktree hat ${pending} ` +
+            `uncommittete Datei(en). Aufräumen würde sie löschen — erst committen oder verwerfen, dann erneut integrieren.`,
+        );
+        return 'lost';
+      }
       await this.finalizeMerged(feature, project);
       return 'merged';
     }
