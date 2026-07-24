@@ -128,6 +128,43 @@ describe('PtySessionManager.sendPrompt — bereitschaftsgesteuertes, bestätigte
     expect(s.submitPending).toBeNull();
   });
 
+  // Regression: /clear und /compact laufen NICHT durch Claudes Prompt-Handling — sie
+  // feuern kein user_prompt_submit, sondern beenden die Session mit Restart-Reason.
+  // Ohne diesen Zweig lief jedes Reset-Kommando in die Retry-Erschöpfung und riss über
+  // onSubmitFailed die real laufende Phase mit (kein Auto-Progress, keine Tokens).
+  it.each(['clear', 'compact', 'resume'])(
+    'akzeptiert session_end(reason=%s) als Zustellbestätigung und meldet KEIN onSubmitFailed',
+    (reason) => {
+      const { mgr, onSubmitFailed } = makeManager();
+      const s = fakeSession({ kind: 'ready' });
+      inject(mgr, s);
+
+      mgr.sendPrompt(s.id, '/clear');
+      vi.advanceTimersByTime(SUBMIT_DELAY_MS);
+      expect(s.submitPending).not.toBeNull();
+
+      dispatch(mgr, s, { type: 'hook', event: { name: 'session_end', reason } });
+      expect(s.submitPending).toBeNull();
+
+      // Über das gesamte Retry-Fenster hinaus: kein Fehlschlag, keine weiteren CRs.
+      vi.advanceTimersByTime((SUBMIT_CONFIRM_MS + 1) * (MAX_SUBMIT_RETRIES + 1));
+      expect(onSubmitFailed).not.toHaveBeenCalled();
+      expect(crCount(s)).toBe(1);
+    },
+  );
+
+  it('behandelt ein echtes Session-Ende (reason=other) weiterhin NICHT als Bestätigung', () => {
+    const { mgr } = makeManager();
+    const s = fakeSession({ kind: 'ready' });
+    inject(mgr, s);
+
+    mgr.sendPrompt(s.id, 'x');
+    vi.advanceTimersByTime(SUBMIT_DELAY_MS);
+    dispatch(mgr, s, { type: 'hook', event: { name: 'session_end', reason: 'prompt_input_exit' } });
+
+    expect(s.submitPending).not.toBeNull(); // kein Restart-Reason → keine Zustellbestätigung
+  });
+
   it('bewahrt die Reihenfolge zweier aufeinanderfolgender Prompts', () => {
     const { mgr } = makeManager();
     const s = fakeSession({ kind: 'ready' });

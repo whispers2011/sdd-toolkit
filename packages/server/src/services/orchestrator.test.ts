@@ -125,7 +125,7 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
       executionId: 'e1',
       scrollbackStart: 0,
       transcriptOffsetStart: 0,
-      promptText: '',
+      promptText: '/speckit-implement',
     });
     const session = { kind: 'feature', featureId: 'f1', projectId: 'p1', id: 's1' } as unknown as LiveSession;
 
@@ -134,6 +134,31 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
     expect(state.phases.specify.status).toBe('idle');
     expect(finish).toHaveBeenCalledWith('e1', 1);
     expect(raise).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agent_errored', featureId: 'f1' }));
+  });
+
+  // Regression: das Reset-Kommando geht als eigener Prompt VOR dem Phasenprompt raus.
+  // Blieb dessen Bestätigung aus, räumte handleSubmitFailed die real laufende Phase ab —
+  // Ursache für „jeder Schritt manuell", Phantom-Inbox-Meldungen und fehlende Tokens.
+  it('handleSubmitFailed lässt die Phase laufen, wenn nur das vorgeschaltete Reset-Kommando scheiterte', () => {
+    const { orch, state, raise, finish, savePhases } = setup({ running: true });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      promptText: '/speckit-specify etwas',
+    });
+    const session = { kind: 'feature', featureId: 'f1', projectId: 'p1', id: 's1' } as unknown as LiveSession;
+
+    orch.handleSubmitFailed(session, '/clear'); // nicht der Phasenprompt
+
+    expect(state.phases.specify.status).toBe('running'); // Phase bleibt stehen
+    expect(finish).not.toHaveBeenCalled();
+    expect(savePhases).not.toHaveBeenCalled();
+    expect(raise).not.toHaveBeenCalled(); // keine Phantom-Meldung
+    expect(
+      (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.has('f1'),
+    ).toBe(true); // Buchführung intakt → Turn-Abschluss greift später
   });
 
   it('reapOnBoot setzt verwaiste running-Phasen auf idle und meldet run_interrupted', () => {

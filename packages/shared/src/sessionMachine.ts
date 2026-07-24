@@ -47,7 +47,7 @@ export interface SessionMachine {
 export const initialSession: SessionMachine = { state: { kind: 'created' }, hooksLive: false };
 
 /** SessionEnd-Reasons, die einen In-Place-Neustart bedeuten (kein echtes Ende). */
-const RESTART_REASONS = new Set(['clear', 'resume', 'compact']);
+export const RESTART_REASONS = new Set(['clear', 'resume', 'compact']);
 
 /** Tools, deren PreToolUse „wartet auf den Menschen" bedeutet. */
 const AWAITING_TOOLS: Record<string, AwaitingKind> = {

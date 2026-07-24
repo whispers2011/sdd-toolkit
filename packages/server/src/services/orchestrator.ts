@@ -742,12 +742,24 @@ export class Orchestrator {
    * Callback der Send-Pipeline: ein Prompt konnte nicht zugestellt werden (Session
    * lebt, nimmt ihn aber nicht an). Laufende Phase zurückrollen + „braucht dich".
    */
-  handleSubmitFailed(session: LiveSession, _text: string): void {
+  handleSubmitFailed(session: LiveSession, text: string): void {
     if (session.kind === 'chat_work') return; // Arbeits-Chat läuft über einen anderen Pfad
     const featureId = session.featureId;
     if (!featureId) return;
     const feature = this.deps.features.get(featureId);
     const running = this.runningPhases.get(featureId);
+    // Nur der Phasenprompt selbst darf die Phase zurückrollen. Das Reset-Kommando
+    // (/clear bzw. /compact) geht als EIGENER Prompt voraus (launchPhase); bleibt dessen
+    // Bestätigung aus, stellt pump() den Phasenprompt danach trotzdem zu und die Phase
+    // läuft real an. Sie hier abzuräumen setzte eine LAUFENDE Phase auf idle, meldete
+    // fälschlich „konnte nicht gestartet werden" und nahm dem Turn-Abschluss die
+    // Buchführung (kein Auto-Progress, keine Tokens).
+    if (running && text !== running.promptText) {
+      console.warn(
+        `[orchestrator] Vorgeschaltetes Kommando für Phase ${running.phase} unbestätigt — Phase läuft weiter: ${text}`,
+      );
+      return;
+    }
     if (running) {
       this.runningPhases.delete(featureId);
       this.deps.executions.finish(running.executionId, 1);
@@ -786,7 +798,13 @@ export class Orchestrator {
       if (running) {
         // Session starb mitten in einer Phase → Phase zurücksetzen.
         this.runningPhases.delete(session.featureId);
-        this.deps.executions.finish(running.executionId, exitCode || 1);
+        // Abgebrochene Läufe haben Tokens verbraucht — auch sie messen, sonst zeigt das
+        // Dashboard 0 für real bezahlte Arbeit.
+        this.deps.executions.finishWithUsage(
+          running.executionId,
+          exitCode || 1,
+          this.meterTurn(session, running),
+        );
         // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
         this.persistTranscriptRange(session, running);
         const feature = this.deps.features.get(session.featureId);

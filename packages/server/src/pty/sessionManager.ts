@@ -6,6 +6,7 @@ import {
   displayStatus,
   isReadyForInput,
   isTerminal,
+  RESTART_REASONS,
   type SessionEffect,
   type SessionMachine,
   type SessionSignal,
@@ -210,7 +211,13 @@ export class PtySessionManager {
       this.dispatch(session, { type: 'process_exited', code: exitCode });
       void session.hookWatcher?.stop();
       this.detachTranscript(session);
-      this.callbacks.onExit(session, exitCode);
+      // Läuft im PTY-'exit'-Event: eine Exception hier wäre uncaught und würde
+      // den Prozess beenden. Fehler des Exit-Handlers isolieren.
+      try {
+        this.callbacks.onExit(session, exitCode);
+      } catch (err) {
+        console.error(`[pty] onExit-Handler für Session ${session.id} fehlgeschlagen:`, err);
+      }
     });
 
     if (hookSetup) {
@@ -438,12 +445,22 @@ export class PtySessionManager {
   async terminate(id: string): Promise<void> {
     const s = this.sessions.get(id);
     if (!s || s.exited) return;
-    s.pty.write('\x03');
+    // PTY-Operationen dürfen nie werfen: schreibt/killt man ein PTY, dessen
+    // Kindprozess bereits weg ist, wirft node-pty (EIO / „pty destroyed") — das
+    // würde als unbehandelte Rejection den ganzen Serverprozess reißen.
+    const safe = (fn: () => void) => {
+      try {
+        if (!s.exited) fn();
+      } catch {
+        /* PTY bereits tot — Exit-Pfad übernimmt den Rest. */
+      }
+    };
+    safe(() => s.pty.write('\x03'));
     await delay(150);
     if (s.exited) return;
-    s.pty.write('\x03');
+    safe(() => s.pty.write('\x03'));
     await delay(1200);
-    if (!s.exited) s.pty.kill();
+    safe(() => s.pty.kill());
   }
 
   displayStatusOf(id: string): ReturnType<typeof displayStatus> | null {
@@ -456,9 +473,22 @@ export class PtySessionManager {
   }
 }
 
-/** Signale, die belegen, dass ein abgeschickter Prompt angenommen wurde. */
+/**
+ * Signale, die belegen, dass ein abgeschickter Prompt angenommen wurde.
+ *
+ * `user_prompt_submit`/`working` deckt normale Prompts ab. Lokale TUI-Kommandos
+ * (`/clear`, `/compact`) durchlaufen dagegen NICHT das Prompt-Handling von Claude:
+ * sie feuern kein `user_prompt_submit` und lösen kein Transkript-`working` aus,
+ * sondern beenden die Claude-Session mit einem Restart-Reason und starten sie neu.
+ * Ohne diesen Zweig blieb ein Reset-Kommando ewig unbestätigt → 4 vergebliche CR-Retries
+ * → `onSubmitFailed`, obwohl das Kommando längst ausgeführt war (Ursache dafür, dass
+ * Auto-Progress bei contextStrategy 'fresh'/'compact' nie griff).
+ */
 function isSubmitConfirming(signal: SessionSignal): boolean {
-  if (signal.type === 'hook') return signal.event.name === 'user_prompt_submit';
+  if (signal.type === 'hook') {
+    if (signal.event.name === 'user_prompt_submit') return true;
+    return signal.event.name === 'session_end' && signal.event.reason !== null && RESTART_REASONS.has(signal.event.reason);
+  }
   if (signal.type === 'transcript') return signal.event === 'working';
   return false;
 }
