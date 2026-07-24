@@ -202,6 +202,17 @@ async function main(): Promise<void> {
   };
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
+
+  // Letztes Sicherheitsnetz: ein Fehler in einem Hintergrund-Timer, PTY-Event
+  // oder einer gevoideten Promise darf den Server NICHT beenden. Node 22 würde
+  // sonst (Default „throw") den ganzen Prozess reißen — das Toolkit „beendet
+  // sich selbst". Loggen und weiterlaufen.
+  process.on('unhandledRejection', (reason) => {
+    console.error('[fatal-guard] Unbehandelte Promise-Rejection (Server läuft weiter):', reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[fatal-guard] Unbehandelte Exception (Server läuft weiter):', err);
+  });
 }
 
 main().catch((err) => {
