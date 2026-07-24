@@ -315,3 +315,60 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
     expect(terminated).toEqual([]);
   });
 });
+
+describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let sessionsRepo: SessionRepo;
+  let live: LiveSession | undefined;
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-paused-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    sessionsRepo = new SessionRepo(db);
+    live = undefined;
+
+    const ptys = { forConversation: () => live } as unknown as PtySessionManager;
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: sessionsRepo,
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const conv = () => new ChatRepo(db).createConversation(projectId, 'work');
+
+  it('false, wenn eine Session live ist', () => {
+    const c = conv();
+    live = { id: 's1' } as unknown as LiveSession;
+    expect(svc.workPaused(c)).toBe(false);
+  });
+
+  it('false für eine frische Unterhaltung ohne je gestartete Session', () => {
+    expect(svc.workPaused(conv())).toBe(false);
+  });
+
+  it('true, wenn keine Session läuft, aber eine frühere mit Claude-Session-ID existiert (fortsetzbar)', () => {
+    const c = conv();
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
+    sessionsRepo.setClaudeSessionId('s1', 'claude-abc');
+    expect(svc.workPaused(c)).toBe(true);
+  });
+
+  it('false, wenn die frühere Session nie eine Claude-Session-ID erhielt', () => {
+    const c = conv();
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
+    expect(svc.workPaused(c)).toBe(false);
+  });
+});

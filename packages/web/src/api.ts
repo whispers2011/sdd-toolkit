@@ -63,6 +63,8 @@ export interface ChatState {
   conversation: ChatConversation | null;
   messages: ChatMessage[];
   workSession?: ChatWorkSessionInfo | null;
+  /** Session war live, ist aber pausiert (Leerlauf-Reaper) und fortsetzbar → Panel fragt nach. */
+  workPaused?: boolean;
   pendingFeatures?: ChatFeatureProposal | null;
 }
 

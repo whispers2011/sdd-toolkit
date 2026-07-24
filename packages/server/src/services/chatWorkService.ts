@@ -29,8 +29,9 @@ import { bus } from '../events.js';
 
 /**
  * Ein Projekt-Chat ohne Aktivität für diese Dauer wird automatisch beendet, damit
- * keine Leerlauf-Session im Hintergrund weiterläuft. Beim nächsten Öffnen resumt
- * `ensure()` die Unterhaltung nahtlos (Scrollback-Snapshot + Claude-Resume).
+ * keine Leerlauf-Session im Hintergrund weiterläuft. Der Verlauf bleibt erhalten:
+ * Das Panel zeigt danach eine „Pausiert"-Karte (`workPaused`), über die der Nutzer
+ * fortsetzen (`ensure()` → Scrollback-Snapshot + Claude-Resume) oder frisch beginnen kann.
  */
 export const CHAT_IDLE_TIMEOUT_MS = 5 * 60_000;
 
@@ -221,6 +222,17 @@ export class ChatWorkService {
     };
   }
 
+  /**
+   * „Pausiert": Die Unterhaltung hatte schon eine echte Session, die aber nicht mehr
+   * läuft (Leerlauf-Reaper oder Server-Neustart) und sich fortsetzen ließe. Signal für
+   * das Panel, den Nutzer zu fragen (fortsetzen ODER neu) statt still zu resumen.
+   */
+  workPaused(conversation: ChatConversation): boolean {
+    if (this.deps.ptys.forConversation(conversation.id)) return false; // läuft → nicht pausiert
+    const prev = this.deps.sessions.latestForConversation(conversation.id);
+    return !!prev?.claude_session_id; // es gab bereits eine echte Session → fortsetzbar
+  }
+
   // ---------- Feature-Vorschläge ----------
 
   /** Offener Vorschlag der aktiven Unterhaltung (für GET /chat). */
@@ -382,13 +394,21 @@ export class ChatWorkService {
    */
   reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_IDLE_TIMEOUT_MS): void {
     for (const s of this.deps.ptys.list()) {
-      if (s.kind !== 'chat_work' || s.exited) continue;
-      if (displayStatus(s.machine.state) === 'working') continue; // aktiver Turn → laufen lassen
-      if (now - s.lastActiveAt < maxIdleMs) continue;
-      this.terminating.add(s.id); // erwarteter Exit → kein „braucht dich"-Alarm
-      void this.deps.ptys.terminate(s.id);
-      if (s.conversationId) {
-        bus.emitEvent('chat_updated', { projectId: s.projectId, conversationId: s.conversationId });
+      try {
+        if (s.kind !== 'chat_work' || s.exited) continue;
+        if (displayStatus(s.machine.state) === 'working') continue; // aktiver Turn → laufen lassen
+        if (now - s.lastActiveAt < maxIdleMs) continue;
+        this.terminating.add(s.id); // erwarteter Exit → kein „braucht dich"-Alarm
+        // Fehler beim Beenden dürfen weder die Schleife abbrechen noch als
+        // unbehandelte Rejection den Serverprozess reißen.
+        void this.deps.ptys.terminate(s.id).catch((err) => {
+          console.error(`[chatWork] Reap von Session ${s.id} fehlgeschlagen:`, err);
+        });
+        if (s.conversationId) {
+          bus.emitEvent('chat_updated', { projectId: s.projectId, conversationId: s.conversationId });
+        }
+      } catch (err) {
+        console.error(`[chatWork] Reap-Iteration für Session ${s.id} fehlgeschlagen:`, err);
       }
     }
   }

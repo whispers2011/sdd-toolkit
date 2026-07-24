@@ -396,8 +396,9 @@ export async function buildServer(deps: ApiDeps) {
     if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
     const base = deps.chat.getState(req.params.id);
     const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
+    const workPaused = base.conversation ? deps.chatWork.workPaused(base.conversation) : false;
     const pendingFeatures = deps.chatWork.proposalForProject(req.params.id);
-    return { ...base, workSession, pendingFeatures };
+    return { ...base, workSession, workPaused, pendingFeatures };
   });
 
   /** Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */

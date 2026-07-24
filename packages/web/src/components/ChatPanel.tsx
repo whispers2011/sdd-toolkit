@@ -44,17 +44,24 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       .then(setChat)
       .catch((e: Error) => setError(e.message));
 
-  // Beim Öffnen: Session sicherstellen (Worktree + interaktive Claude-Session), dann Zustand laden.
+  // Beim Öffnen: erst den Zustand prüfen. Eine wegen Inaktivität pausierte (fortsetzbare)
+  // Session wird NICHT still resumt — stattdessen fragt die Karte den Nutzer. Eine frische
+  // Unterhaltung startet wie gehabt automatisch.
   useEffect(() => {
     let cancelled = false;
     setReady(false);
     setError(null);
     void api
-      .ensureChatWorkSession(projectId)
-      .then(() => {
-        if (cancelled) return;
-        setReady(true);
-        load();
+      .getChat(projectId)
+      .then((st) => {
+        if (cancelled) return undefined;
+        setChat(st);
+        if (st.workPaused && !st.workSession) return undefined; // pausiert → Karte, nicht starten
+        return api.ensureChatWorkSession(projectId).then(() => {
+          if (cancelled) return;
+          setReady(true);
+          load();
+        });
       })
       .catch((e: Error) => {
         if (!cancelled) setError(e.message);
@@ -76,6 +83,9 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const liveWork = state.app?.sessions.find((s) => conversationId && s.conversationId === conversationId);
   const status = liveWork?.status ?? chat?.workSession?.status ?? 'idle';
   const projectName = state.app?.projects.find((p) => p.id === projectId)?.name ?? '';
+  // Wegen 5 min Inaktivität pausiert: Session beendet, Verlauf erhalten. Der Nutzer
+  // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird.
+  const paused = !!chat?.workPaused;
 
   // Bei neuem Vorschlag alle Features vorauswählen.
   useEffect(() => {
@@ -120,6 +130,17 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
     void runRestart(false)
       .catch((e: Error) => setError(e.message))
       .finally(() => setRestarting(false));
+  };
+
+  // Pausierten Chat fortsetzen: Karte sofort ausblenden, Terminal mounten → dessen
+  // getSession() resumt die alte Unterhaltung (claude --resume + Scrollback-Snapshot).
+  // Bewusst kein load() hier: getChat könnte zurückkommen, bevor die resumte Session
+  // serverseitig live ist (workPaused kurz wieder true → Karten-Flackern). Der Status
+  // aktualisiert sich über den App-WS; chat_updated-Events lösen später ein load() aus.
+  const resume = () => {
+    setError(null);
+    setChat((c) => (c ? { ...c, workPaused: false } : c));
+    setReady(true);
   };
 
   const startResize = (e: React.PointerEvent) => {
@@ -207,7 +228,34 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       {/* Echte Konsole der Session — man tippt direkt hier hinein.
           Hintergrund folgt dem Terminal-Theme (zinc-950 ⇄ hell). */}
       <div className="min-h-0 flex-1 bg-zinc-950">
-        {ready ? (
+        {paused ? (
+          <div className="flex h-full flex-col items-center justify-center gap-4 p-6 text-center">
+            <span className="text-3xl text-zinc-500" aria-hidden>
+              ⏸
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-zinc-200">Chat wegen Inaktivität pausiert</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Seit 5 min keine Aktivität — die Session wurde beendet. Dein Verlauf ist erhalten.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={resume}
+                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600"
+              >
+                Chat fortsetzen
+              </button>
+              <button
+                onClick={onRestart}
+                disabled={restarting}
+                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+              >
+                Neuen Chat starten
+              </button>
+            </div>
+          </div>
+        ) : ready ? (
           <TerminalPane
             key={conversationId ?? 'boot'}
             featureId={null}
