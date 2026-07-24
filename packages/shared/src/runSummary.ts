@@ -112,10 +112,11 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     if (!step) stepMap.set(key, (step = { key, category, rollup: emptyRollup() }));
     add(step.rollup, e);
 
-    if (e.tokensSource) {
-      sourceCounts[e.tokensSource] += 1;
-      sourceTotal += 1;
-    }
+    // Nenner sind ALLE Läufe, nicht nur die bereits gemessenen: sonst meldet ein Lauf
+    // mit 1 gemessenen und 10 ungemessenen Executions „100 % gemessen". Der fehlende
+    // Rest zu 1 ist der ungemessene Anteil.
+    sourceTotal += 1;
+    if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
     if (startedAt === 0 || e.startedAt < startedAt) startedAt = e.startedAt;
     const activity = e.finishedAt ?? e.startedAt;
     if (activity > lastActivityAt) lastActivityAt = activity;

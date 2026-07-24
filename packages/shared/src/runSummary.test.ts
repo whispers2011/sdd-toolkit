@@ -130,4 +130,21 @@ describe('buildRunSummaries', () => {
     expect(run!.sourceMix.transcript).toBeCloseTo(0.5);
     expect(run!.sourceMix.estimated).toBeCloseTo(0.5);
   });
+
+  /**
+   * Regression: der Nenner zählte nur Executions MIT tokensSource. Ein Lauf mit
+   * 1 gemessenen und 10 ungemessenen Executions meldete dadurch „100 % gemessen"
+   * — genau die Kombination, in der 97 % der real bezahlten Tokens unsichtbar waren.
+   */
+  it('rechnet ungemessene Executions in den Nenner ein (kein falsches „100 % gemessen")', () => {
+    const executions = [
+      exec({ tokensSource: 'transcript' }),
+      ...Array.from({ length: 10 }, () => exec({ tokensSource: null })),
+    ];
+    const [run] = buildRunSummaries([feature({})], executions);
+
+    expect(run!.sourceMix.transcript).toBeCloseTo(1 / 11);
+    const measured = run!.sourceMix.transcript + run!.sourceMix.parsed + run!.sourceMix.estimated;
+    expect(measured).toBeLessThan(0.1); // der Rest ist ungemessen
+  });
 });

@@ -78,10 +78,10 @@ export function aggregateBreakdown(
     if (!k) kindMap.set(e.kind, (k = emptyRollup()));
     add(k, e);
 
-    if (e.tokensSource) {
-      sourceCounts[e.tokensSource] += 1;
-      sourceTotal += 1;
-    }
+    // Nenner sind ALLE Executions (siehe runSummary): nur gemessene zu zählen
+    // behauptete „100 % gemessen", während der Großteil ohne Usage dastand.
+    sourceTotal += 1;
+    if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
 
     if (opts.groupByOptimization) {
       const key = e.optContextStrategy ?? 'unset';
