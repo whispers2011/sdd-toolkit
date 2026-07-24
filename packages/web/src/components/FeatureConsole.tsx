@@ -8,6 +8,7 @@ import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
 import { KnowledgeIcon } from './icons.js';
 import { ConfirmDialog } from './Sidebar.js';
+import { FeatureDashboard } from './FeatureDashboard.js';
 
 /** Konsole pro Feature: Header + Phasen-Leiste + Terminal. */
 export function FeatureConsole({ featureId }: { featureId: string }) {
@@ -24,6 +25,9 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   if (!feature) return <div className="p-8 text-zinc-500">Feature nicht gefunden.</div>;
 
   const runningPhase = FEATURE_PHASES.find((p) => feature.phases[p]?.status === 'running');
+  // Abgeschlossen (gemergt/archiviert) → keine neue Session mehr; statt Terminal ein
+  // Ergebnis-Dashboard (Artefakte, Token-Statistik, Logs).
+  const completed = feature.integration === 'merged' || !!feature.archivedAt;
 
   return (
     <div className="flex h-full flex-col">
@@ -64,7 +68,9 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
             🗑
           </HeaderIcon>
         </div>
-        <span className="text-xs text-zinc-500">{connected ? 'verbunden' : 'getrennt …'}</span>
+        <span className="text-xs text-zinc-500">
+          {completed ? 'abgeschlossen ✓' : connected ? 'verbunden' : 'getrennt …'}
+        </span>
       </div>
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
@@ -83,13 +89,19 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         />
       )}
 
-      <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
+      {completed ? (
+        <FeatureDashboard feature={feature} />
+      ) : (
+        <>
+          <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
 
-      <div className="min-h-0 flex-1 bg-[#09090b] p-2">
-        <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
-      </div>
+          <div className="min-h-0 flex-1 bg-[#09090b] p-2">
+            <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
+          </div>
 
-      <PromptBar featureId={featureId} />
+          <PromptBar featureId={featureId} />
+        </>
+      )}
     </div>
   );
 }

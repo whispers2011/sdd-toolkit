@@ -212,7 +212,7 @@ export function ExecutionsView() {
   );
 }
 
-function RunCard({
+export function RunCard({
   run,
   expanded,
   onToggle,
