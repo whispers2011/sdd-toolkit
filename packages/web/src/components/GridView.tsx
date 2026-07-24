@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { selectAutoPanes } from '@sdd/shared';
-import { useStore } from '../store.js';
+import { isShowCompleted, useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
 
 const MAX_PANES = 9;
@@ -34,7 +34,7 @@ export function GridView() {
 
     const visibleFeatureIds = new Set(
       state.app.features
-        .filter((f) => f.projectId === scope && (state.showCompleted || f.integration !== 'merged'))
+        .filter((f) => f.projectId === scope && (isShowCompleted(state, scope) || f.integration !== 'merged'))
         .map((f) => f.id),
     );
     setPanes(selectAutoPanes(state.app.sessions, { projectId: scope, visibleFeatureIds, max: MAX_PANES }));
@@ -45,7 +45,7 @@ export function GridView() {
   if (!state.app) return null;
   // Kontext-Trennung: nur Features des gewählten Projekts.
   const features = state.app.features.filter(
-    (f) => f.projectId === scope && (state.showCompleted || f.integration !== 'merged'),
+    (f) => f.projectId === scope && (isShowCompleted(state, scope) || f.integration !== 'merged'),
   );
   // Panes bereinigen, deren Features nicht (mehr) im Scope sind (UI-State, kein Domain-State).
   const validPanes = panes.filter((id) => features.some((f) => f.id === id));

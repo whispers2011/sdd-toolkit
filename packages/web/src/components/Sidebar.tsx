@@ -1,12 +1,45 @@
 import { useEffect, useState } from 'react';
 import type { Feature } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
-import { useStore } from '../store.js';
+import { isShowCompleted, useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
-import { KnowledgeIcon, SettingsIcon } from './icons.js';
+import { ChevronDownIcon, KnowledgeIcon, SettingsIcon } from './icons.js';
+
+// ---- Projekt-Reihenfolge (gerätelokal, per Drag&Drop) ----
+const PROJECT_ORDER_KEY = 'sdd-project-order';
+
+function loadProjectOrder(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(PROJECT_ORDER_KEY) ?? 'null') as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveProjectOrder(ids: string[]): void {
+  try {
+    localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    /* best effort */
+  }
+}
+
+/** Projekte nach gespeicherter Reihenfolge sortieren; unbekannte (neue) hinten, Serverreihenfolge stabil. */
+function orderProjects<T extends { id: string }>(projects: T[], order: string[]): T[] {
+  const idx = new Map(order.map((id, i) => [id, i] as const));
+  return [...projects].sort(
+    (a, b) => (idx.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (idx.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+/** Kurzes Datum (TT.MM.JJ) für die Datumsspalte abgeschlossener Features. */
+function shortDate(ts: number): string {
+  return new Date(ts).toLocaleDateString('de-CH', { day: '2-digit', month: '2-digit', year: '2-digit' });
+}
 
 export function Sidebar() {
   const { state, dispatch } = useStore();
@@ -15,7 +48,31 @@ export function Sidebar() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [showJiraSettings, setShowJiraSettings] = useState(false);
   const [showToolSettings, setShowToolSettings] = useState(false);
+  const [order, setOrder] = useState<string[]>(() => loadProjectOrder());
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
   if (!state.app) return null;
+
+  const orderedProjects = orderProjects(state.app.projects, order);
+
+  const reorder = (targetId: string) => {
+    setOverId(null);
+    if (!dragId || dragId === targetId || !state.app) {
+      setDragId(null);
+      return;
+    }
+    const ids = orderProjects(state.app.projects, order).map((p) => p.id);
+    const from = ids.indexOf(dragId);
+    if (from === -1) {
+      setDragId(null);
+      return;
+    }
+    ids.splice(from, 1);
+    ids.splice(ids.indexOf(targetId), 0, dragId); // vor das Ziel einfügen
+    saveProjectOrder(ids);
+    setOrder(ids);
+    setDragId(null);
+  };
 
   const sessionFor = (featureId: string): LiveSessionInfo | undefined =>
     state.app!.sessions.find((s) => s.featureId === featureId && !s.exited);
@@ -34,11 +91,38 @@ export function Sidebar() {
       </div>
 
       <div className="mt-2 min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {state.app.projects.map((project) => (
+        {orderedProjects.map((project) => {
+          // Nur das aktuell ausgewählte Projekt ist aufgeklappt — alle anderen eingeklappt.
+          const expanded = state.selectedProjectId === project.id;
+          return (
           <div key={project.id} className="mb-3">
             <div
-              className={`group flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 ${
+              draggable
+              onDragStart={(e) => {
+                setDragId(project.id);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', project.id);
+              }}
+              onDragOver={(e) => {
+                if (dragId && dragId !== project.id) {
+                  e.preventDefault();
+                  setOverId(project.id);
+                }
+              }}
+              onDragLeave={() => setOverId((cur) => (cur === project.id ? null : cur))}
+              onDrop={(e) => {
+                e.preventDefault();
+                reorder(project.id);
+              }}
+              onDragEnd={() => {
+                setDragId(null);
+                setOverId(null);
+              }}
+              title="Ziehen zum Umsortieren"
+              className={`group flex cursor-pointer items-center gap-1.5 rounded px-2 py-1.5 ${
                 state.selectedProjectId === project.id ? 'bg-zinc-800' : 'hover:bg-zinc-900'
+              } ${overId === project.id && dragId !== project.id ? 'border-t-2 border-emerald-600' : ''} ${
+                dragId === project.id ? 'opacity-50' : ''
               }`}
               onClick={() => {
                 // Klick auf den Projektnamen öffnet das Board dieses Projekts (FR-001/FR-004).
@@ -46,6 +130,9 @@ export function Sidebar() {
                 dispatch({ type: 'set_view', view: { kind: 'board' } });
               }}
             >
+              <ChevronDownIcon
+                className={`shrink-0 text-zinc-600 transition-transform ${expanded ? '' : '-rotate-90'}`}
+              />
               <span
                 className="h-2.5 w-2.5 shrink-0 rounded-sm"
                 style={{ backgroundColor: project.color ?? '#71717a' }}
@@ -105,12 +192,15 @@ export function Sidebar() {
                 ⚙
               </button>
             </div>
+            {expanded && (
             <ul className="mt-0.5 space-y-0.5 pl-3">
               {state.app!.features
                 .filter(
                   (f) =>
-                    f.projectId === project.id && (state.showCompleted || f.integration !== 'merged'),
+                    f.projectId === project.id &&
+                    (isShowCompleted(state, project.id) || f.integration !== 'merged'),
                 )
+                .sort((a, b) => b.createdAt - a.createdAt) // neueste Session zuerst
                 .map((feature) => {
                   const session = sessionFor(feature.id);
                   const status = session?.status ?? 'stopped';
@@ -132,8 +222,10 @@ export function Sidebar() {
                   );
                 })}
             </ul>
+            )}
           </div>
-        ))}
+          );
+        })}
         {state.app.projects.length === 0 && (
           <p className="px-2 py-8 text-center text-xs text-zinc-600">
             Noch keine Projekte.
@@ -274,26 +366,38 @@ function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira
   );
 }
 
-/** Abgeschlossene standardmäßig ausblenden — hier wieder einblendbar. */
+/** Abgeschlossene standardmäßig ausblenden — hier wieder einblendbar (nur aktuelles Projekt). */
 function CompletedToggle() {
   const { state, dispatch } = useStore();
   if (!state.app) return null;
-  const completed = state.app.features.filter((f) => f.integration === 'merged').length;
-  if (completed === 0 && !state.showCompleted) return null;
+  const pid = state.selectedProjectId;
+  if (!pid) return null;
+  const show = isShowCompleted(state, pid);
+  const completed = state.app.features.filter(
+    (f) => f.projectId === pid && f.integration === 'merged',
+  ).length;
+  if (completed === 0 && !show) return null;
   return (
     <button
       onClick={() => dispatch({ type: 'toggle_completed' })}
+      title="Gilt nur für das aktuelle Projekt"
       className="mx-2 mb-2 rounded border border-zinc-800 px-2 py-1.5 text-left text-xs text-zinc-500 hover:bg-zinc-900 hover:text-zinc-300"
     >
-      {state.showCompleted ? '▾' : '▸'} Abgeschlossene ({completed}){' '}
-      {state.showCompleted ? 'ausblenden' : 'anzeigen'}
+      {show ? '▾' : '▸'} Abgeschlossene ({completed}) {show ? 'ausblenden' : 'anzeigen'}
     </button>
   );
 }
 
 function FeatureBadge({ feature }: { feature: Feature }) {
   if (feature.integration === 'merged') {
-    return <span className="ml-auto text-xs text-emerald-500">✓</span>;
+    return (
+      <span
+        className="ml-auto shrink-0 text-[10px] tabular-nums text-zinc-500"
+        title={`Session erstellt am ${new Date(feature.createdAt).toLocaleString('de-CH')}`}
+      >
+        {shortDate(feature.createdAt)}
+      </span>
+    );
   }
   if (feature.integration !== 'none') {
     return <span className="ml-auto truncate text-xs text-sky-500">{feature.integration}</span>;

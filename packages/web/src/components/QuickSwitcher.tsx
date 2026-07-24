@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore, type View } from '../store.js';
+import { isShowCompleted, useStore, type View } from '../store.js';
 
 interface Entry {
   label: string;
@@ -53,7 +53,7 @@ export function QuickSwitcher() {
       });
     }
     for (const f of state.app.features) {
-      if (!state.showCompleted && f.integration === 'merged') continue;
+      if (!isShowCompleted(state, f.projectId) && f.integration === 'merged') continue;
       const project = state.app.projects.find((p) => p.id === f.projectId);
       list.push({
         label: `${project?.name ?? '?'} / ${f.name}`,

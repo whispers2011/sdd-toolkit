@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { FeatureArtifact, FeaturePhase } from '@sdd/shared';
 import { api, SaveConflictError } from '../api.js';
+import { useStore } from '../store.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { MarkdownEditor } from './MarkdownEditor.js';
 import { TerminalPane } from './TerminalPane.js';
@@ -24,6 +25,11 @@ export function FeatureResultDialog({
   phaseLabel: string;
   onClose: () => void;
 }) {
+  const { state } = useStore();
+  // Abgeschlossen (gemergt/archiviert) → keine lebende Session mehr, Split-Screen wäre leer/tot.
+  const feature = state.app?.features.find((f) => f.id === featureId);
+  const completed = !!feature && (feature.integration === 'merged' || !!feature.archivedAt);
+
   const [fileId, setFileId] = useState<string | undefined>(undefined);
   const [art, setArt] = useState<FeatureArtifact | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,7 +121,7 @@ export function FeatureResultDialog({
         if (e.target === e.currentTarget) requestClose();
       }}
     >
-      <div className={`flex h-full w-full ${split ? 'max-w-7xl' : 'max-w-4xl'} gap-3`}>
+      <div className={`flex h-full w-full ${split && !completed ? 'max-w-7xl' : 'max-w-4xl'} gap-3`}>
         {/* Modal-Panel */}
         <div className="flex min-w-0 flex-1 flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
           <header className="flex items-center gap-3 border-b border-zinc-800 px-4 py-3">
@@ -137,15 +143,17 @@ export function FeatureResultDialog({
             )}
             {saved && <span className="text-xs text-emerald-400">Gespeichert ✓</span>}
             <div className="ml-auto flex items-center gap-2">
-              <button
-                onClick={() => setSplit((s) => !s)}
-                title="Claude-Session als Split-Screen"
-                className={`flex items-center gap-1 rounded px-2 py-1 text-xs ${
-                  split ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                }`}
-              >
-                <ChatIcon /> Split-Screen
-              </button>
+              {!completed && (
+                <button
+                  onClick={() => setSplit((s) => !s)}
+                  title="Claude-Session als Split-Screen"
+                  className={`flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                    split ? 'bg-zinc-700 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
+                  }`}
+                >
+                  <ChatIcon /> Split-Screen
+                </button>
+              )}
               {!editing && canEdit && (
                 <button
                   onClick={() => {
@@ -208,8 +216,8 @@ export function FeatureResultDialog({
           )}
         </div>
 
-        {/* Split-Screen: bestehende Feature-Konsole */}
-        {split && (
+        {/* Split-Screen: bestehende Feature-Konsole (nur bei laufendem, nicht abgeschlossenem Feature) */}
+        {split && !completed && (
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-700 bg-[#09090b] shadow-2xl">
             <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2 text-xs text-zinc-400">
               Claude-Session · {featureName}

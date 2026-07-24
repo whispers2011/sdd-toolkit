@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type DragEvent } from '
 import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
 import { FEATURE_PHASES } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { isShowCompleted, useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
 import { FeatureResultDialog } from './FeatureResultDialog.js';
@@ -57,10 +57,9 @@ export function KanbanBoard() {
   const [defPhase, setDefPhase] = useState<FeaturePhase | null>(null);
   if (!state.app) return null;
 
+  const showCompleted = isShowCompleted(state, state.selectedProjectId);
   const features = state.app.features.filter(
-    (f) =>
-      f.projectId === state.selectedProjectId &&
-      (state.showCompleted || f.integration !== 'merged'),
+    (f) => f.projectId === state.selectedProjectId && (showCompleted || f.integration !== 'merged'),
   );
   const enabledUnion = new Set<FeaturePhase>();
   for (const p of state.app.projects) {
@@ -69,7 +68,7 @@ export function KanbanBoard() {
   }
   const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));
   // Done-Spalte nur zeigen, wenn Abgeschlossene eingeblendet sind.
-  const columns: Column[] = [...phaseColumns, 'integration', ...(state.showCompleted ? (['done'] as Column[]) : [])];
+  const columns: Column[] = [...phaseColumns, 'integration', ...(showCompleted ? (['done'] as Column[]) : [])];
 
   const call = (fn: () => Promise<unknown>) =>
     fn().catch((e: Error) => {

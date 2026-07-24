@@ -6,7 +6,7 @@ import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
-import { KnowledgeIcon } from './icons.js';
+import { CodeIcon, CopyIcon, DeleteIcon, FolderOpenIcon, KnowledgeIcon, ShieldIcon } from './icons.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { FeatureDashboard } from './FeatureDashboard.js';
 
@@ -28,6 +28,10 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   // Abgeschlossen (gemergt/archiviert) → keine neue Session mehr; statt Terminal ein
   // Ergebnis-Dashboard (Artefakte, Token-Statistik, Logs).
   const completed = feature.integration === 'merged' || !!feature.archivedAt;
+  // Bei gemergtem Feature ist der Code bereits im Haupt-Branch — „Löschen" entfernt
+  // nur die Toolkit-Spuren, NICHT die gemergten Projektdateien. Nur bei ungemergter
+  // Arbeit gehen Worktree/Branch (und damit Code) verloren.
+  const merged = feature.integration === 'merged';
 
   return (
     <div className="flex h-full flex-col">
@@ -54,18 +58,43 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
-          <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>📂</HeaderIcon>
-          <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>⌨</HeaderIcon>
-          <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}><KnowledgeIcon /></HeaderIcon>
-          <HeaderIcon title="Agents für dieses Feature" onClick={() => setShowAgents(true)}>⚖</HeaderIcon>
+          {/* Worktree-abhängige Aktionen nur zeigen, wenn ein Worktree existiert (nach Abschluss entfernt). */}
+          {feature.worktreePath && (
+            <>
+              <HeaderIcon title="Im Finder öffnen" onClick={() => void api.openFeature(featureId, 'finder')}>
+                <FolderOpenIcon />
+              </HeaderIcon>
+              <HeaderIcon title="Im Editor öffnen" onClick={() => void api.openFeature(featureId, 'editor')}>
+                <CodeIcon />
+              </HeaderIcon>
+              <HeaderIcon
+                title="Worktree-Pfad kopieren"
+                onClick={() => void navigator.clipboard.writeText(feature.worktreePath!)}
+              >
+                <CopyIcon />
+              </HeaderIcon>
+            </>
+          )}
+          {/* Wissen/Agents konfigurieren künftige Läufe — nach Abschluss wirkungslos, daher ausgeblendet. */}
+          {!completed && (
+            <>
+              <HeaderIcon title="Projektwissen für dieses Feature" onClick={() => setShowKnowledge(true)}>
+                <KnowledgeIcon />
+              </HeaderIcon>
+              <HeaderIcon title="Agents für dieses Feature" onClick={() => setShowAgents(true)}>
+                <ShieldIcon />
+              </HeaderIcon>
+            </>
+          )}
           <HeaderIcon
-            title="Worktree-Pfad kopieren"
-            onClick={() => feature.worktreePath && void navigator.clipboard.writeText(feature.worktreePath)}
+            title={
+              merged
+                ? 'Aus dem Toolkit entfernen — gemergter Code im Haupt-Branch bleibt erhalten'
+                : 'Feature löschen (Worktree + Branch + alle Spuren entfernen)'
+            }
+            onClick={() => setShowDelete(true)}
           >
-            📋
-          </HeaderIcon>
-          <HeaderIcon title="Feature löschen (Worktree + alle Spuren entfernen)" onClick={() => setShowDelete(true)}>
-            🗑
+            <DeleteIcon />
           </HeaderIcon>
         </div>
         <span className="text-xs text-zinc-500">
@@ -76,9 +105,15 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
       {showDelete && (
         <ConfirmDialog
-          title="Feature löschen?"
-          message={`„${feature.name}" wird endgültig gelöscht: Worktree, Branch, Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`}
-          confirmLabel="Endgültig löschen"
+          title={merged ? 'Feature aus dem Toolkit entfernen?' : 'Feature löschen?'}
+          message={
+            merged
+              ? `„${feature.name}" wird aus dem Toolkit entfernt: Läufe, Logs, Verlauf und interne Spuren. ` +
+                `Der bereits in „${project?.defaultBranch ?? 'den Haupt-Branch'}" gemergte Code bleibt vollständig erhalten.`
+              : `„${feature.name}" wird endgültig gelöscht: Worktree und Branch (inkl. NICHT gemergter Arbeit), ` +
+                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`
+          }
+          confirmLabel={merged ? 'Aus Toolkit entfernen' : 'Endgültig löschen'}
           onConfirm={() => {
             setShowDelete(false);
             void api
