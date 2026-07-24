@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { FEATURE_PHASES } from '@sdd/shared';
-import type { AgentDefinition, AgentTriggerKind, FeaturePhase } from '@sdd/shared';
+import type { AgentDefinition, AgentTrigger, AgentTriggerKind, FeaturePhase } from '@sdd/shared';
 import { api } from '../api.js';
 import { useStore } from '../store.js';
 import { Dialog } from './Sidebar.js';
@@ -16,12 +16,15 @@ const TRIGGER_LABEL: Record<AgentTriggerKind, string> = {
 export function AgentEditDialog({
   agent,
   projectId,
+  initialTrigger,
   onClose,
   onSaved,
 }: {
   agent: AgentDefinition | null;
   /** Scope der Neuanlage (null = global); bei Bearbeitung fix. */
   projectId: string | null;
+  /** Trigger für die Neuanlage vorbelegen (z. B. „+ Agent" an einer Phase). */
+  initialTrigger?: AgentTrigger;
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -30,8 +33,8 @@ export function AgentEditDialog({
   const [description, setDescription] = useState(agent?.description ?? '');
   const [prompt, setPrompt] = useState(agent?.prompt ?? '');
   const [model, setModel] = useState(agent?.model ?? '');
-  const [kind, setKind] = useState<AgentTriggerKind>(agent?.trigger.kind ?? 'review_gate');
-  const [phase, setPhase] = useState<FeaturePhase>(agent?.trigger.phase ?? 'plan');
+  const [kind, setKind] = useState<AgentTriggerKind>(agent?.trigger.kind ?? initialTrigger?.kind ?? 'review_gate');
+  const [phase, setPhase] = useState<FeaturePhase>(agent?.trigger.phase ?? initialTrigger?.phase ?? 'plan');
   const [blocking, setBlocking] = useState(agent?.blocking ?? true);
   const [enabled, setEnabled] = useState(agent?.enabled ?? true);
   const [busy, setBusy] = useState(false);

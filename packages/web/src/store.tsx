@@ -16,6 +16,7 @@ export type View =
   | { kind: 'executions' }
   | { kind: 'review' }
   | { kind: 'grid' }
+  | { kind: 'workflow' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }
@@ -33,8 +34,8 @@ export interface UiState {
   app: AppState | null;
   view: View;
   selectedProjectId: string | null; // null = kein Projekt vorhanden (Leerzustand); sonst genau ein Projekt
-  /** Abgeschlossene (merged) Features anzeigen? Default: ausgeblendet. */
-  showCompleted: boolean;
+  /** Abgeschlossene (merged) Features anzeigen — PRO PROJEKT (projectId → an/aus). Default: ausgeblendet. */
+  showCompleted: Record<string, boolean>;
   /** Invalidierungs-Zähler je Projekt — Wissens-Views refetchen bei Änderung. */
   knowledgeVersion: Record<string, number>;
   error: string | null;
@@ -181,9 +182,13 @@ function reducer(state: UiState, action: Action): UiState {
       return { ...state, selectedProjectId: action.projectId, view };
     }
     case 'toggle_completed': {
-      const next = !state.showCompleted;
-      localStorage.setItem('sdd-show-completed', next ? 'on' : 'off');
-      return { ...state, showCompleted: next };
+      // Bezieht sich immer nur auf das aktuelle Projekt — andere bleiben unberührt.
+      const pid = state.selectedProjectId;
+      if (!pid) return state;
+      const next = !(state.showCompleted[pid] ?? false);
+      const map = { ...state.showCompleted, [pid]: next };
+      persistShowCompleted(map);
+      return { ...state, showCompleted: map };
     }
     case 'knowledge_updated': {
       const cur = state.knowledgeVersion[action.projectId] ?? 0;
@@ -229,11 +234,37 @@ function reducer(state: UiState, action: Action): UiState {
 /** Sichtbare Features unter Berücksichtigung von Projekt-Scope und Abgeschlossen-Filter. */
 export function visibleFeatures(state: UiState): AppState['features'] {
   if (!state.app) return [];
+  const show = isShowCompleted(state, state.selectedProjectId);
   return state.app.features.filter(
-    (f) =>
-      f.projectId === state.selectedProjectId &&
-      (state.showCompleted || f.integration !== 'merged'),
+    (f) => f.projectId === state.selectedProjectId && (show || f.integration !== 'merged'),
   );
+}
+
+/** Projekt-spezifisch: werden abgeschlossene (merged) Features im Projekt gezeigt? */
+export function isShowCompleted(state: UiState, projectId: string | null): boolean {
+  return projectId ? (state.showCompleted[projectId] ?? false) : false;
+}
+
+const SHOW_COMPLETED_KEY = 'sdd-show-completed';
+
+/** Gerätelokale, projekt-gescopte Persistenz der „Abgeschlossene anzeigen"-Wahl. */
+function loadShowCompleted(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SHOW_COMPLETED_KEY);
+    if (!raw) return {};
+    const v = JSON.parse(raw) as unknown; // Alt-Wert ('on'/'off') ist kein JSON → {} (Default: aus)
+    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistShowCompleted(map: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(SHOW_COMPLETED_KEY, JSON.stringify(map));
+  } catch {
+    /* Persistenz best effort */
+  }
 }
 
 /** Gemerkte Projektauswahl — überlebt Neustarts (FR-005). */
@@ -295,7 +326,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     app: null,
     view: { kind: 'board' },
     selectedProjectId: null,
-    showCompleted: localStorage.getItem('sdd-show-completed') === 'on',
+    showCompleted: loadShowCompleted(),
     knowledgeVersion: {},
     error: null,
     chatStreams: {},

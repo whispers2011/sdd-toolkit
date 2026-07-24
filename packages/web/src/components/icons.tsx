@@ -265,6 +265,125 @@ export function ChecklistResultIcon(props: IconProps) {
   );
 }
 
+/** Ordner öffnen (Im Finder öffnen) — ersetzt 📂. */
+export function FolderOpenIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6A2 2 0 0 1 18.45 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2" />
+    </Base>
+  );
+}
+
+/** Code/Editor (Im Editor öffnen) — ersetzt ⌨. */
+export function CodeIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="16 18 22 12 16 6" />
+      <polyline points="8 6 2 12 8 18" />
+    </Base>
+  );
+}
+
+/** Kopieren (in die Zwischenablage) — ersetzt 📋. */
+export function CopyIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </Base>
+  );
+}
+
+/** Info / Erläuterung (Tooltip-Anker) — Kreis mit „i". */
+export function InfoIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="10" />
+      <line x1="12" y1="16" x2="12" y2="12" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
+    </Base>
+  );
+}
+
+/** Aufklapp-Indikator (Chevron nach unten). */
+export function ChevronDownIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="6 9 12 15 18 9" />
+    </Base>
+  );
+}
+
+/** Person / Mensch (User-Prompt, Human-in-the-Loop) — ersetzt 🧑. */
+export function UserIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+      <circle cx="12" cy="7" r="4" />
+    </Base>
+  );
+}
+
+/** Automatisch (Blitz) — ersetzt ⚡. */
+export function BoltIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+    </Base>
+  );
+}
+
+/** Agent-Gate / Prüfung (Schild) — ersetzt ⚖. */
+export function ShieldIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </Base>
+  );
+}
+
+/** Verifikation (Klemmbrett mit Häkchen). */
+export function VerifyIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M9 2h6a1 1 0 0 1 1 1v2H8V3a1 1 0 0 1 1-1z" />
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+      <polyline points="9 14 11 16 15 12" />
+    </Base>
+  );
+}
+
+/** Merge / Integration (Git-Merge) — ersetzt 🔀. */
+export function GitMergeIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="18" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <path d="M6 21V9a9 9 0 0 0 9 9" />
+    </Base>
+  );
+}
+
+/** Fluss-Pfeil nach rechts — ersetzt → / ▶. */
+export function ArrowRightIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <line x1="5" y1="12" x2="19" y2="12" />
+      <polyline points="12 5 19 12 12 19" />
+    </Base>
+  );
+}
+
+/** Hinzufügen (Plus) — ersetzt +. */
+export function PlusIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </Base>
+  );
+}
+
 /** Tool-Einstellungen (Zahnrad). */
 export function SettingsIcon(props: IconProps) {
   return (

@@ -12,8 +12,10 @@ import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { AgentsPanel } from './components/AgentsPanel.js';
 import { ReviewOverview } from './components/ReviewOverview.js';
+import { WorkflowOverview } from './components/WorkflowOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
+import { TooltipLayer } from './components/Tooltip.js';
 import { api } from './api.js';
 
 export function App() {
@@ -55,6 +57,7 @@ export function App() {
 
   return (
     <div className="flex h-screen">
+      <TooltipLayer />
       <QuickSwitcher />
       {/* Projekt-Chat: nur bei geöffnetem Projekt sichtbar (FR-001). */}
       <ChatBubble />
@@ -73,6 +76,12 @@ export function App() {
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'grid' } })}
             >
               Grid
+            </TabButton>
+            <TabButton
+              active={state.view.kind === 'workflow'}
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'workflow' } })}
+            >
+              Workflow
             </TabButton>
             <TabButton
               active={state.view.kind === 'executions'}
@@ -122,6 +131,7 @@ export function App() {
           {state.view.kind === 'inbox' && <AttentionInbox />}
           {state.view.kind === 'executions' && <ExecutionsView />}
           {state.view.kind === 'review' && <ReviewOverview />}
+          {state.view.kind === 'workflow' && <WorkflowOverview />}
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}

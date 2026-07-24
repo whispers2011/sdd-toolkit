@@ -119,3 +119,72 @@ body {
     opacity: 0.4;
   }
 }
+
+/*
+ * Lesbare Typografie für gerendertes Markdown (MDXEditor-Content via
+ * contentEditableClassName + ReactMarkdown-Fallback). Die Klasse `sdd-prose` war
+ * referenziert, aber nie definiert → Tailwinds Preflight setzt h1–h6 auf
+ * `font-size: inherit`, wodurch Spezifikationen ohne Überschriften-Hierarchie
+ * flach und schwer lesbar wirkten. Alle Farben über zinc/emerald → theme-aware.
+ */
+.sdd-prose h1 {
+  @apply mt-5 mb-3 text-xl font-semibold text-zinc-100;
+}
+.sdd-prose h2 {
+  @apply mt-5 mb-2 text-lg font-semibold text-zinc-100;
+}
+.sdd-prose h3 {
+  @apply mt-4 mb-1.5 text-base font-semibold text-zinc-200;
+}
+.sdd-prose h4 {
+  @apply mt-3 mb-1 text-sm font-semibold text-zinc-200;
+}
+.sdd-prose h5,
+.sdd-prose h6 {
+  @apply mt-3 mb-1 text-sm font-semibold text-zinc-300;
+}
+.sdd-prose p {
+  @apply my-2 text-sm leading-relaxed text-zinc-300;
+}
+.sdd-prose ul {
+  @apply my-2 ml-5 list-disc text-sm text-zinc-300;
+}
+.sdd-prose ol {
+  @apply my-2 ml-5 list-decimal text-sm text-zinc-300;
+}
+.sdd-prose li {
+  @apply my-1 text-sm leading-relaxed text-zinc-300;
+}
+.sdd-prose a {
+  @apply text-emerald-400 hover:underline;
+}
+.sdd-prose code {
+  @apply rounded bg-zinc-800 px-1 py-0.5 font-mono text-xs text-zinc-200;
+}
+.sdd-prose pre {
+  @apply my-2 overflow-x-auto rounded bg-zinc-800 p-3 text-xs text-zinc-200;
+}
+.sdd-prose pre code {
+  @apply bg-transparent p-0;
+}
+.sdd-prose blockquote {
+  @apply my-2 border-l-2 border-zinc-700 pl-3 text-sm text-zinc-400;
+}
+.sdd-prose table {
+  @apply my-2 w-full border-collapse text-xs text-zinc-300;
+}
+.sdd-prose th {
+  @apply border border-zinc-700 px-2 py-1 text-left font-semibold;
+}
+.sdd-prose td {
+  @apply border border-zinc-700 px-2 py-1;
+}
+.sdd-prose strong {
+  @apply font-semibold text-zinc-100;
+}
+.sdd-prose hr {
+  @apply my-4 border-zinc-800;
+}
+.sdd-prose > :first-child {
+  @apply mt-0;
+}

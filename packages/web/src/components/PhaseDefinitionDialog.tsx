@@ -23,18 +23,59 @@ const MD: Components = {
   td: (p) => <td className="border border-zinc-700 px-2 py-1" {...p} />,
 };
 
+/**
+ * Führendes YAML-Frontmatter (`---\n…\n---`) abtrennen. ReactMarkdown würde es
+ * sonst als riesige Setext-H2 rendern (die vorletzte `---`-Zeile macht den Block
+ * davor zur Überschrift) — schwer lesbarer Einstieg. Hier separat behandelt.
+ */
+function splitFrontmatter(md: string): { meta: string | null; body: string } {
+  const m = md.match(/^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
+  if (!m) return { meta: null, body: md };
+  return { meta: m[1] ?? '', body: md.slice(m[0].length) };
+}
+
+/** Frontmatter als kompakte, lesbare Metadaten-Liste (statt roher Textblock). */
+function Frontmatter({ text }: { text: string }) {
+  const rows = text
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+    .map((line) => {
+      const indent = line.length - line.trimStart().length;
+      const m = line.trim().match(/^([^:]+):\s*(.*)$/);
+      const key = (m?.[1] ?? line.trim()).trim();
+      const value = (m?.[2] ?? '').trim().replace(/^["']|["']$/g, '');
+      return { indent, key, value };
+    });
+  return (
+    <div className="mb-4 rounded border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Metadaten</div>
+      <dl className="space-y-1">
+        {rows.map((r, i) => (
+          <div key={i} className="flex flex-wrap gap-x-2 text-xs" style={{ paddingLeft: r.indent * 10 }}>
+            <dt className="shrink-0 text-zinc-500">{r.key}</dt>
+            {r.value && <dd className="min-w-0 text-zinc-300">{r.value}</dd>}
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
 export function PhaseDefinitionDialog({
   phase,
   phaseLabel,
   projects,
   initialProjectId,
   onClose,
+  variant = 'modal',
 }: {
   phase: FeaturePhase;
   phaseLabel: string;
   projects: { id: string; name: string }[];
   initialProjectId: string;
   onClose: () => void;
+  /** 'modal' = überlagerndes Dialogfenster (Default); 'panel' = eingebettet (Split-Screen). */
+  variant?: 'modal' | 'panel';
 }) {
   const [projectId, setProjectId] = useState(initialProjectId);
   const [def, setDef] = useState<PhaseDefinition | null>(null);
@@ -104,12 +145,26 @@ export function PhaseDefinitionDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) requestClose();
-      }}
+      className={
+        variant === 'panel'
+          ? 'flex h-full flex-col'
+          : 'fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6'
+      }
+      onClick={
+        variant === 'panel'
+          ? undefined
+          : (e) => {
+              if (e.target === e.currentTarget) requestClose();
+            }
+      }
     >
-      <div className="flex h-full w-full max-w-4xl flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl">
+      <div
+        className={
+          variant === 'panel'
+            ? 'flex h-full w-full flex-col border-l border-zinc-800 bg-zinc-900'
+            : 'flex h-full w-full max-w-4xl flex-col rounded-lg border border-zinc-700 bg-zinc-900 shadow-2xl'
+        }
+      >
         <header className="flex items-center gap-3 border-b border-zinc-800 px-4 py-3">
           <h2 className="text-sm font-semibold text-zinc-100">Schritt: {phaseLabel}</h2>
           {projects.length > 1 && (
@@ -167,13 +222,17 @@ export function PhaseDefinitionDialog({
               Für diesen Schritt existiert keine spec-kit-Definition in diesem Projekt.
             </p>
           )}
-          {!loading && !loadError && def?.exists && !editing && (
-            <div className="max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
-                {def.content ?? ''}
-              </ReactMarkdown>
-            </div>
-          )}
+          {!loading && !loadError && def?.exists && !editing && (() => {
+            const { meta, body } = splitFrontmatter(def.content ?? '');
+            return (
+              <div className="max-w-none">
+                {meta && <Frontmatter text={meta} />}
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+                  {body}
+                </ReactMarkdown>
+              </div>
+            );
+          })()}
           {editing && (
             <textarea
               value={draft}
