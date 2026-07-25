@@ -1,0 +1,599 @@
+/** Feature-Phasen des spec-kit-Workflows (Reihenfolge = Workflow-Reihenfolge). */
+export const FEATURE_PHASES = [
+  'specify',
+  'clarify',
+  'plan',
+  'checklist',
+  'analyze',
+  'tasks',
+  'implement',
+] as const;
+export type FeaturePhase = (typeof FEATURE_PHASES)[number];
+
+/** Projekt-Phase (einmalig pro Projekt, nicht pro Feature). */
+export type ProjectPhase = 'constitution';
+export type WorkflowPhase = FeaturePhase | ProjectPhase;
+
+/** Optionale Phasen, die pro Projekt an-/abgeschaltet werden können. */
+export const OPTIONAL_PHASES: readonly FeaturePhase[] = ['clarify', 'checklist', 'analyze'];
+
+export type PhaseStatus = 'idle' | 'running' | 'awaiting_review' | 'approved';
+
+export interface PhaseState {
+  status: PhaseStatus;
+  /** Upstream wurde nach Approval geändert — Ergebnis dieser Phase ist potenziell veraltet. */
+  stale: boolean;
+  startedAt?: number;
+  finishedAt?: number;
+  exitCode?: number;
+}
+
+/** Pipeline nach `implement`: Verifikation → Review → Merge-Queue. */
+export type IntegrationStage =
+  | 'none'
+  | 'verifying'
+  | 'verify_failed'
+  | 'review_gate'
+  | 'gate_failed'
+  | 'awaiting_human_review'
+  | 'queued'
+  | 'merging'
+  | 'conflict_resolving'
+  | 'conflict_escalated'
+  | 'merged';
+
+/** Automation-Dial: einzeln schaltbar, Ebenen global → Projekt → Feature (Override). */
+export interface AutomationSettings {
+  /** Phase fertig → nächste startet automatisch, bis einschließlich dieser Phase. 'off' = Level 2. */
+  autoProgressUntil: FeaturePhase | 'off';
+  /** Test/Build/Lint-Pipeline nach implement automatisch ausführen. */
+  autoVerify: boolean;
+  /** Code-/Security-Review-Agents vor menschlichem Review (P1). */
+  autoReviewAgents: boolean;
+  /** Approvte Features automatisch in die Merge-Queue geben. */
+  autoMerge: boolean;
+  /** Tool-/Kommando-Berechtigungen automatisch erteilen — keine Rückfragen im Feature-Lauf. */
+  autoMode: boolean;
+}
+
+export const LEVEL2_DEFAULTS: AutomationSettings = {
+  autoProgressUntil: 'off',
+  autoVerify: false,
+  autoReviewAgents: false,
+  autoMerge: false,
+  autoMode: true,
+};
+
+export const LEVEL3_DEFAULTS: AutomationSettings = {
+  autoProgressUntil: 'implement',
+  autoVerify: true,
+  autoReviewAgents: true,
+  autoMerge: true,
+  autoMode: true,
+};
+
+/** Kontext-Strategie einer Downstream-Phase (Token-Reduktion, Feature "minimize-token-consumption"). */
+export type ContextStrategy = 'full' | 'compact' | 'fresh';
+/** Verdichtungs-Modus für toolkit-injizierte Inhalte. */
+export type CompressionMode = 'off' | 'deterministic' | 'llm';
+
+/**
+ * Optimierungs-Dial (Token-Reduktion): Ebenen global → Projekt → Feature (Override),
+ * analog zu {@link AutomationSettings}. `full`/`off` == unverändertes Alt-Verhalten (reversibel).
+ */
+export interface OptimizationSettings {
+  /** Kontext-Reset vor Downstream-Phasen: none/compact/fresh. */
+  contextStrategy: ContextStrategy;
+  /** Verdichtung signalarmer, toolkit-injizierter Inhalte. */
+  compression: CompressionMode;
+}
+
+export interface VerifyCommand {
+  name: string; // z.B. "test", "build", "lint"
+  command: string; // Shell-Kommando, läuft im Worktree
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  /** Absoluter Pfad zum Haupt-Checkout. */
+  path: string;
+  defaultBranch: string;
+  color: string | null;
+  /** Phasen, die für Features dieses Projekts aktiv sind. */
+  enabledPhases: FeaturePhase[];
+  verifyCommands: VerifyCommand[];
+  automation: Partial<AutomationSettings>;
+  /** Token-Optimierungs-Override auf Projektebene (leer = global erben). */
+  optimization: Partial<OptimizationSettings>;
+  mergeMode: 'ff' | 'squash';
+  /** Editor-Öffner, z. B. "code -g {file}:{line}" (WP10). */
+  editorCmd: string | null;
+  /** local = direkt auf den Default-Branch mergen; pr = GitHub-PR via gh (WP13). */
+  integrationMode: 'local' | 'pr';
+  createdAt: number;
+}
+
+export interface Feature {
+  id: string;
+  projectId: string;
+  /** Slug, identisch mit dem Ordnernamen unter specs/. */
+  name: string;
+  branch: string;
+  /** Absoluter Pfad des Worktrees; null solange keiner existiert. */
+  worktreePath: string | null;
+  phases: Record<FeaturePhase, PhaseState>;
+  integration: IntegrationStage;
+  /** Integrations-Ziel-Branch (Review-Portal-Wahl); null = Projekt-Default-Branch. */
+  integrationTarget: string | null;
+  automation: Partial<AutomationSettings>;
+  /** Token-Optimierungs-Override auf Feature-Ebene (leer = Projekt/global erben). */
+  optimization: Partial<OptimizationSettings>;
+  /** Fortschritt aus tasks.md-Checkboxen. */
+  tasksDone: number;
+  tasksTotal: number;
+  /** Referenz auf das Jira-Ursprungsticket (Schnappschuss, unveränderlich nach Anlage). */
+  jiraRef?: JiraRef;
+  createdAt: number;
+  archivedAt: number | null;
+}
+
+// ---------- Jira-Import (Feature "erstellen-eines-features-basierend-auf-einem-jira-ticket") ----------
+
+/** Dauerhafte Ticket-Referenz eines importierten Features (FR-012). */
+export interface JiraRef {
+  key: string;
+  url: string;
+  importedAt: number;
+}
+
+export type JiraConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reauth_required';
+
+export interface JiraConnectionStatus {
+  state: JiraConnectionState;
+  account?: { name: string; email?: string };
+  site?: { id: string; name: string; url: string };
+}
+
+export interface JiraSite {
+  id: string;
+  name: string;
+  url: string;
+}
+
+export interface JiraProject {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export interface JiraSprint {
+  id: number;
+  name: string;
+  state: 'active' | 'future';
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface JiraIssueSummary {
+  key: string;
+  title: string;
+  type: string;
+  status: string;
+  /** FR-010: bereits als Feature im aktuellen Toolkit-Projekt übernommen. */
+  imported: boolean;
+}
+
+export interface JiraImportResult {
+  issueKey: string;
+  status: 'created' | 'failed' | 'skipped_duplicate';
+  featureId?: string;
+  error?: string;
+}
+
+/** Letzte Auswahl im Import-Dialog (Settings-Key `jira.lastSelection`, FR-009). */
+export interface JiraSelection {
+  siteId?: string;
+  projectKey?: string;
+  sprintId?: number;
+}
+
+/** Laufzeitstatus einer Agent-/Terminal-Session (ephemer, nie persistiert). */
+export type SessionDisplayStatus = 'idle' | 'working' | 'awaiting_input' | 'stopped' | 'errored';
+
+export type AwaitingKind = 'permission' | 'question' | 'plan_approval';
+
+export interface SessionInfo {
+  id: string;
+  featureId: string | null;
+  projectId: string;
+  kind: 'feature' | 'shell' | 'headless' | 'chat_work';
+  /** Externe Claude-Session-ID (für --resume), sobald bekannt. */
+  claudeSessionId: string | null;
+  status: SessionDisplayStatus;
+  awaitingKind: AwaitingKind | null;
+  pid: number | null;
+  createdAt: number;
+}
+
+/** Exception-Inbox: alles, was menschliche Aufmerksamkeit braucht. */
+export type AttentionKind =
+  | 'awaiting_input'
+  | 'permission_request'
+  | 'verify_failed'
+  | 'gate_failed'
+  | 'merge_conflict_escalated'
+  | 'review_due'
+  | 'agent_errored'
+  | 'run_interrupted'
+  | 'phase_gate_failed'
+  | 'approval_required';
+
+export interface AttentionItem {
+  id: string;
+  kind: AttentionKind;
+  projectId: string;
+  featureId: string | null;
+  sessionId: string | null;
+  /** Gesetzt bei Arbeits-Chat-Sessions: Routing-Ziel ist der Chat-Panel des Projekts. */
+  conversationId: string | null;
+  message: string;
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+export interface MergeQueueItem {
+  id: string;
+  projectId: string;
+  featureId: string;
+  position: number;
+  stage: IntegrationStage;
+  attempts: number;
+  lastError: string | null;
+  /** Re-Verifikation vor dem Merge erzwingen (Reviewer-Edits beim Approve). */
+  forceVerify: boolean;
+  enqueuedAt: number;
+}
+
+export interface ExecutionRecord {
+  id: string;
+  projectId: string;
+  featureId: string | null;
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
+  phase: WorkflowPhase | null;
+  status: 'running' | 'succeeded' | 'failed' | 'orphaned';
+  startedAt: number;
+  finishedAt: number | null;
+  exitCode: number | null;
+  costUsd: number | null;
+  tokens: number | null;
+  /** Autoritative Token-Komponenten (aus Transkript); null wenn nur geschätzt. */
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  /** Herkunft des Verbrauchswerts. */
+  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  /** Byte-Offset des Transkripts beim Phasenstart (Attribution der Usage). */
+  transcriptOffsetStart: number | null;
+  /** Byte-Offset des Transkripts beim Phasenabschluss (Ende des Lauf-Ausschnitts, nur kind='phase'). */
+  transcriptOffsetEnd: number | null;
+  /** Aufgelöster Transkriptpfad des Laufs (beim Abschluss persistiert, neustartfest; nur kind='phase'). */
+  transcriptPath: string | null;
+  /** Snapshot der aktiven Optimierungs-Settings beim Lauf (nur kind='phase'). */
+  optContextStrategy: ContextStrategy | null;
+  optCompression: CompressionMode | null;
+  logPath: string | null;
+}
+
+/** DTO: spec-kit-Definition eines SDD-Schritts (Lane-Info-Icon). */
+export interface PhaseDefinition {
+  projectId: string;
+  phase: FeaturePhase;
+  /** Ob eine Definitionsdatei gefunden wurde. */
+  exists: boolean;
+  /** Absoluter Pfad der Datei (informativ / „im Editor öffnen"); null wenn nicht gefunden. */
+  path: string | null;
+  /** Markdown-Inhalt; null wenn nicht vorhanden. */
+  content: string | null;
+  /** Änderungszeit für Konfliktprüfung; null wenn nicht vorhanden. */
+  mtimeMs: number | null;
+  /** Bearbeiten gesperrt (Agent führt den Schritt aus)? */
+  locked: boolean;
+  lockReason: string | null;
+}
+
+export interface SavePhaseDefinitionRequest {
+  content: string;
+  /** Beim Öffnen gelesene mtimeMs (Basis der Konfliktprüfung). */
+  baseMtimeMs: number;
+  /** Konfliktprüfung überspringen (bewusstes Überschreiben). */
+  overwrite?: boolean;
+}
+
+export interface SavePhaseDefinitionResult {
+  ok: true;
+  mtimeMs: number;
+}
+
+// ---------- Feature-Artefakte (Kachel-Ergebnis-Icons) ----------
+
+/** Eine einzelne einsehbare Ergebnis-Datei innerhalb eines Schritts. */
+export interface FeatureArtifactFile {
+  /** Stabile Kennung = relativer Pfad unter specs/<feature>/ (z. B. "plan.md", "contracts/api.md"). */
+  id: string;
+  label: string;
+  relPath: string;
+}
+
+/** Ein artefakt-erzeugender Speckit-Schritt eines Features (Kachel-Icon + Tooltip + Verfügbarkeit). */
+export interface FeatureArtifactStep {
+  phase: FeaturePhase;
+  label: string;
+  tooltip: string;
+  /** Mindestens eine zugehörige Datei existiert. */
+  available: boolean;
+  files: FeatureArtifactFile[];
+}
+
+/** Inhalt einer konkret gewählten Artefakt-Datei (Detail-DTO fürs Modal). */
+export interface FeatureArtifact {
+  featureId: string;
+  phase: FeaturePhase;
+  fileId: string;
+  label: string;
+  /** Absoluter Pfad (informativ); null wenn nicht vorhanden. */
+  path: string | null;
+  /** Roh-Markdown der Datei (der Editor rendert es als Rich-Text); null wenn nicht vorhanden. */
+  content: string | null;
+  /** Änderungszeit für Konfliktprüfung; null wenn nicht vorhanden. */
+  mtimeMs: number | null;
+  exists: boolean;
+  /** Bearbeiten gesperrt, solange eine Phase des Features läuft. */
+  locked: boolean;
+  lockReason: string | null;
+  /** Geschwister-Dateien desselben Schritts (für den Umschalter). */
+  files: FeatureArtifactFile[];
+}
+
+export interface SaveFeatureArtifactRequest {
+  content: string;
+  /** Beim Öffnen gelesene mtimeMs (Basis der Konfliktprüfung). */
+  baseMtimeMs: number;
+  /** Konfliktprüfung überspringen (bewusstes Überschreiben). */
+  overwrite?: boolean;
+}
+
+export interface SaveFeatureArtifactResult {
+  ok: true;
+  mtimeMs: number;
+}
+
+// ---------- Projekt-Chat (Ask-a-Question) ----------
+
+/**
+ * Modus einer Chat-Unterhaltung: `ask` = strikt lesend (heutiges Verhalten, keine Artefakte),
+ * `work` = vollwertige, eingreifende Claude-Code-Session in isolierter Worktree. Der Modus ist
+ * pro Unterhaltung fix; ein Wechsel startet eine neue Unterhaltung.
+ */
+export type ChatMode = 'ask' | 'work';
+
+/** Fortlaufende Q&A-Unterhaltung eines Projekts; höchstens eine aktive (endedAt = null) pro Projekt. */
+export interface ChatConversation {
+  id: string;
+  projectId: string;
+  /** Modus der Unterhaltung (siehe {@link ChatMode}). */
+  mode: ChatMode;
+  /** Externe Claude-Session-ID (für --resume über App-Neustarts hinweg). */
+  claudeSessionId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Gesetzt durch „Neue Unterhaltung" — beendete Unterhaltungen werden nicht mehr angezeigt. */
+  endedAt: number | null;
+}
+
+/** Laufzeit-Info der Arbeits-Session einer work-Unterhaltung (DTO für den Chat-Panel). */
+export interface ChatWorkSessionInfo {
+  sessionId: string;
+  status: SessionDisplayStatus;
+  awaitingKind: AwaitingKind | null;
+  /** Branch der isolierten Arbeitskopie (`chat/<conversationId>`). */
+  branch: string;
+  /** Stand der Arbeitskopie gegenüber dem Default-Branch (beim letzten Start ermittelt). */
+  sync: ChatWorktreeSync | null;
+}
+
+/**
+ * Stand der Chat-Arbeitskopie gegenüber dem Default-Branch. Ohne Nachziehen altert der
+ * Chat-Branch bei jedem Merge nach main weiter — er sähe dauerhaft veralteten Code.
+ */
+export interface ChatWorktreeSync {
+  /** Commits, die der Default-Branch der Arbeitskopie voraus ist (0 = aktuell). */
+  behind: number;
+  /** Arbeitskopie hat uncommittete Änderungen. */
+  dirty: boolean;
+  /**
+   * - `current`: war bereits aktuell.
+   * - `rebased`: automatisch nachgezogen.
+   * - `blocked_dirty`: veraltet, aber uncommittete Arbeit verhindert das Nachziehen.
+   * - `conflict`: Nachziehen scheiterte an Konflikten (Rebase wurde zurückgerollt).
+   */
+  state: 'current' | 'rebased' | 'blocked_dirty' | 'conflict';
+}
+
+/** Übernahme der Wissens-Chat-Arbeit in den Default-Branch (committen → rebasen → mergen). */
+export interface ChatWorkAdoptResult {
+  target: string;
+  /** Anzahl übernommener Dateien. */
+  files: number;
+  /** Uncommittete Arbeit wurde dabei zu einem Commit zusammengefasst. */
+  committed: boolean;
+}
+
+/** Übernahme nicht möglich — nichts wurde verändert. */
+export interface ChatWorkAdoptBlocked {
+  blocked: 'nothing' | 'running' | 'conflict' | 'merge';
+  message: string;
+  /** Bei `conflict`: die kollidierenden Dateien. */
+  files?: string[];
+}
+
+/** Erfolgreicher Neustart des Wissens-Chats: frische, automatisch gestartete Session. */
+export interface ChatWorkRestartResult {
+  sessionId: string;
+  conversationId: string;
+}
+
+/** Neustart-Guard: Bestätigung nötig, weil laufende Arbeit verloren ginge (nichts verworfen). */
+export interface ChatWorkRestartNeedsConfirm {
+  needsConfirm: true;
+  /** `running` = Session arbeitet gerade; `dirty` = unbestätigte Änderungen in der Arbeitskopie. */
+  reason: 'running' | 'dirty';
+}
+
+export type ChatMessageStatus = 'complete' | 'streaming' | 'error' | 'interrupted';
+
+export type FeatureProposalStatus = 'offen' | 'angenommen' | 'abgelehnt';
+
+/** Vom Assistenten abgeleiteter Feature-Vorschlag (Marker-Protokoll) samt Nutzer-Entscheidung. */
+export interface FeatureProposal {
+  name: string;
+  description: string;
+  status: FeatureProposalStatus;
+  /** Gesetzt bei 'angenommen' nach erfolgreicher Feature-Anlage (lose Referenz, kein FK). */
+  featureId?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  conversationId: string;
+  role: 'user' | 'assistant';
+  /** Anzeigetext; bei Assistenten-Nachrichten ist der Vorschlag-Marker bereits entfernt. */
+  content: string;
+  status: ChatMessageStatus;
+  error: string | null;
+  proposal: FeatureProposal | null;
+  costUsd: number | null;
+  tokens: number | null;
+  createdAt: number;
+}
+
+// ---------- Agents (Generalisierung der Review-Personas) ----------
+
+/** Auslöser-Arten eines Agents. */
+export type AgentTriggerKind = 'manual' | 'review_gate' | 'after_phase' | 'before_phase';
+
+/** Auslöser eines Agents; `phase` nur bei after_phase/before_phase gesetzt. */
+export interface AgentTrigger {
+  kind: AgentTriggerKind;
+  phase?: FeaturePhase;
+}
+
+/** Konfigurierbare Prüf-/Arbeitseinheit (Nachfolger der Review-Persona). */
+export interface AgentDefinition {
+  id: string;
+  /** null = global (gilt via Union in allen Projekten). */
+  projectId: string | null;
+  name: string;
+  description: string;
+  prompt: string;
+  /** null = CLI-Default-Modell. */
+  model: string | null;
+  trigger: AgentTrigger;
+  /** true = Gate (FAIL stoppt), false = beratend (FAIL wird nur verbucht). */
+  blocking: boolean;
+  enabled: boolean;
+  sortOrder: number;
+}
+
+/** Per-Feature-Override der Agent-Geltung; kein Eintrag = 'auto'. */
+export type AgentFeatureDecision = 'include' | 'exclude';
+
+/** Strukturiertes, dauerhaftes Ergebnis eines Agent-Laufs. */
+export interface AgentRunSummary {
+  id: string;
+  /** null wenn der Agent inzwischen gelöscht wurde (agentName bleibt lesbar). */
+  agentId: string | null;
+  agentName: string;
+  featureId: string;
+  executionId: string | null;
+  trigger: AgentTrigger;
+  blocking: boolean;
+  /** null = kein auswertbares Urteil (wird NIE als bestanden gewertet). */
+  verdict: 'PASS' | 'FAIL' | null;
+  /** z. B. 'FREIGEGEBEN MIT ÄNDERUNGEN' (GESAMTENTSCHEIDUNG:-Zeile). */
+  decisionLabel: string | null;
+  summary: string | null;
+  /** Repo-relativer Pfad des Berichts (specs/<feature>/reviews/<agent-id>.md). */
+  reportPath: string | null;
+  createdAt: number;
+  finishedAt: number | null;
+  /** Aus der verknüpften Execution (Join); nur in API-Antworten gefüllt. */
+  costUsd?: number | null;
+  totalTokens?: number | null;
+  /** 'markdown' = Alt-Bericht aus der Zeit vor der strukturierten Ablage. */
+  source?: 'db' | 'markdown';
+}
+
+/** Effektive Agent-Sicht eines Features (Verwaltung + „Jetzt ausführen"). */
+export interface FeatureAgentView {
+  agent: AgentDefinition;
+  decision: AgentFeatureDecision | 'auto';
+  /** Läuft der Agent für dieses Feature beim nächsten passenden Trigger? */
+  effective: boolean;
+  lastRun: AgentRunSummary | null;
+}
+
+// ---------- Review-Portal ----------
+
+/** Flacher, persistierter Reviewer-Kommentar mit optionalem Datei-/Zeilen-Anker. */
+export interface ReviewComment {
+  id: string;
+  featureId: string;
+  /** null = Feature-genereller Kommentar. */
+  filePath: string | null;
+  /** null = Datei-genereller Kommentar; nur mit filePath gesetzt. */
+  line: number | null;
+  /** Diff-Seite des Ankers; nur mit line gesetzt. */
+  side: 'old' | 'new' | null;
+  text: string;
+  status: 'open' | 'resolved';
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+/** Verdichtete Sicht eines integrationsnahen Features für die Review-Übersicht. */
+export interface ReviewOverviewItem {
+  feature: Feature;
+  stage: IntegrationStage;
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  audits: { passed: number; failed: number; total: number };
+  openComments: number;
+  verify: { status: 'passed' | 'failed' | 'none'; executionId?: string };
+  /** Der Worktree hat uncommittete Änderungen (Arbeitsbaum ≠ HEAD). */
+  hasUncommitted: boolean;
+}
+
+/** Branch eines Projekts (Ziel-Auswahl im Portal). */
+export interface BranchInfo {
+  name: string;
+  isDefault: boolean;
+  /** Von einem Feature dieses Projekts belegter Branch (kein gültiges Ziel). */
+  isFeatureBranch: boolean;
+}
+
+/** Integrations-Entscheidung des Reviewers; leer = Default-Branch (heutiges Verhalten). */
+export interface ApproveMergeRequest {
+  targetBranch?: string;
+  createBranch?: boolean;
+}
+
+export function resolveAutomation(
+  global: AutomationSettings,
+  project: Partial<AutomationSettings>,
+  feature: Partial<AutomationSettings>,
+): AutomationSettings {
+  return { ...global, ...project, ...feature };
+}

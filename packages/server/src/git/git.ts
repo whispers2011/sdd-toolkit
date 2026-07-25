@@ -1,0 +1,143 @@
+import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+export interface GitResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Async git-Aufruf — nie execSync (blockiert den Event-Loop, speckit-assistant-Fehler). */
+export function git(cwd: string, args: string[]): Promise<GitResult> {
+  return new Promise((resolve) => {
+    execFile(
+      'git',
+      args,
+      { cwd, maxBuffer: 32 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } },
+      (err, stdout, stderr) => {
+        let code = 0;
+        if (err) {
+          const raw: unknown = (err as NodeJS.ErrnoException).code;
+          code = typeof raw === 'number' ? raw : 1;
+        }
+        resolve({ code, stdout, stderr });
+      },
+    );
+  });
+}
+
+/** Generischer CLI-Aufruf (z. B. gh) — gleiche Semantik wie git(). */
+export function run(cwd: string, cmd: string, args: string[]): Promise<GitResult> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { cwd, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
+      let code = 0;
+      if (err) {
+        const raw: unknown = (err as NodeJS.ErrnoException).code;
+        code = typeof raw === 'number' ? raw : 1;
+      }
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+export async function gitOk(cwd: string, args: string[]): Promise<string> {
+  const r = await git(cwd, args);
+  if (r.code !== 0) {
+    throw new Error(`git ${args.join(' ')} fehlgeschlagen (${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+  }
+  return r.stdout;
+}
+
+export async function isCleanWorkingTree(cwd: string): Promise<boolean> {
+  const r = await gitOk(cwd, ['status', '--porcelain']);
+  return r.trim() === '';
+}
+
+/**
+ * Anzahl uncommitteter Einträge (geändert + untracked) im Arbeitsbaum.
+ * Wirft nicht: fehlendes/defektes Verzeichnis ⇒ 0 (dort ist nichts zu verlieren).
+ * Gedacht als Schutzabfrage VOR destruktivem Aufräumen (`worktree remove --force`).
+ */
+export async function uncommittedFileCount(cwd: string): Promise<number> {
+  const r = await git(cwd, ['status', '--porcelain']);
+  if (r.code !== 0) return 0;
+  return r.stdout.split('\n').filter((l) => l.trim() !== '').length;
+}
+
+export async function currentBranch(cwd: string): Promise<string> {
+  return (await gitOk(cwd, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+}
+
+export async function isGitRepo(cwd: string): Promise<boolean> {
+  const r = await git(cwd, ['rev-parse', '--is-inside-work-tree']);
+  return r.code === 0 && r.stdout.trim() === 'true';
+}
+
+/** Existiert der lokale Branch im gegebenen Repo/Checkout? */
+export async function localBranchExists(cwd: string, branch: string): Promise<boolean> {
+  const r = await git(cwd, ['show-ref', '--verify', `refs/heads/${branch}`]);
+  return r.code === 0;
+}
+
+/** Ist `ancestor` ein (nicht notwendig echter) Vorfahre von `ref`? */
+export async function isAncestor(cwd: string, ancestor: string, ref: string): Promise<boolean> {
+  const r = await git(cwd, ['merge-base', '--is-ancestor', ancestor, ref]);
+  return r.code === 0;
+}
+
+/**
+ * Anzahl Commits, die `base` gegenüber `ref` voraus ist (`ref..base`) — also wie weit
+ * `ref` hinterherhinkt. Nicht bestimmbar ⇒ 0 (konservativ: nichts nachzuziehen).
+ */
+export async function behindCount(cwd: string, base: string, ref: string): Promise<number> {
+  const r = await git(cwd, ['rev-list', '--count', `${ref}..${base}`]);
+  if (r.code !== 0) return 0;
+  return Number.parseInt(r.stdout.trim(), 10) || 0;
+}
+
+/** Abzweigpunkt (Merge-Base) von `a` und `b`; null wenn nicht bestimmbar. */
+export async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {
+  const r = await git(cwd, ['merge-base', a, b]);
+  const sha = r.stdout.trim();
+  return r.code === 0 && sha ? sha : null;
+}
+
+/**
+ * Ist `branch` bereits vollständig in `defaultBranch` enthalten (also integriert)?
+ * Läuft im Haupt-Checkout (`projectPath`) — nie im evtl. entfernten/kaputten Worktree.
+ * - Branch existiert: sein Tip muss Vorfahre von `defaultBranch` sein.
+ * - Branch existiert nicht mehr: gilt als integriert/aufgeräumt (nichts mehr zu tun).
+ */
+export async function isBranchMergedInto(
+  projectPath: string,
+  branch: string,
+  defaultBranch: string,
+): Promise<boolean> {
+  if (!(await localBranchExists(projectPath, branch))) return true;
+  return isAncestor(projectPath, branch, defaultBranch);
+}
+
+/** Konfliktdateien während eines Rebase/Merge. */
+export async function conflictedFiles(cwd: string): Promise<string[]> {
+  const r = await gitOk(cwd, ['diff', '--name-only', '--diff-filter=U']);
+  return r.split('\n').filter(Boolean);
+}
+
+/** Von git erzeugte Konfliktmarker (jeweils genau 7 Zeichen am Zeilenanfang). */
+const CONFLICT_MARKER = /^(<{7} |={7}\s*$|>{7} |\|{7} )/m;
+
+/**
+ * Prüft, welche der übergebenen Dateien im Arbeitsbaum noch unaufgelöste
+ * Konfliktmarker enthalten. Sicherheitsnetz gegen ein `rebase --continue`, das
+ * einen halb aufgelösten Konflikt (Marker im Quelltext) blind committen würde —
+ * die agentische Auflösung kann exit 0 liefern, ohne alle Marker entfernt zu haben.
+ */
+export async function filesWithConflictMarkers(cwd: string, files: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const f of files) {
+    const content = await readFile(join(cwd, f), 'utf8').catch(() => '');
+    if (CONFLICT_MARKER.test(content)) out.push(f);
+  }
+  return out;
+}

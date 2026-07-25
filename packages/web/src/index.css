@@ -1,0 +1,202 @@
+@import 'tailwindcss';
+@import '@xterm/xterm/css/xterm.css';
+
+@theme {
+  --color-zinc-925: #0e0e11;
+}
+
+/*
+ * Light-Mode: Farbskalen invertieren (Contract C4 / research D4).
+ * Das Dark-UI verwendet alle Skalen richtungsgleich (hohe Stufe = dunkel,
+ * niedrige = hell). Eine Inversion der Skalen kippt das gesamte Erscheinungsbild
+ * kohärent nach hell, OHNE die ~550 Farb-Utilities in den Komponenten anzufassen
+ * (Tailwind v4 kompiliert Farb-Utilities zu var(--color-…)).
+ * Die Overrides stehen bewusst außerhalb jedes @layer (schlagen damit den
+ * Tailwind-theme-Layer); :root[data-theme='light'] erhöht zusätzlich die Spezifität.
+ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  /* Neutral (zinc) — trägt den Großteil des UIs */
+  --color-zinc-50: #09090b;
+  --color-zinc-100: #18181b;
+  --color-zinc-200: #27272a;
+  --color-zinc-300: #3f3f46;
+  --color-zinc-400: #52525b;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #a1a1aa;
+  --color-zinc-700: #d4d4d8;
+  --color-zinc-800: #e4e4e7;
+  --color-zinc-900: #f4f4f5;
+  --color-zinc-925: #f7f7f8;
+  --color-zinc-950: #fafafa;
+
+  /* Akzent: emerald */
+  --color-emerald-50: #022c22;
+  --color-emerald-100: #064e3b;
+  --color-emerald-200: #065f46;
+  --color-emerald-300: #047857;
+  --color-emerald-400: #059669;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #34d399;
+  --color-emerald-700: #6ee7b7;
+  --color-emerald-800: #a7f3d0;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-950: #ecfdf5;
+
+  /* Akzent: amber */
+  --color-amber-50: #451a03;
+  --color-amber-100: #78350f;
+  --color-amber-200: #92400e;
+  --color-amber-300: #b45309;
+  --color-amber-400: #d97706;
+  --color-amber-500: #f59e0b;
+  --color-amber-600: #fbbf24;
+  --color-amber-700: #fcd34d;
+  --color-amber-800: #fde68a;
+  --color-amber-900: #fef3c7;
+  --color-amber-950: #fffbeb;
+
+  /* Akzent: red */
+  --color-red-50: #450a0a;
+  --color-red-100: #7f1d1d;
+  --color-red-200: #991b1b;
+  --color-red-300: #b91c1c;
+  --color-red-400: #dc2626;
+  --color-red-500: #ef4444;
+  --color-red-600: #f87171;
+  --color-red-700: #fca5a5;
+  --color-red-800: #fecaca;
+  --color-red-900: #fee2e2;
+  --color-red-950: #fef2f2;
+
+  /* Akzent: sky */
+  --color-sky-50: #082f49;
+  --color-sky-100: #0c4a6e;
+  --color-sky-200: #075985;
+  --color-sky-300: #0369a1;
+  --color-sky-400: #0284c7;
+  --color-sky-500: #0ea5e9;
+  --color-sky-600: #38bdf8;
+  --color-sky-700: #7dd3fc;
+  --color-sky-800: #bae6fd;
+  --color-sky-900: #e0f2fe;
+  --color-sky-950: #f0f9ff;
+}
+
+/* Dark bleibt Basis; color-scheme wird zusätzlich inline vom FOUC-Guard gesetzt. */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-200 antialiased;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.status-dot {
+  @apply inline-block h-2 w-2 rounded-full;
+}
+.status-working {
+  @apply bg-emerald-400;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+.status-awaiting_input {
+  @apply bg-amber-400;
+}
+.status-idle {
+  @apply bg-zinc-500;
+}
+.status-stopped {
+  @apply bg-zinc-700;
+}
+.status-errored {
+  @apply bg-red-500;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/*
+ * Lesbare Typografie für gerendertes Markdown (MDXEditor-Content via
+ * contentEditableClassName + ReactMarkdown-Fallback). Die Klasse `sdd-prose` war
+ * referenziert, aber nie definiert → Tailwinds Preflight setzt h1–h6 auf
+ * `font-size: inherit`, wodurch Spezifikationen ohne Überschriften-Hierarchie
+ * flach und schwer lesbar wirkten. Alle Farben über zinc/emerald → theme-aware.
+ */
+.sdd-prose h1 {
+  @apply mt-5 mb-3 text-xl font-semibold text-zinc-100;
+}
+.sdd-prose h2 {
+  @apply mt-5 mb-2 text-lg font-semibold text-zinc-100;
+}
+.sdd-prose h3 {
+  @apply mt-4 mb-1.5 text-base font-semibold text-zinc-200;
+}
+.sdd-prose h4 {
+  @apply mt-3 mb-1 text-sm font-semibold text-zinc-200;
+}
+.sdd-prose h5,
+.sdd-prose h6 {
+  @apply mt-3 mb-1 text-sm font-semibold text-zinc-300;
+}
+.sdd-prose p {
+  @apply my-2 text-sm leading-relaxed text-zinc-300;
+}
+.sdd-prose ul {
+  @apply my-2 ml-5 list-disc text-sm text-zinc-300;
+}
+.sdd-prose ol {
+  @apply my-2 ml-5 list-decimal text-sm text-zinc-300;
+}
+.sdd-prose li {
+  @apply my-1 text-sm leading-relaxed text-zinc-300;
+}
+/* Verschachtelte Listen dürfen den Außenabstand nicht verdoppeln. */
+.sdd-prose li > ul,
+.sdd-prose li > ol {
+  @apply my-1;
+}
+/* GFM-Aufgabenlisten (`- [ ]`): die Checkbox IST der Marker — kein zusätzlicher Bullet. */
+.sdd-prose li:has(> input[type='checkbox']) {
+  @apply list-none;
+}
+.sdd-prose input[type='checkbox'] {
+  @apply mr-1.5 align-middle accent-emerald-600;
+}
+.sdd-prose a {
+  @apply text-emerald-400 hover:underline;
+}
+.sdd-prose code {
+  @apply rounded bg-zinc-800 px-1 py-0.5 font-mono text-xs text-zinc-200;
+}
+.sdd-prose pre {
+  @apply my-2 overflow-x-auto rounded bg-zinc-800 p-3 text-xs text-zinc-200;
+}
+.sdd-prose pre code {
+  @apply bg-transparent p-0;
+}
+.sdd-prose blockquote {
+  @apply my-2 border-l-2 border-zinc-700 pl-3 text-sm text-zinc-400;
+}
+.sdd-prose table {
+  @apply my-2 w-full border-collapse text-xs text-zinc-300;
+}
+.sdd-prose th {
+  @apply border border-zinc-700 px-2 py-1 text-left font-semibold;
+}
+.sdd-prose td {
+  @apply border border-zinc-700 px-2 py-1;
+}
+.sdd-prose strong {
+  @apply font-semibold text-zinc-100;
+}
+.sdd-prose hr {
+  @apply my-4 border-zinc-800;
+}
+.sdd-prose > :first-child {
+  @apply mt-0;
+}

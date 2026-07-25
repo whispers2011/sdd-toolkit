@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+# Laufzeitdaten
+data/
+*.sqlite
+*.sqlite-*
+.env*
+# IDE
+.idea/
+.vscode/
+# Claude Code: lokale Einstellungen und Laufzeitzustand
+.claude/settings.local.json
+.claude/worktrees/
+.claude/checkpoints/
+.claude/mailbox/
+.claude/routines/.state/
+.claude/scheduled_tasks.json
+.claude/scheduled_tasks.lock
+.claude/agent-registry.json
+.claude/agent-memory-local/
+# spec-kit: zeigt auf das zuletzt bearbeitete Feature (flüchtiger Zustand)
+.specify/feature.json
+# Tabellen gehören nicht ins Repo
+*.xlsx

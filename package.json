@@ -1,0 +1,45 @@
+{
+  "name": "sdd-toolkit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Multi-project SDD workflow orchestrator with per-feature worktrees, consoles and an auto-resolving merge queue",
+  "license": "MIT",
+  "author": "whispers2011",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/whispers2011/sdd-toolkit.git"
+  },
+  "homepage": "https://github.com/whispers2011/sdd-toolkit#readme",
+  "bugs": {
+    "url": "https://github.com/whispers2011/sdd-toolkit/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @sdd/server --filter @sdd/web dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint . --max-warnings 0"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "node-pty",
+      "esbuild"
+    ],
+    "overrides": {
+      "esbuild": "0.25.12"
+    }
+  },
+  "packageManager": "pnpm@10.0.0",
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9",
+    "eslint-plugin-react-hooks": "^5",
+    "globals": "^17.7.0",
+    "typescript-eslint": "^8"
+  }
+}

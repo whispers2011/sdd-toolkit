@@ -1,0 +1,45 @@
+import { useEffect, useState } from 'react';
+import { useStore } from '../store.js';
+import { ChatPanel } from './ChatPanel.js';
+import { ChatIcon, CloseIcon } from './icons.js';
+
+/**
+ * Sprechblase des Projekt-Chats (Ask-a-Question): schwebt unten rechts,
+ * nur sichtbar bei geöffnetem Projekt (FR-001). Öffnen/Schließen ist lokaler
+ * UI-State — Verlauf und Streams leben in Store/DB und überleben das Panel.
+ */
+export function ChatBubble() {
+  const { state } = useStore();
+  const [open, setOpen] = useState(false);
+  const projectId = state.selectedProjectId;
+
+  // Öffnen-Signal aus der Inbox (Arbeits-Chat-Eintrag) konsumieren.
+  useEffect(() => {
+    if (state.openChat && state.openChat.projectId === projectId) setOpen(true);
+    // Absichtlich nur der Zeitstempel: das Panel soll bei einem NEUEN Signal aufgehen,
+    // nicht bei jeder Änderung des Signal-Objekts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.openChat?.ts, projectId]);
+
+  if (!projectId) return null;
+
+  const busy = (state.app?.sessions ?? []).some(
+    (s) => s.projectId === projectId && s.conversationId && (s.status === 'working' || s.status === 'awaiting_input'),
+  );
+
+  return (
+    <>
+      {open && <ChatPanel key={projectId} projectId={projectId} onClose={() => setOpen(false)} />}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title={open ? 'Projekt-Chat schließen' : 'Projekt-Chat öffnen'}
+        className="fixed right-4 bottom-4 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-zinc-700 bg-zinc-800 text-xl shadow-lg transition-colors hover:bg-zinc-700"
+      >
+        {open ? <CloseIcon className="h-6 w-6" /> : <ChatIcon className="h-6 w-6" />}
+        {busy && (
+          <span className="absolute -top-0.5 -right-0.5 h-3 w-3 animate-pulse rounded-full bg-emerald-500" />
+        )}
+      </button>
+    </>
+  );
+}
