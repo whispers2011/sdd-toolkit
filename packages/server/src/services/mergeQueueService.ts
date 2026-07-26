@@ -226,13 +226,18 @@ export class MergeQueueService {
       return { started: false, reason: ACTION_REASON.noChanges };
     }
 
-    // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
-    // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
-    if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
-
     this.setStage(feature, 'verifying');
     try {
+      // Festschreiben MUSS vor reconcile() laufen. Solange die Arbeit uncommittet
+      // ist, hat der Branch keinen eigenen Commit und ist damit trivial Vorfahre
+      // des Ziels — reconcile() hält ihn für „bereits gemergt" und eskaliert wegen
+      // der uncommitteten Dateien, ohne dass je committet würde. Der Schritt, der
+      // die Bedingung auflöst, lag hinter der Prüfung, die auf sie reagiert.
       await this.commitWorktree(feature);
+
+      // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
+      // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
+      if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
 
       if (project.verifyCommands.length > 0) {
         const execId = this.deps.executions.start({
@@ -616,6 +621,9 @@ export class MergeQueueService {
   /** Uncommittete Änderungen im Worktree committen. */
   private async commitWorktree(feature: Feature, message?: string): Promise<void> {
     if (!feature.worktreePath) return;
+    // Fehlender Worktree ist kein Commit-Fehler: reconcile() meldet ihn danach
+    // mit der genauen Ursache. Ohne diesen Ausstieg würde git hier werfen.
+    if (!existsSync(feature.worktreePath)) return;
     if (await isCleanWorkingTree(feature.worktreePath)) return;
     await git(feature.worktreePath, ['add', '-A']);
     const r = await git(feature.worktreePath, [

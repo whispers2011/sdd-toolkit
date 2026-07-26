@@ -1,6 +1,9 @@
-import type { AttentionKind } from '@sdd/shared';
+import { useState } from 'react';
+import { evaluateAction, type AttentionKind, type FeatureActionContext } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
+import { ReviewPortal } from './ReviewPortal.js';
 
 const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: string }> = {
   awaiting_input: { label: 'Frage', icon: '❓', tone: 'text-amber-400' },
@@ -15,6 +18,62 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
 };
 
+const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700';
+
+/**
+ * Die nächste Aktion eines Feature-Items — abgeleitet aus derselben Policy wie
+ * Board und Konsole (FR-014/FR-022), nicht aus der Meldungsart. Vorher stand hier
+ * unabhängig vom Zustand „Zur Konsole", auch wenn das Feature längst auf ein
+ * menschliches Review wartete.
+ *
+ * Reihenfolge entspricht der Stufen-Klassifikation (FR-025): wartet das Feature
+ * auf das Review, ist das Review die Aktion; in den übrigen Entscheidungsstufen
+ * ist es die Wiederaufnahme. Sonst bleibt die Konsole der richtige Weg — etwa bei
+ * einer offenen Rückfrage der Session.
+ */
+function NextAction({
+  featureId,
+  ctx,
+  onReview,
+  onConsole,
+  run,
+}: {
+  featureId: string;
+  ctx: FeatureActionContext | null;
+  onReview: (featureId: string) => void;
+  onConsole: (featureId: string) => void;
+  run: (key: string, fn: () => Promise<unknown>) => void;
+}) {
+  if (ctx?.integration === 'awaiting_human_review') {
+    return (
+      <button onClick={() => onReview(featureId)} className={BTN}>
+        👀 Review
+      </button>
+    );
+  }
+
+  const retry = ctx ? evaluateAction('integration_retry', ctx) : null;
+  if (retry && retry.availability !== 'hidden') {
+    return (
+      <ActionGroup reason={blockedReason(retry)} actionsClassName="">
+        <ActionButton
+          verdict={retry}
+          onClick={() => run(`retry:${featureId}`, () => api.retryIntegration(featureId))}
+          className={BTN}
+        >
+          ↻ Erneut
+        </ActionButton>
+      </ActionGroup>
+    );
+  }
+
+  return (
+    <button onClick={() => onConsole(featureId)} className={BTN}>
+      Zur Konsole →
+    </button>
+  );
+}
+
 /** Berichtspfad aus einer approval_required-Meldung (`… [Bericht: specs/…md]`). */
 function reportPathOf(message: string): string | null {
   return message.match(/\[Bericht:\s*([^\]]+)\]/)?.[1]?.trim() ?? null;
@@ -23,6 +82,8 @@ function reportPathOf(message: string): string | null {
 /** Exception-Inbox: Monitoring by exception — der Level-3-Arbeitsmodus. */
 export function AttentionInbox() {
   const { state, dispatch } = useStore();
+  const runAction = useAction();
+  const [portalFeature, setPortalFeature] = useState<string | null>(null);
   if (!state.app) return null;
 
   // Kontext-Trennung: Inbox respektiert den Projekt-Scope (genau 1 Projekt).
@@ -43,6 +104,9 @@ export function AttentionInbox() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-2 p-4">
+      {portalFeature && (
+        <ReviewPortal featureId={portalFeature} onClose={() => setPortalFeature(null)} />
+      )}
       {items.map((item) => {
         const meta = KIND_META[item.kind];
         return (
@@ -71,14 +135,13 @@ export function AttentionInbox() {
               </button>
             )}
             {item.featureId && (
-              <button
-                onClick={() =>
-                  dispatch({ type: 'set_view', view: { kind: 'console', featureId: item.featureId! } })
-                }
-                className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
-              >
-                Zur Konsole →
-              </button>
+              <NextAction
+                featureId={item.featureId}
+                ctx={featureActionContext(state, item.featureId)}
+                onReview={setPortalFeature}
+                onConsole={(id) => dispatch({ type: 'set_view', view: { kind: 'console', featureId: id } })}
+                run={runAction}
+              />
             )}
             {!item.featureId && item.conversationId && (
               <button

@@ -295,6 +295,41 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     expect(features.get(feature.id)?.integration).toBe('none');
   });
 
+  it('schreibt uncommittete Arbeit VOR dem Merged-Abgleich fest (Regression)', async () => {
+    // Der Normalfall am Ende von implement: das Ergebnis liegt uncommittet im
+    // Worktree, festgeschrieben wird es von commitWorktree(). Lief reconcile()
+    // zuerst, hatte der Branch keinen eigenen Commit, galt als trivialer Vorfahre
+    // von main — also als „bereits gemergt" — und eskalierte wegen der
+    // uncommitteten Dateien, ohne dass je committet wurde. Sackgasse für JEDES
+    // Feature (am 26.07.2026 dreimal in Folge beobachtet).
+    const branch = 'feature/uncommittet';
+    const wt = await worktrees.create({
+      projectId,
+      projectPath: repo,
+      featureName: 'uncommittet',
+      branch,
+      defaultBranch: 'main',
+    });
+    writeFileSync(join(wt, 'implementierung.txt'), 'fertige arbeit\n');
+    const feature = features.create({
+      projectId,
+      name: 'uncommittet',
+      branch,
+      worktreePath: wt,
+      phases: {},
+      integration: 'none',
+      automation: { autoReviewAgents: false, autoMerge: false },
+      tasksDone: 0,
+      tasksTotal: 0,
+    });
+
+    await svc.beginIntegration(feature.id);
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    expect(sh(wt, ['status', '--porcelain'])).toBe('');
+    expect(sh(wt, ['log', '--oneline', 'main..HEAD']).trim()).not.toBe('');
+  });
+
   it('lehnt ein bereits integrierendes Feature ab', async () => {
     const { feature } = await makeReviewReadyFeature('schon-drin');
     const result = await svc.beginIntegration(feature.id);

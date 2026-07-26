@@ -27,7 +27,12 @@ import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRep
 import type { KnowledgeService } from './knowledgeService.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import { locateTranscript, readTranscriptDelta, transcriptSize } from '../pty/transcriptWatcher.js';
+import {
+  locateTranscript,
+  offsetAtTimestamp,
+  readTranscriptDelta,
+  transcriptSize,
+} from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
@@ -67,9 +72,12 @@ interface RunningPhase {
   /**
    * Transkript-Pfad beim Start. Wechselt die Claude-Session-ID während der Phase
    * (z. B. /clear-Reset), gilt der Start-Offset nicht für die neue Datei —
-   * dann wird ab 0 gemessen.
+   * dann wird ab 0 gemessen. `null` = beim Start war die Session-ID noch nicht
+   * bekannt; dann ist „ab 0" falsch (siehe startedAt).
    */
   transcriptPathStart: string | null;
+  /** Startzeit des Laufs — Startmarke, wenn transcriptPathStart null ist. */
+  startedAt: number;
   promptText: string;
 }
 
@@ -422,6 +430,7 @@ export class Orchestrator {
       scrollbackStart: session.scrollback.length,
       transcriptOffsetStart,
       transcriptPathStart,
+      startedAt: Date.now(),
       promptText: prompt,
     });
 
@@ -691,9 +700,7 @@ export class Orchestrator {
     if (session.claudeSessionId) {
       const path = locateTranscript(session.cwd, session.claudeSessionId);
       if (path) {
-        // Session-ID/Datei hat während der Phase gewechselt (/clear-Reset) →
-        // Start-Offset gilt nicht für die neue Datei, ab 0 messen.
-        const offset = path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
+        const offset = this.startOffsetIn(path, running);
         const usage = sumUsage(readTranscriptDelta(path, offset));
         if (hasUsage(usage)) {
           const totalTokens = usageTotalTokens(usage);
@@ -727,8 +734,25 @@ export class Orchestrator {
       ? locateTranscript(session.cwd, session.claudeSessionId)
       : null;
     const offsetEnd = path ? transcriptSize(path) : 0;
-    const offsetStartFix = path && path !== running.transcriptPathStart ? 0 : null;
+    const offsetStartFix = path ? this.startOffsetIn(path, running) : null;
     this.deps.executions.recordTranscriptEnd(running.executionId, path, offsetEnd, offsetStartFix);
+  }
+
+  /**
+   * Startmarke eines Laufs in seiner Transkriptdatei. Drei Fälle, und sie sind
+   * NICHT dasselbe:
+   *  - gleiche Datei wie beim Start → der gemerkte Offset.
+   *  - Datei wechselte während der Phase (/clear-Reset) → die neue Datei gehört
+   *    ganz diesem Lauf, ab 0 messen.
+   *  - beim Start war die Datei unbekannt (Claude-Session-ID noch nicht gemeldet,
+   *    typisch bei fortgesetzter Session) → sie enthält womöglich frühere Läufe.
+   *    Ab 0 zu messen schrieb deren Verbrauch diesem Lauf zu (gemessen: ein
+   *    2-Minuten-Lauf mit 62 Mio. Tokens / $132). Startmarke ist darum die erste
+   *    Zeile, die zeitlich zu diesem Lauf gehört.
+   */
+  private startOffsetIn(path: string, running: RunningPhase): number {
+    if (running.transcriptPathStart === null) return offsetAtTimestamp(path, running.startedAt);
+    return path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
   }
 
   /**
