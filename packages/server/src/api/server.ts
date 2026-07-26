@@ -16,7 +16,9 @@ import {
   buildRunSummaries,
   compileReviewPrompt,
   detectCycle,
+  orderedPhases,
   renderTranscriptLog,
+  reopenLastPhase,
 } from '@sdd/shared';
 import type {
   AttentionRepo,
@@ -48,7 +50,8 @@ import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
-import { collectUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
+import { collectUnmergedChanges, hasUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
+import { ActionGuard } from '../services/actionGuard.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
 import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
 import {
@@ -96,6 +99,14 @@ export async function buildServer(deps: ApiDeps) {
   await app.register(cors, { origin: true });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // Serverseitige Durchsetzung der Aktions-Policy (FR-024): dieselbe Festlegung,
+  // die die Oberfläche rendert — kein Bedienweg kommt an ihr vorbei.
+  const actionGuard = new ActionGuard({
+    features: deps.features,
+    ptys: deps.ptys,
+    orchestrator: deps.orchestrator,
+  });
 
   // Review-Portal-Routen (Übersicht, Branches, Dateibaum/Editor, Kommentare, Audits).
   registerReviewRoutes(app, {
@@ -480,18 +491,29 @@ export async function buildServer(deps: ApiDeps) {
     '/api/features/:id/phases/:phase/start',
     async (req) => {
       const phase = validatePhase(req.params.phase);
+      actionGuard.assertAllowed('phase_start', req.params.id, { phase });
       const { gateRunning } = await deps.orchestrator.startPhaseRun(req.params.id, phase, req.body?.prompt);
       return { ...deps.features.get(req.params.id), gateRunning };
     },
   );
 
   app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/approve', (req) => {
-    deps.orchestrator.approve(req.params.id, validatePhase(req.params.phase));
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_approve', req.params.id, { phase });
+    // Mit der erneuten Freigabe des letzten Schritts ist die Zurückweisung erledigt
+    // (FR-026) — vor dem Approve, damit alle Folgeereignisse den neuen Stand tragen.
+    const before = deps.features.get(req.params.id);
+    if (before && before.reviewRejectedAt !== null && orderedPhases(before.phases).at(-1) === phase) {
+      deps.features.setReviewRejected(req.params.id, null);
+    }
+    deps.orchestrator.approve(req.params.id, phase);
     return deps.features.get(req.params.id);
   });
 
   app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/discard', (req) => {
-    deps.orchestrator.discard(req.params.id, validatePhase(req.params.phase));
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_discard', req.params.id, { phase });
+    deps.orchestrator.discard(req.params.id, phase);
     return deps.features.get(req.params.id);
   });
 
@@ -512,11 +534,6 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { to: string } }>('/api/features/:id/advance', async (req) => {
-    await deps.orchestrator.advanceTo(req.params.id, validatePhase(req.body.to));
-    return deps.features.get(req.params.id);
-  });
-
   app.post<{ Params: { id: string } }>('/api/features/:id/session', async (req) => {
     const session = await deps.orchestrator.ensureSession(req.params.id);
     return { sessionId: session.id };
@@ -528,14 +545,42 @@ export async function buildServer(deps: ApiDeps) {
     return { ok: true };
   });
 
+  /**
+   * Der einzige Fakt, den die Oberfläche nicht aus ihrem Zustand ableiten kann
+   * (FR-027): gibt es im Arbeitsverzeichnis überhaupt etwas zu integrieren?
+   * Fehlender oder unlesbarer Worktree ⇒ false — die Aktion ist dann ohnehin
+   * ausgeblendet.
+   */
+  async function integrationHasChanges(featureId: string): Promise<boolean> {
+    const { feature, project } = featureCwd(featureId);
+    if (!feature.worktreePath) return false;
+    try {
+      return await hasUnmergedChanges(feature.worktreePath, feature.integrationTarget ?? project.defaultBranch);
+    } catch {
+      return false;
+    }
+  }
+
+  app.get<{ Params: { id: string } }>('/api/features/:id/integration-readiness', async (req) => ({
+    hasChanges: await integrationHasChanges(req.params.id),
+  }));
+
   app.post<{ Params: { id: string } }>('/api/features/:id/integrate', async (req) => {
-    await deps.mergeQueue.beginIntegration(req.params.id);
+    // Serverseitig ermittelte Änderungslage in die Prüfung hereinreichen (FR-027).
+    const hasChanges = await integrationHasChanges(req.params.id);
+    actionGuard.assertAllowed('integrate', req.params.id, { hasChanges });
+    const result = await deps.mergeQueue.beginIntegration(req.params.id);
+    // Nur die Vorprüfungen tragen einen Grund und sind echte Ablehnungen (409).
+    // Bleibt der Start ohne Grund aus, hat die Selbstheilung übernommen (Branch
+    // bereits gemergt, Worktree defekt) — sie meldet sich selbst über die Inbox.
+    if (!result.started && result.reason) throw httpError(409, result.reason);
     return deps.features.get(req.params.id);
   });
 
   app.post<{ Params: { id: string }; Body: ApproveMergeRequest | undefined }>(
     '/api/features/:id/approve-merge',
     async (req) => {
+      actionGuard.assertAllowed('review_approve', req.params.id);
       try {
         await deps.mergeQueue.approveForMerge(req.params.id, req.body ?? {});
       } catch (e) {
@@ -547,31 +592,20 @@ export async function buildServer(deps: ApiDeps) {
   );
 
   app.post<{ Params: { id: string } }>('/api/features/:id/retry-integration', (req) => {
+    actionGuard.assertAllowed('integration_retry', req.params.id);
     deps.mergeQueue.retry(req.params.id);
     return deps.features.get(req.params.id);
   });
 
-  /** Extern/vorher gebaute Features als abgeschlossen markieren (kein Merge nötig). */
-  app.post<{ Params: { id: string } }>('/api/features/:id/mark-done', async (req) => {
-    const feature = deps.features.get(req.params.id);
-    if (!feature) throw httpError(404, 'Feature nicht gefunden');
-    // Abgeschlossen heißt abgeschlossen: laufende Konsole beenden, sonst bleibt
-    // eine offene Session zurück (wie beim Archive-Endpoint).
-    const session = deps.ptys.forFeature(feature.id);
-    if (session) await deps.ptys.terminate(session.id);
-    deps.features.setIntegration(feature.id, 'merged');
-    deps.attention.resolveFor({ featureId: feature.id });
-    const fresh = deps.features.get(feature.id);
-    if (fresh) bus.emitEvent('feature_updated', fresh);
-    return fresh;
-  });
-
+  // Löschen ist eine Aufräum-Aktion mit Rückfrage in der Oberfläche (FR-008/FR-017)
+  // und bleibt deshalb bewusst ungeschützt.
   app.delete<{ Params: { id: string } }>('/api/features/:id', async (req) => {
     await deps.mergeQueue.deleteFeature(req.params.id);
     return { ok: true };
   });
 
   app.post<{ Params: { id: string } }>('/api/features/:id/archive', async (req) => {
+    actionGuard.assertAllowed('archive', req.params.id);
     const feature = deps.features.get(req.params.id);
     if (feature) {
       const session = deps.ptys.forFeature(feature.id);
@@ -606,14 +640,22 @@ export async function buildServer(deps: ApiDeps) {
    * Zurückweisen im Review: offene Reviewer-Kommentare + Freitext werden zu
    * einem strukturierten Arbeitsauftrag kompiliert und gehen als Prompt in die
    * Feature-Konsole; eine gewählte Nicht-Default-Zielwahl wird zurückgesetzt.
+   *
+   * Zusätzlich (FR-020/FR-021/FR-026): der letzte aktive Schritt geht auf
+   * „wartet auf Freigabe" zurück und die Zurückweisung bleibt als Hinweis
+   * sichtbar. Es folgt KEIN automatischer Integrationsstart — erst die erneute,
+   * ausdrückliche Freigabe startet die Pipeline von vorn.
    */
   app.post<{ Params: { id: string }; Body: { comment?: string } }>(
     '/api/features/:id/reject-review',
     async (req) => {
+      actionGuard.assertAllowed('review_reject', req.params.id);
       const feature = deps.features.get(req.params.id);
       if (!feature) throw httpError(404, 'Feature nicht gefunden');
       deps.features.setIntegration(feature.id, 'none');
       deps.features.setIntegrationTarget(feature.id, null);
+      deps.features.savePhases(feature.id, reopenLastPhase(feature.phases).phases);
+      deps.features.setReviewRejected(feature.id, Date.now());
       deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] });
       const openComments = deps.reviewComments
         .listForFeature(feature.id)

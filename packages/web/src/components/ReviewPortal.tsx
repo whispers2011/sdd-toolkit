@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentRunSummary, ReviewComment } from '@sdd/shared';
+import { evaluateAction } from '@sdd/shared';
 import { api, type DiffSummary, type ExecutionInfo } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { Dialog } from './Sidebar.js';
 import { VoiceButton } from './VoiceButton.js';
 import { DiffViewer } from './review/DiffViewer.js';
@@ -37,8 +39,18 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const [showReject, setShowReject] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const run = useAction();
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
+  const ctx = featureActionContext(state, featureId);
+  const approveV = ctx ? evaluateAction('review_approve', ctx) : null;
+  const rejectV = ctx ? evaluateAction('review_reject', ctx) : null;
+  const retryV = ctx ? evaluateAction('integration_retry', ctx) : null;
+  /**
+   * Nur noch für den Datei-Editor: Reviewer-Korrekturen werden beim Freigeben
+   * committet und ergeben außerhalb eines laufenden Reviews keinen Sinn. Für die
+   * Aktionen des Portals ist ausschließlich die Policy zuständig.
+   */
   const reviewable = feature?.integration === 'awaiting_human_review';
 
   const fail = useCallback(
@@ -105,23 +117,36 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const approve = () => {
     if (!target?.valid) return;
     setBusy(true);
-    void api
-      .approveMerge(featureId, { targetBranch: target.targetBranch, createBranch: target.createBranch })
-      .then(() => onClose())
-      .catch(fail)
-      .finally(() => setBusy(false));
+    run(`review_approve:${featureId}`, () =>
+      api
+        .approveMerge(featureId, { targetBranch: target.targetBranch, createBranch: target.createBranch })
+        .then(() => onClose())
+        .finally(() => setBusy(false)),
+    );
   };
 
   const reject = () => {
     setBusy(true);
-    void api
-      .rejectReview(featureId, rejectComment)
-      .then(() => onClose())
-      .catch(fail)
-      .finally(() => setBusy(false));
+    run(`review_reject:${featureId}`, () =>
+      api
+        .rejectReview(featureId, rejectComment)
+        .then(() => onClose())
+        .finally(() => setBusy(false)),
+    );
   };
 
   if (!feature) return null;
+
+  // Eingabeprüfung des Ziel-Wählers — keine zweite Zustandsregel, sondern die
+  // Vollständigkeit des Formulars. Sie wird wie jede Sperre begründet angezeigt.
+  const approveVerdict =
+    approveV && approveV.availability === 'available' && !target?.valid
+      ? {
+          availability: 'blocked' as const,
+          reason: 'Bitte zuerst einen gültigen Ziel-Branch wählen.',
+          confirmAbortsWork: false,
+        }
+      : approveV;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -222,19 +247,18 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                       filePath={selectedFile}
                       comments={comments}
                       jumpTo={jumpTo}
-                      onAddComment={
-                        reviewable
-                          ? (anchor, text) =>
-                              void api
-                                .addComment(featureId, {
-                                  filePath: selectedFile,
-                                  line: anchor.line,
-                                  side: anchor.side,
-                                  text,
-                                })
-                                .then(refreshComments)
-                                .catch(fail)
-                          : undefined
+                      /* Kommentieren ist betrachtend (FR-007) und in jedem Zustand möglich —
+                         auch in der Vorschau eines Features, das noch in Entwicklung ist. */
+                      onAddComment={(anchor, text) =>
+                        void api
+                          .addComment(featureId, {
+                            filePath: selectedFile,
+                            line: anchor.line,
+                            side: anchor.side,
+                            text,
+                          })
+                          .then(refreshComments)
+                          .catch(fail)
                       }
                     />
                   ) : (
@@ -295,9 +319,12 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
           </aside>
         </div>
 
-        <footer className="flex items-center gap-3 border-t border-zinc-800 px-4 py-2.5">
-          {reviewable && project ? (
-            <>
+        <footer className="border-t border-zinc-800 px-4 py-2.5">
+          <ActionGroup
+            reason={blockedReason(approveVerdict, rejectV, retryV)}
+            actionsClassName="flex items-center gap-3"
+          >
+            {approveV?.availability !== 'hidden' && project && (
               <MergeTargetChooser
                 projectId={project.id}
                 featureName={feature.name}
@@ -306,39 +333,49 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                 onChange={setTarget}
                 onError={fail}
               />
-              <span className="ml-auto flex items-center gap-2">
-                <button
+            )}
+            {/* Vorschau statt technischer Zustandsmeldung (FR-019). */}
+            {approveV?.availability === 'hidden' && (
+              <span className="text-xs text-zinc-500">
+                {feature.integration === 'merged'
+                  ? 'Bereits integriert.'
+                  : feature.integration === 'none'
+                    ? 'Vorschau — dieses Feature ist noch nicht in der Integration.'
+                    : approveV.reason}
+              </span>
+            )}
+            <span className="ml-auto flex items-center gap-2">
+              {retryV && (
+                <ActionButton
+                  verdict={retryV}
+                  onClick={() =>
+                    run(`retry:${featureId}`, () => api.retryIntegration(featureId).then(onClose))
+                  }
+                  className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+                >
+                  ↻ Integration erneut anstoßen
+                </ActionButton>
+              )}
+              {rejectV && (
+                <ActionButton
+                  verdict={rejectV}
                   onClick={() => setShowReject(true)}
                   className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
                 >
                   ✗ Zurückweisen{openComments.length > 0 && ` (${openComments.length} Kommentare)`}
-                </button>
-                <button
-                  disabled={!target?.valid || busy}
+                </ActionButton>
+              )}
+              {approveVerdict && (
+                <ActionButton
+                  verdict={approveVerdict}
                   onClick={approve}
-                  className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
+                  className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600"
                 >
                   ✓ Freigeben & Integrieren
-                </button>
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="text-xs text-zinc-500">
-                {feature.integration === 'merged'
-                  ? 'Bereits integriert.'
-                  : `Keine Freigabe möglich — Zustand: ${feature.integration}.`}
-              </span>
-              {['verify_failed', 'gate_failed', 'conflict_escalated'].includes(feature.integration) && (
-                <button
-                  onClick={() => void api.retryIntegration(featureId).then(onClose).catch(fail)}
-                  className="ml-auto rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-                >
-                  ↻ Integration erneut anstoßen
-                </button>
+                </ActionButton>
               )}
-            </>
-          )}
+            </span>
+          </ActionGroup>
         </footer>
       </div>
 

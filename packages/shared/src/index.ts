@@ -22,5 +22,6 @@ export * from './reviewPrompt.js';
 export * from './agentSelect.js';
 export * from './workflowModel.js';
 export * from './worktreeStatus.js';
+export * from './actionPolicy.js';
 export * from './jiraSprints.js';
 export * from './jiraContent.js';

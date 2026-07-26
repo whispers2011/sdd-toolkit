@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { isValidBranchName } from '@sdd/shared';
+import { ACTION_REASON, alreadyIntegratingReason, isValidBranchName } from '@sdd/shared';
 import type { ApproveMergeRequest, Feature, IntegrationStage, Project } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
@@ -9,6 +9,7 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { git, isBranchMergedInto, isCleanWorkingTree, run, uncommittedFileCount } from '../git/git.js';
 import { runVerification } from './verifyService.js';
+import { hasUnmergedChanges } from './unmergedChanges.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
@@ -198,14 +199,36 @@ export class MergeQueueService {
    * Integration eines Features beginnen: Worktree committen, verifizieren,
    * dann (autoMerge) einreihen oder auf menschliches Review warten.
    */
-  async beginIntegration(featureId: string): Promise<void> {
+  /**
+   * Integrations-Pipeline starten. Die drei Vorprüfungen laufen VOR jeder
+   * Zustandsänderung, vor `reconcile()` und vor `commitWorktree()` (FR-004):
+   * eine Ablehnung lässt Feature-Zustand UND Arbeitsverzeichnis unverändert —
+   * insbesondere wird keine Arbeit festgeschrieben.
+   *
+   * Die Prüfung sitzt hier und nicht (nur) in der Route, damit auch der
+   * automatische Pfad (`PhaseEffect start_integration` bei autoVerify) ihr
+   * unterliegt. Zugleich schließt Prüfung 3 die Falle, dass ein änderungsfreier
+   * Branch in `reconcile()` als „bereits gemergt" gilt und über
+   * `finalizeMerged()` auf 'merged' rutscht — ein zweiter Weg in den
+   * Endzustand, den SC-003 ausschließt.
+   */
+  async beginIntegration(featureId: string): Promise<{ started: boolean; reason?: string }> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
 
+    if (feature.integration !== 'none') {
+      return { started: false, reason: alreadyIntegratingReason(feature.integration) };
+    }
+    if (!feature.worktreePath) {
+      return { started: false, reason: ACTION_REASON.noWorktree };
+    }
+    if (!(await this.hasIntegrableChanges(feature, project))) {
+      return { started: false, reason: ACTION_REASON.noChanges };
+    }
+
     // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
     // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
-    if ((await this.reconcile(feature, project)) !== 'proceed') return;
-    if (!feature.worktreePath) throw new Error(`Feature ${feature.name} hat keinen Worktree`);
+    if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
 
     this.setStage(feature, 'verifying');
     try {
@@ -229,7 +252,7 @@ export class MergeQueueService {
         if (!outcome.ok) {
           this.setStage(feature, 'verify_failed');
           this.escalate(feature, 'verify_failed', `Verifikation fehlgeschlagen: ${outcome.results.at(-1)?.name}`);
-          return;
+          return { started: true };
         }
       }
 
@@ -247,7 +270,7 @@ export class MergeQueueService {
         if (!gate.ok) {
           this.setStage(feature, 'gate_failed');
           this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedAgent}`);
-          return;
+          return { started: true };
         }
       }
 
@@ -260,6 +283,21 @@ export class MergeQueueService {
     } catch (err) {
       this.setStage(feature, 'verify_failed');
       this.escalate(feature, 'verify_failed', `Integration fehlgeschlagen: ${String(err)}`);
+    }
+    return { started: true };
+  }
+
+  /**
+   * Vorprüfung nach FR-027. Ein nicht lesbarer Worktree gilt bewusst NICHT als
+   * „nichts zu tun": `reconcile()` erkennt und meldet ihn danach mit klarer
+   * Eskalation, statt den Start hier stumm zu verschlucken.
+   */
+  private async hasIntegrableChanges(feature: Feature, project: Project): Promise<boolean> {
+    if (!feature.worktreePath) return false;
+    try {
+      return await hasUnmergedChanges(feature.worktreePath, feature.integrationTarget ?? project.defaultBranch);
+    } catch {
+      return true;
     }
   }
 
@@ -307,13 +345,24 @@ export class MergeQueueService {
     this.enqueue(this.mustFeature(featureId), { forceVerify });
   }
 
+  /**
+   * Wiederaufnahme nach einer fehlgeschlagenen Integration (FR-015): die
+   * Pipeline beginnt von vorn. Die Fehlerstufe wird dafür zurückgesetzt, damit
+   * `beginIntegration()` denselben Vorprüfungen unterliegt wie ein Erststart —
+   * es gibt keinen zweiten, ungeprüften Einstieg in die Integration.
+   */
   retry(featureId: string): void {
     const feature = this.mustFeature(featureId);
     this.deps.attention.resolveFor({
       featureId,
       kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
     });
-    void this.beginIntegration(featureId);
+    this.setStage(feature, 'none');
+    void this.beginIntegration(featureId).then((r) => {
+      if (!r.started && r.reason) {
+        console.warn(`[merge-queue] ${feature.name}: Wiederaufnahme abgelehnt — ${r.reason}`);
+      }
+    });
   }
 
   private enqueue(feature: Feature, opts: { forceVerify?: boolean } = {}): void {

@@ -7,7 +7,8 @@ import {
   type Dispatch,
   type ReactNode,
 } from 'react';
-import type { AttentionItem, Feature, MergeQueueItem } from '@sdd/shared';
+import type { AttentionItem, Feature, FeatureActionContext, MergeQueueItem } from '@sdd/shared';
+import { isFeatureComplete } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
 
 export type View =
@@ -56,6 +57,13 @@ export interface UiState {
   gateRunning: Record<string, boolean>;
   /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
   agentGateVersion: number;
+  /**
+   * Integrations-Bereitschaft je Feature (FR-027): 'pending' = Abruf läuft,
+   * boolean = Ergebnis. Kein Eintrag oder 'pending' bedeutet für die Policy
+   * `hasChanges: 'unknown'` — das sperrt bewusst nicht. Der Eintrag wird bei
+   * `feature_updated` für dieses Feature verworfen.
+   */
+  integrationReadiness: Record<string, boolean | 'pending'>;
 }
 
 export type Action =
@@ -75,7 +83,9 @@ export type Action =
   | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } }
   | { type: 'open_chat'; projectId: string }
   | { type: 'review_comments_updated'; featureId: string }
-  | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } };
+  | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } }
+  | { type: 'readiness_requested'; featureId: string }
+  | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -91,7 +101,14 @@ function reducer(state: UiState, action: Action): UiState {
       const features = exists
         ? state.app.features.map((f) => (f.id === action.feature.id ? action.feature : f))
         : [...state.app.features, action.feature];
-      return { ...state, app: { ...state.app, features: features.filter((f) => !f.archivedAt) } };
+      // Jede Zustandsänderung kann die Änderungslage im Worktree verändert haben —
+      // gemerkte Bereitschaft dieses Features verwerfen (FR-027).
+      const { [action.feature.id]: _stale, ...integrationReadiness } = state.integrationReadiness;
+      return {
+        ...state,
+        integrationReadiness,
+        app: { ...state.app, features: features.filter((f) => !f.archivedAt) },
+      };
     }
     case 'feature_deleted': {
       if (!state.app) return state;
@@ -230,7 +247,59 @@ function reducer(state: UiState, action: Action): UiState {
         agentGateVersion: state.agentGateVersion + 1,
       };
     }
+    case 'readiness_requested': {
+      return {
+        ...state,
+        integrationReadiness: { ...state.integrationReadiness, [action.featureId]: 'pending' },
+      };
+    }
+    case 'readiness_result': {
+      return {
+        ...state,
+        integrationReadiness: {
+          ...state.integrationReadiness,
+          [action.payload.featureId]: action.payload.hasChanges,
+        },
+      };
+    }
   }
+}
+
+/**
+ * Der Eingabewert der Aktions-Policy für ein Feature — rein synchron aus dem
+ * bereits vorhandenen Store-Zustand (FR-023: kein Netzwerk-Roundtrip pro Render).
+ * Die Ereignisse `feature_updated`, `session_status` und `agent_gate` schreiben
+ * genau die Felder, aus denen er gebaut wird ⇒ Sichtbarkeit und Sperrung ziehen
+ * ohne Neuladen nach.
+ */
+export function featureActionContext(state: UiState, featureId: string): FeatureActionContext | null {
+  const feature = state.app?.features.find((f) => f.id === featureId);
+  if (!feature) return null;
+  const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
+  const readiness = state.integrationReadiness[featureId];
+  return {
+    phases: feature.phases,
+    integration: feature.integration,
+    archived: feature.archivedAt !== null,
+    hasWorktree: feature.worktreePath !== null,
+    session: session?.status ?? null,
+    gateRunning: state.gateRunning[featureId] === true,
+    hasChanges: typeof readiness === 'boolean' ? readiness : 'unknown',
+  };
+}
+
+/**
+ * Features, für die die Bereitschaft überhaupt eine Bedeutung hat — nur für sie
+ * wird die (git-gestützte, also teure) Route gefragt. Für ein Feature in Arbeit
+ * wird nie ein git-Kommando ausgelöst.
+ */
+function readinessCandidates(state: UiState): string[] {
+  return (state.app?.features ?? [])
+    .filter(
+      (f) =>
+        !f.archivedAt && f.integration === 'none' && f.worktreePath !== null && isFeatureComplete(f.phases),
+    )
+    .map((f) => f.id);
 }
 
 /** Sichtbare Features unter Berücksichtigung von Projekt-Scope und Abgeschlossen-Filter. */
@@ -337,8 +406,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     reviewCommentsVersion: {},
     gateRunning: {},
     agentGateVersion: 0,
+    integrationReadiness: {},
   });
   const wsRef = useRef<WebSocket | null>(null);
+
+  // Bereitschafts-Abruf (FR-027): genau einmal je fertigem, nicht integriertem
+  // Feature. 'pending' im Zustand verhindert Doppelabrufe; ein Fehler lässt den
+  // Wert unbekannt — die Aktion bleibt auslösbar, der Server lehnt notfalls ab.
+  const candidates = readinessCandidates(state).join(',');
+  useEffect(() => {
+    for (const id of candidates ? candidates.split(',') : []) {
+      if (state.integrationReadiness[id] !== undefined) continue;
+      dispatch({ type: 'readiness_requested', featureId: id });
+      api
+        .integrationReadiness(id)
+        .then((r) => dispatch({ type: 'readiness_result', payload: { featureId: id, hasChanges: r.hasChanges } }))
+        .catch(() => {
+          /* unbekannt lassen — sperrt nicht */
+        });
+    }
+  }, [candidates, state.integrationReadiness]);
 
   useEffect(() => {
     let closed = false;

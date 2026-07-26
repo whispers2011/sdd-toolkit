@@ -81,6 +81,16 @@ export async function collectUnmergedChanges(cwd: string, defaultBranch: string)
 }
 
 /**
+ * Gibt es überhaupt etwas zu integrieren? (FR-027) — committete Commits ODER
+ * geänderte/neue Dateien gegenüber dem Zielstand. Wirft weiter, wenn der
+ * Worktree nicht lesbar ist; die Aufrufer entscheiden, wie sie das werten.
+ */
+export async function hasUnmergedChanges(cwd: string, defaultBranch: string): Promise<boolean> {
+  const { files, commits } = await collectUnmergedChanges(cwd, defaultBranch);
+  return files.length > 0 || commits.length > 0;
+}
+
+/**
  * Diff einer einzelnen Datei gegen den Abzweigpunkt. Für untracked Dateien gibt es
  * keinen Vergleich in der Historie → Fallback auf `--no-index` gegen /dev/null,
  * damit der volle Dateiinhalt als Hinzufügung erscheint.

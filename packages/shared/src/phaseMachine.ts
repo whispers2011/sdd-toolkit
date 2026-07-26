@@ -116,6 +116,22 @@ export function shouldAutoProgress(next: FeaturePhase, automation: AutomationSet
   return FEATURE_PHASES.indexOf(next) <= FEATURE_PHASES.indexOf(automation.autoProgressUntil);
 }
 
+/**
+ * Zurückweisung im Review (FR-020/FR-021): der LETZTE aktive Schritt geht auf
+ * `awaiting_review` zurück und braucht eine neue, ausdrückliche Freigabe.
+ *
+ * Bewusst OHNE Effekte: `approvePhase()` würde bei autoVerify sofort wieder
+ * einen Integrationsstart auslösen — genau das darf beim Zurücksetzen nicht
+ * passieren. Erst die spätere Freigabe durch den Menschen geht wieder durch
+ * `approvePhase()` und startet die Pipeline dann von vorn.
+ */
+export function reopenLastPhase(phases: PhaseMap): PhaseTransition {
+  const order = orderedPhases(phases);
+  const last = order.at(-1);
+  if (last === undefined) return { phases, effects: [] };
+  return { phases: patch(phases, last, { status: 'awaiting_review' }), effects: [] };
+}
+
 /** Phase verwerfen: selbst auf idle, alle approvten Downstream-Phasen werden stale. */
 export function discardPhase(phases: PhaseMap, phase: FeaturePhase): PhaseTransition {
   let map = patch(phases, phase, { status: 'idle', stale: false });

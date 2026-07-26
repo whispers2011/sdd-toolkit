@@ -89,6 +89,18 @@ export class Orchestrator {
     this.mergeQueue = q;
   }
 
+  /**
+   * Läuft für dieses Feature gerade ein Agenten-Gate? Quelle der Aktions-Policy
+   * für `gateRunning` (FR-005) — die Schlüssel sind `${featureId}:${phase}`.
+   */
+  isGateRunning(featureId: string): boolean {
+    const prefix = `${featureId}:`;
+    for (const key of this.runningGates) {
+      if (key.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
   /** Arbeits-Chat-Sessions (kind chat_work) werden vom ChatWorkService behandelt. */
   attachChatWork(svc: ChatWorkService): void {
     this.chatWork = svc;
@@ -440,9 +452,9 @@ export class Orchestrator {
     this.resolveGateAttention(featureId);
 
     // Auto-Progress-Umleitung: hätte die Folgephase ein before_phase-Gate, wird
-    // ohne Auto-Start-Effekte approvt (advanceTo-Muster) und der Start über
-    // startPhaseRun angestoßen — der deferrt bis zum Gate-PASS. phaseMachine
-    // bleibt unangetastet (kein Agent-Wissen in der pure Machine).
+    // ohne Auto-Start-Effekte approvt und der Start über startPhaseRun angestoßen —
+    // der deferrt bis zum Gate-PASS. phaseMachine bleibt unangetastet (kein
+    // Agent-Wissen in der pure Machine).
     const next = nextPhase(feature.phases, phase);
     if (
       next !== null &&
@@ -467,29 +479,6 @@ export class Orchestrator {
     this.runEffects(featureId, t.effects);
   }
 
-  /**
-   * Drag-to-Advance (speckit-Muster): alle Zwischenphasen bis zur Zielphase
-   * approven, dann die Zielphase starten.
-   */
-  async advanceTo(featureId: string, target: FeaturePhase): Promise<void> {
-    const feature = this.mustFeature(featureId);
-    const order = Object.keys(feature.phases) as FeaturePhase[];
-    for (const p of order) {
-      if (p === target) break;
-      const fresh = this.mustFeature(featureId);
-      const status = fresh.phases[p]?.status;
-      if (status === 'approved') continue;
-      if (status === 'awaiting_review') {
-        // Direkt approven ohne Auto-Progress-Effekte (das Ziel bestimmt der Drag).
-        const t = approvePhase(fresh.phases, p, { ...this.automationFor(fresh), autoProgressUntil: 'off', autoVerify: false }, Date.now());
-        this.deps.features.savePhases(featureId, t.phases);
-      } else {
-        throw new Error(`Phase ${p} ist ${status ?? 'unbekannt'} — kann nicht zu ${target} springen`);
-      }
-    }
-    await this.startPhaseRun(featureId, target);
-  }
-
   discard(featureId: string, phase: FeaturePhase): void {
     const feature = this.mustFeature(featureId);
     this.resolveGateAttention(featureId);
@@ -503,7 +492,13 @@ export class Orchestrator {
       if (e.kind === 'start_agent') {
         void this.startAgentForApprovedChain(featureId, e.phase);
       } else if (e.kind === 'start_integration') {
-        void this.mergeQueue?.beginIntegration(featureId);
+        // Auch der automatische Pfad unterliegt den Vorprüfungen (FR-004/FR-027):
+        // eine Ablehnung ist KEIN Erfolg und ändert nichts am Feature.
+        void this.mergeQueue?.beginIntegration(featureId).then((r) => {
+          if (!r.started && r.reason) {
+            console.warn(`[integration] ${featureId}: automatischer Start abgelehnt — ${r.reason}`);
+          }
+        });
       }
     }
   }

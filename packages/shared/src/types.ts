@@ -134,6 +134,8 @@ export interface Feature {
   tasksTotal: number;
   /** Referenz auf das Jira-Ursprungsticket (Schnappschuss, unveränderlich nach Anlage). */
   jiraRef?: JiraRef;
+  /** Zeitpunkt der letzten Zurückweisung im Review; null = keine offene Zurückweisung (FR-026). */
+  reviewRejectedAt: number | null;
   createdAt: number;
   archivedAt: number | null;
 }

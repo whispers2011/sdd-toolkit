@@ -328,6 +328,12 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   ALTER TABLE features ADD COLUMN jira_imported_at INTEGER;
   CREATE INDEX idx_features_jira ON features(project_id, jira_key);
   `,
+  // Feature "integrieren-button-entfernen": Zurückweisung im Review bleibt als
+  // Hinweis sichtbar (FR-026) — auch über einen Server-Neustart hinweg.
+  // Bestandszeilen bleiben NULL = keine offene Zurückweisung.
+  `
+  ALTER TABLE features ADD COLUMN review_rejected_at INTEGER;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

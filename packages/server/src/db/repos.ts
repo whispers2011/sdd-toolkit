@@ -157,6 +157,7 @@ interface FeatureRow {
   jira_key: string | null;
   jira_url: string | null;
   jira_imported_at: number | null;
+  review_rejected_at: number | null;
   created_at: number;
   archived_at: number | null;
 }
@@ -178,6 +179,7 @@ function toFeature(r: FeatureRow): Feature {
     ...(r.jira_key && r.jira_url
       ? { jiraRef: { key: r.jira_key, url: r.jira_url, importedAt: r.jira_imported_at ?? 0 } }
       : {}),
+    reviewRejectedAt: r.review_rejected_at ?? null,
     createdAt: r.created_at,
     archivedAt: r.archived_at,
   };
@@ -186,7 +188,7 @@ function toFeature(r: FeatureRow): Feature {
 export class FeatureRepo {
   constructor(private db: DB) {}
 
-  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt'>): Feature {
+  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt' | 'reviewRejectedAt'>): Feature {
     const id = nanoid(10);
     const createdAt = Date.now();
     this.db
@@ -209,7 +211,7 @@ export class FeatureRepo {
         f.tasksTotal,
         createdAt,
       );
-    return { ...f, id, createdAt, archivedAt: null };
+    return { ...f, id, createdAt, archivedAt: null, reviewRejectedAt: null };
   }
 
   get(id: string): Feature | null {
@@ -243,6 +245,14 @@ export class FeatureRepo {
 
   setIntegration(id: string, stage: IntegrationStage): void {
     this.db.prepare('UPDATE features SET integration=? WHERE id=?').run(stage, id);
+  }
+
+  /**
+   * Offene Zurückweisung im Review (FR-026): Zeitstempel setzen bzw. mit null
+   * löschen, sobald der letzte Schritt erneut freigegeben wurde.
+   */
+  setReviewRejected(id: string, ts: number | null): void {
+    this.db.prepare('UPDATE features SET review_rejected_at=? WHERE id=?').run(ts, id);
   }
 
   /** Integrations-Ziel der Review-Freigabe; null = Projekt-Default-Branch. */

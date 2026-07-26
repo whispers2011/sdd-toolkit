@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { FEATURE_PHASES, type FeaturePhase } from '@sdd/shared';
+import { FEATURE_PHASES, evaluateAction } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
@@ -21,10 +22,13 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
+  const ctx = featureActionContext(state, featureId);
+  // Löschen ist eine Aufräum-Aktion und nie gesperrt — die Rückfrage weist aber
+  // ausdrücklich auf den Abbruch laufender Arbeit hin (FR-008).
+  const deleteAbortsWork = ctx ? evaluateAction('delete', ctx).confirmAbortsWork : false;
 
   if (!feature) return <div className="p-8 text-zinc-500">Feature nicht gefunden.</div>;
 
-  const runningPhase = FEATURE_PHASES.find((p) => feature.phases[p]?.status === 'running');
   // Abgeschlossen (gemergt/archiviert) → keine neue Session mehr; statt Terminal ein
   // Ergebnis-Dashboard (Artefakte, Token-Statistik, Logs).
   const completed = feature.integration === 'merged' || !!feature.archivedAt;
@@ -55,6 +59,12 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         {feature.worktreePath && (
           <span className="truncate text-xs text-zinc-600" title={feature.worktreePath}>
             {feature.worktreePath}
+          </span>
+        )}
+        {/* Die Zurückweisung bleibt sichtbar, bis der letzte Schritt neu freigegeben ist (FR-026). */}
+        {feature.reviewRejectedAt !== null && (
+          <span className="rounded bg-amber-950/60 px-1.5 py-0.5 text-xs whitespace-nowrap text-amber-300">
+            ↩ im Review zurückgewiesen
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
@@ -107,11 +117,12 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <ConfirmDialog
           title={merged ? 'Feature aus dem Toolkit entfernen?' : 'Feature löschen?'}
           message={
-            merged
+            (merged
               ? `„${feature.name}" wird aus dem Toolkit entfernt: Läufe, Logs, Verlauf und interne Spuren. ` +
                 `Der bereits in „${project?.defaultBranch ?? 'den Haupt-Branch'}" gemergte Code bleibt vollständig erhalten.`
               : `„${feature.name}" wird endgültig gelöscht: Worktree und Branch (inkl. NICHT gemergter Arbeit), ` +
-                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`
+                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`) +
+            (deleteAbortsWork ? '\n\nAchtung: Die laufende Arbeit wird dabei abgebrochen.' : '')
           }
           confirmLabel={merged ? 'Aus Toolkit entfernen' : 'Endgültig löschen'}
           onConfirm={() => {
@@ -128,7 +139,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <FeatureDashboard feature={feature} />
       ) : (
         <>
-          <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
+          <PhaseStrip featureId={featureId} />
 
           <div className="min-h-0 flex-1 bg-[#09090b] p-2">
             <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
@@ -213,25 +224,38 @@ function PromptBar({ featureId }: { featureId: string }) {
   );
 }
 
-/** Phasen-Leiste über der Konsole: Status + Aktion pro Phase. */
-function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPhase: FeaturePhase | null }) {
-  const { state, dispatch } = useStore();
+/**
+ * Phasen-Leiste über der Konsole: Status + Aktion pro Phase. Welche Aktion eine
+ * Kachel anbietet und ob sie auslösbar ist, entscheidet ausschließlich die
+ * gemeinsame Festlegung (FR-022) — die Leiste prüft nichts mehr selbst. Der
+ * Grund einer Sperrung steht dauerhaft unter der Leiste, nicht im Tooltip (FR-028).
+ */
+function PhaseStrip({ featureId }: { featureId: string }) {
+  const { state } = useStore();
+  const run = useAction();
   const feature = state.app?.features.find((f) => f.id === featureId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
-  if (!feature) return null;
-
-  const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => {
-      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
-      if (/läuft bereits/i.test(e.message)) return;
-      dispatch({ type: 'error', message: e.message });
-    });
+  const ctx = featureActionContext(state, featureId);
+  if (!feature || !ctx) return null;
 
   const live = !!session && (session.status === 'working' || session.status === 'awaiting_input');
+  const phases = FEATURE_PHASES.filter((p) => feature.phases[p]);
+  const integrateV = evaluateAction('integrate', ctx);
+  const reason = blockedReason(
+    ...phases.flatMap((phase) => [
+      evaluateAction('phase_start', ctx, { phase }),
+      evaluateAction('phase_approve', ctx, { phase }),
+    ]),
+    integrateV,
+  );
 
   return (
-    <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-800 px-4 py-1.5">
-      {FEATURE_PHASES.filter((p) => feature.phases[p]).map((phase) => {
+    <ActionGroup
+      reason={reason}
+      className="border-b border-zinc-800 px-4 py-1.5"
+      actionsClassName="flex items-center gap-1 overflow-x-auto"
+    >
+      {phases.map((phase) => {
         const ps = feature.phases[phase];
         const cls =
           ps.status === 'approved'
@@ -243,53 +267,62 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
               : ps.status === 'awaiting_review'
                 ? 'text-amber-400 border-amber-800'
                 : 'text-zinc-500 border-zinc-800';
+        const chipClass = `rounded border px-2 py-0.5 text-xs whitespace-nowrap ${cls} ${ps.stale ? 'line-through' : ''}`;
+        const label = `${ps.status === 'approved' ? '✓ ' : ''}${phase}`;
+        const startV = evaluateAction('phase_start', ctx, { phase });
+        const approveV = evaluateAction('phase_approve', ctx, { phase });
+        // Genau eine Aktion je Kachel — welche, sagt die Policy: ein offener
+        // Schritt lässt sich starten, ein wartender freigeben. Trifft keine zu,
+        // ist die Kachel reine Statusanzeige.
+        if (startV.availability !== 'hidden') {
+          return (
+            <ActionButton
+              key={phase}
+              verdict={startV}
+              onClick={() => run(`start:${featureId}:${phase}`, () => api.startPhase(featureId, phase))}
+              className={chipClass}
+            >
+              {label}
+            </ActionButton>
+          );
+        }
+        if (approveV.availability !== 'hidden') {
+          return (
+            <ActionButton
+              key={phase}
+              verdict={approveV}
+              onClick={() => run(`approve:${featureId}:${phase}`, () => api.approvePhase(featureId, phase))}
+              className={chipClass}
+            >
+              {label}
+            </ActionButton>
+          );
+        }
         return (
-          <button
-            key={phase}
-            disabled={runningPhase !== null || (ps.status === 'idle' && live)}
-            title={
-              ps.status === 'idle'
-                ? live
-                  ? 'Session ist beschäftigt — läuft gerade'
-                  : `/speckit.${phase} starten`
-                : ps.status === 'awaiting_review'
-                  ? 'Klick = approven'
-                  : ps.status === 'running'
-                    ? live
-                      ? 'läuft …'
-                      : 'wird gestartet …'
-                    : ps.status
-            }
-            onClick={() => {
-              if (ps.status === 'idle') void call(() => api.startPhase(featureId, phase));
-              else if (ps.status === 'awaiting_review') void call(() => api.approvePhase(featureId, phase));
-            }}
-            className={`rounded border px-2 py-0.5 text-xs whitespace-nowrap disabled:opacity-60 ${cls} ${ps.stale ? 'line-through' : ''}`}
-          >
-            {ps.status === 'approved' ? '✓ ' : ''}
-            {phase}
-          </button>
+          <span key={phase} className={chipClass}>
+            {label}
+          </span>
         );
       })}
       {state.gateRunning[featureId] && (
-        <span
-          className="animate-pulse rounded border border-violet-800 px-2 py-0.5 text-xs whitespace-nowrap text-violet-300"
-          title="Ein Qualitäts-Gate (Agent) läuft — Start/Fortschritt folgt nach PASS"
-        >
+        <span className="animate-pulse rounded border border-violet-800 px-2 py-0.5 text-xs whitespace-nowrap text-violet-300">
           ⚖ Gate läuft …
         </span>
       )}
-      <span className="mx-2 text-zinc-700">|</span>
-      {feature.integration === 'none' ? (
-        <button
-          onClick={() => void call(() => api.integrate(featureId))}
-          className="rounded border border-sky-900 px-2 py-0.5 text-xs whitespace-nowrap text-sky-400 hover:border-sky-700"
-        >
-          ⇥ Integrieren
-        </button>
-      ) : (
+      {/* Trenner nur, wenn rechts davon überhaupt etwas steht. */}
+      {(integrateV.availability !== 'hidden' || feature.integration !== 'none') && (
+        <span className="mx-2 text-zinc-700">|</span>
+      )}
+      <ActionButton
+        verdict={integrateV}
+        onClick={() => run(`integrate:${featureId}`, () => api.integrate(featureId))}
+        className="rounded border border-sky-900 px-2 py-0.5 text-xs whitespace-nowrap text-sky-400 hover:border-sky-700"
+      >
+        ⇥ Integrieren
+      </ActionButton>
+      {feature.integration !== 'none' && (
         <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-sky-400">{feature.integration}</span>
       )}
-    </div>
+    </ActionGroup>
   );
 }

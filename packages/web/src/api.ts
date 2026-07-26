@@ -180,16 +180,16 @@ export const api = {
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/approve`),
   discardPhase: (featureId: string, phase: FeaturePhase) =>
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/discard`),
-  advance: (featureId: string, to: FeaturePhase) =>
-    request<Feature>('POST', `/api/features/${featureId}/advance`, { to }),
   integrate: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/integrate`),
+  /** Der einzige asynchrone Fakt der Aktions-Policy (FR-027). */
+  integrationReadiness: (featureId: string) =>
+    request<{ hasChanges: boolean }>('GET', `/api/features/${featureId}/integration-readiness`),
   approveMerge: (featureId: string, body: ApproveMergeRequest = {}) =>
     request<Feature>('POST', `/api/features/${featureId}/approve-merge`, body),
   retryIntegration: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
   deleteFeature: (featureId: string) => request<{ ok: true }>('DELETE', `/api/features/${featureId}`),
-  markDone: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/mark-done`),
   updateFeature: (
     featureId: string,
     patch: { automation?: Partial<AutomationSettings>; optimization?: Partial<OptimizationSettings> },

@@ -7,6 +7,7 @@ import {
   nextPhase,
   reapOrphanedRunning,
   reconcileWithDisk,
+  reopenLastPhase,
   startPhase,
 } from './phaseMachine.js';
 import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, type FeaturePhase } from './types.js';
@@ -98,6 +99,45 @@ describe('phaseMachine', () => {
     const map = reconcileWithDisk(phases, (p) => p === 'specify');
     expect(map.specify.status).toBe('awaiting_review');
     expect(map.plan.status).toBe('idle');
+  });
+
+  it('reopenLastPhase setzt den letzten aktiven Schritt zurück — ohne Effekte', () => {
+    const phases = initialPhases(ENABLED);
+    for (const p of ENABLED) phases[p] = { ...phases[p], status: 'approved' };
+
+    const t = reopenLastPhase(phases);
+
+    expect(t.phases.implement.status).toBe('awaiting_review');
+    // Kein automatischer Folgestart (FR-021) — auch nicht bei aktivem autoVerify.
+    expect(t.effects).toEqual([]);
+    // Vorgelagerte Schritte bleiben unverändert freigegeben.
+    expect(t.phases.specify.status).toBe('approved');
+    expect(t.phases.plan.status).toBe('approved');
+    expect(t.phases.tasks.status).toBe('approved');
+  });
+
+  it('reopenLastPhase trifft den letzten AKTIVEN Schritt auch bei abgeschalteten Schritten', () => {
+    const enabled: FeaturePhase[] = ['specify', 'plan'];
+    const phases = initialPhases(enabled);
+    for (const p of enabled) phases[p] = { ...phases[p], status: 'approved' };
+
+    const t = reopenLastPhase(phases);
+
+    expect(t.phases.plan.status).toBe('awaiting_review');
+    expect(t.phases.specify.status).toBe('approved');
+    expect('implement' in t.phases).toBe(false);
+  });
+
+  it('reopenLastPhase verändert den Eingabewert nicht und verträgt eine leere Phasenmenge', () => {
+    const phases = initialPhases(ENABLED);
+    phases.implement = { ...phases.implement, status: 'approved' };
+    const before = JSON.stringify(phases);
+    reopenLastPhase(phases);
+    expect(JSON.stringify(phases)).toBe(before);
+
+    const leer = reopenLastPhase(initialPhases([]));
+    expect(leer.effects).toEqual([]);
+    expect(leer.phases).toEqual({});
   });
 
   it('reaper räumt verwaiste running-States ab', () => {

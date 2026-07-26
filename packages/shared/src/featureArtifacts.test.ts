@@ -29,6 +29,7 @@ function makeFeature(overrides: Partial<Record<FeaturePhase, PhaseStatus>> = {})
     optimization: {},
     tasksDone: 0,
     tasksTotal: 0,
+    reviewRejectedAt: null,
     createdAt: 0,
     archivedAt: null,
   };

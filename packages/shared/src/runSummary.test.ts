@@ -47,6 +47,7 @@ function feature(patch: Partial<Feature>): Feature {
     optimization: {},
     tasksDone: 0,
     tasksTotal: 0,
+    reviewRejectedAt: null,
     createdAt: 1,
     archivedAt: null,
     ...patch,

@@ -2,7 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ACTION_REASON } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import {
   AttentionRepo,
@@ -242,6 +243,79 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     const log = sh(repo, ['log', 'main', '--format=%s']);
     expect(log).toContain('review(edits): reviewer-korrekturen');
     expect(sh(repo, ['show', 'main:edits.txt'])).toContain('reviewer-korrektur');
+  });
+
+  // ---------- beginIntegration: Vorprüfungen vor jeder Wirkung (FR-004/FR-027) ----------
+
+  /** Worktree ohne eigene Commits und ohne Änderungen — es gibt nichts zu integrieren. */
+  async function makeEmptyFeature(name: string) {
+    const branch = `feature/${name}`;
+    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: name, branch, defaultBranch: 'main' });
+    const feature = features.create({
+      projectId,
+      name,
+      branch,
+      worktreePath: wt,
+      phases: {},
+      integration: 'none',
+      automation: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    });
+    return { feature, wt };
+  }
+
+  it('lehnt einen änderungsfreien Branch ab, OHNE Zustand oder Worktree anzufassen', async () => {
+    const { feature, wt } = await makeEmptyFeature('leer');
+    const headBefore = sh(wt, ['rev-parse', 'HEAD']).trim();
+    const svcInternals = svc as unknown as Record<string, () => unknown>;
+    const reconcile = vi.spyOn(svcInternals, 'reconcile');
+    const setStage = vi.spyOn(svcInternals, 'setStage');
+    const commitWorktree = vi.spyOn(svcInternals, 'commitWorktree');
+
+    const result = await svc.beginIntegration(feature.id);
+
+    expect(result).toEqual({ started: false, reason: ACTION_REASON.noChanges });
+    // Die Prüfung liegt VOR reconcile(), setStage() und commitWorktree().
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(setStage).not.toHaveBeenCalled();
+    expect(commitWorktree).not.toHaveBeenCalled();
+    // Und damit: kein Zustandswechsel, nichts festgeschrieben.
+    expect(features.get(feature.id)?.integration).toBe('none');
+    expect(sh(wt, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
+    expect(sh(wt, ['status', '--porcelain'])).toBe('');
+  });
+
+  it('ein änderungsfreier Branch landet NICHT über reconcile() auf merged (SC-003)', async () => {
+    const { feature } = await makeEmptyFeature('kein-zweiter-weg');
+    // Der Branch ist trivialer Vorfahre von main — reconcile() würde ihn als
+    // „bereits gemergt" erkennen und finalizeMerged() aufrufen. Die Vorprüfung
+    // verhindert genau diesen zweiten Weg in den Endzustand.
+    await svc.beginIntegration(feature.id);
+    expect(features.get(feature.id)?.integration).toBe('none');
+  });
+
+  it('lehnt ein bereits integrierendes Feature ab', async () => {
+    const { feature } = await makeReviewReadyFeature('schon-drin');
+    const result = await svc.beginIntegration(feature.id);
+    expect(result.started).toBe(false);
+    expect(result.reason).toContain('bereits in der Integration');
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+  });
+
+  it('lehnt ein Feature ohne Arbeitsverzeichnis ab', async () => {
+    const { feature } = await makeEmptyFeature('kein-worktree');
+    features.setWorktree(feature.id, null);
+    const result = await svc.beginIntegration(feature.id);
+    expect(result).toEqual({ started: false, reason: ACTION_REASON.noWorktree });
+  });
+
+  it('startet die Integration eines Features mit Änderungen', async () => {
+    const { feature } = await makeReviewReadyFeature('mit-arbeit');
+    features.setIntegration(feature.id, 'none'); // makeReviewReadyFeature setzt awaiting_human_review
+    const result = await svc.beginIntegration(feature.id);
+    expect(result.started).toBe(true);
+    expect(features.get(feature.id)?.integration).not.toBe('none');
   });
 
   it('reject: setIntegrationTarget(null) macht die Zielwahl rückgängig', async () => {

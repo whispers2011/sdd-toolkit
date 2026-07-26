@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReviewOverviewItem } from '@sdd/shared';
+import { evaluateAction } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { VerdictPill } from './review/AuditSidebar.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 
 const STAGE_LABEL: Record<string, string> = {
   awaiting_human_review: 'Bereit zum Review',
   verify_failed: 'Verifikation fehlgeschlagen',
   gate_failed: 'Review-Gate FAIL',
   conflict_escalated: 'Konflikt eskaliert',
-  none: 'In Entwicklung',
+  none: 'Vorschau — in Entwicklung',
 };
 
 /**
@@ -79,8 +81,12 @@ export function ReviewOverview() {
       {inProgress.length > 0 && (
         <section>
           <h2 className="mb-2 text-sm font-semibold text-zinc-200">
-            In Entwicklung (ungemergt) <span className="text-zinc-500">({inProgress.length})</span>
+            Vorschau: in Entwicklung (ungemergt) <span className="text-zinc-500">({inProgress.length})</span>
           </h2>
+          <p className="mb-2 text-xs text-zinc-500">
+            Diese Features sind noch nicht in der Integration — die Ansicht dient dem Hineinschauen, es gibt
+            hier nichts zu entscheiden.
+          </p>
           <ul className="space-y-2">
             {inProgress.map((item) => (
               <OverviewRow key={item.feature.id} item={item} onOpen={() => setPortalFeature(item.feature.id)} />
@@ -96,17 +102,7 @@ export function ReviewOverview() {
           </h2>
           <ul className="space-y-2">
             {blocked.map((item) => (
-              <OverviewRow
-                key={item.feature.id}
-                item={item}
-                onOpen={() => setPortalFeature(item.feature.id)}
-                onRetry={() =>
-                  void api
-                    .retryIntegration(item.feature.id)
-                    .then(load)
-                    .catch((e: Error) => dispatch({ type: 'error', message: e.message }))
-                }
-              />
+              <OverviewRow key={item.feature.id} item={item} onOpen={() => setPortalFeature(item.feature.id)} />
             ))}
           </ul>
         </section>
@@ -117,16 +113,15 @@ export function ReviewOverview() {
   );
 }
 
-function OverviewRow({
-  item,
-  onOpen,
-  onRetry,
-}: {
-  item: ReviewOverviewItem;
-  onOpen: () => void;
-  onRetry?: () => void;
-}) {
+function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () => void }) {
+  const { state } = useStore();
+  const run = useAction();
   const f = item.feature;
+  // Wiederaufnahme kommt aus derselben Festlegung wie überall sonst — damit
+  // bietet die Übersicht sie bei allen drei Fehlerstufen an (FR-015).
+  const ctx = featureActionContext(state, f.id);
+  const retryV = ctx ? evaluateAction('integration_retry', ctx) : null;
+  const isPreview = item.stage === 'none';
   const stageTone =
     item.stage === 'awaiting_human_review'
       ? 'text-sky-400'
@@ -140,7 +135,14 @@ function OverviewRow({
           {f.name}
         </button>
         <div className="mt-0.5 flex items-center gap-3 text-xs text-zinc-500">
+          {/* Vorschau ausdrücklich kennzeichnen (FR-019). */}
+          {isPreview && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] tracking-wide text-zinc-400 uppercase">
+              Vorschau
+            </span>
+          )}
           <span className={stageTone}>{STAGE_LABEL[item.stage] ?? item.stage}</span>
+          {f.reviewRejectedAt !== null && <span className="text-amber-300">↩ im Review zurückgewiesen</span>}
           <span>
             {item.filesChanged} Dateien · <span className="text-emerald-500">+{item.additions}</span>{' '}
             <span className="text-red-500">−{item.deletions}</span>
@@ -176,18 +178,21 @@ function OverviewRow({
         >
           {item.verify.status === 'passed' ? 'Verify ✓' : item.verify.status === 'failed' ? 'Verify ✗' : 'Verify –'}
         </span>
-        {onRetry && (
-          <button
-            onClick={onRetry}
-            className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800"
-            title="Integration erneut anstoßen"
-          >
-            ↻
+        <ActionGroup reason={blockedReason(retryV)} actionsClassName="flex items-center gap-3">
+          {retryV && (
+            <ActionButton
+              verdict={retryV}
+              onClick={() => run(`retry:${f.id}`, () => api.retryIntegration(f.id))}
+              className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800"
+            >
+              ↻ Erneut
+            </ActionButton>
+          )}
+          {/* Betrachtend (FR-007) — nie gesperrt. */}
+          <button onClick={onOpen} className="rounded bg-zinc-800 px-2.5 py-1 text-zinc-200 hover:bg-zinc-700">
+            {isPreview ? 'Vorschau öffnen' : '👀 Öffnen'}
           </button>
-        )}
-        <button onClick={onOpen} className="rounded bg-zinc-800 px-2.5 py-1 text-zinc-200 hover:bg-zinc-700">
-          👀 Öffnen
-        </button>
+        </ActionGroup>
       </div>
     </li>
   );
