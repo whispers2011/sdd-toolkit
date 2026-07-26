@@ -43,6 +43,7 @@ import type { JiraSelection } from '@sdd/shared';
 import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
+import type { WorktreeOverviewService } from '../services/worktreeOverviewService.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
@@ -59,6 +60,7 @@ import {
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 import { registerReviewRoutes } from './reviewRoutes.js';
+import { registerWorktreeRoutes } from './worktreeRoutes.js';
 
 export interface ApiDeps {
   projects: ProjectRepo;
@@ -82,6 +84,7 @@ export interface ApiDeps {
   jira: AtlassianMcpClient;
   jiraBrowse: JiraBrowseService;
   jiraImport: JiraImportService;
+  worktreeOverview: WorktreeOverviewService;
   ptys: PtySessionManager;
   dataDir: string;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
@@ -102,6 +105,9 @@ export async function buildServer(deps: ApiDeps) {
     reviewComments: deps.reviewComments,
     agentRuns: deps.agentRuns,
   });
+
+  // Worktree-Übersicht (tool-weit: Bestand, geänderte Dateien, Warnungen, Aufräumen).
+  registerWorktreeRoutes(app, { worktreeOverview: deps.worktreeOverview });
 
   // ---------- Bootstrap ----------
 

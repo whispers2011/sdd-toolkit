@@ -271,6 +271,10 @@ export function Sidebar() {
             setShowToolSettings(false);
             setShowJiraSettings(true);
           }}
+          onOpenWorktrees={() => {
+            setShowToolSettings(false);
+            dispatch({ type: 'set_view', view: { kind: 'worktrees' } });
+          }}
         />
       )}
       {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
@@ -344,9 +348,17 @@ function NewFeatureFlow({
 
 /**
  * Tool-weite Einstellungen (Zentrale): nutzerweite, projektübergreifende Konfiguration.
- * Aktuell die Jira-Anbindung — hier künftig um weitere Tool-Einstellungen erweiterbar.
+ * Jira-Anbindung und Worktree-Übersicht — hier künftig weiter erweiterbar.
  */
-function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira: () => void }) {
+function ToolSettings({
+  onClose,
+  onOpenJira,
+  onOpenWorktrees,
+}: {
+  onClose: () => void;
+  onOpenJira: () => void;
+  onOpenWorktrees: () => void;
+}) {
   return (
     <Dialog title="Einstellungen" onClose={onClose}>
       <p className="mb-3 text-xs text-zinc-500">Tool-weite Einstellungen (nutzerweit, projektübergreifend).</p>
@@ -358,6 +370,18 @@ function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira
           <span className="flex-1">
             <span className="block text-sm font-medium text-zinc-200">Jira-Verbindung</span>
             <span className="block text-xs text-zinc-500">Atlassian-Konto verbinden, Sites &amp; Projekte wählen</span>
+          </span>
+          <span className="text-zinc-500">→</span>
+        </button>
+        <button
+          onClick={onOpenWorktrees}
+          className="flex w-full items-center gap-3 rounded border border-zinc-700 px-3 py-2 text-left hover:bg-zinc-800"
+        >
+          <span className="flex-1">
+            <span className="block text-sm font-medium text-zinc-200">Worktree-Übersicht</span>
+            <span className="block text-xs text-zinc-500">
+              Offene Worktrees aller Projekte, geänderte Dateien, Aufräumen
+            </span>
           </span>
           <span className="text-zinc-500">→</span>
         </button>

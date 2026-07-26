@@ -17,6 +17,8 @@ export type View =
   | { kind: 'review' }
   | { kind: 'grid' }
   | { kind: 'workflow' }
+  /** Tool-weite Worktree-Übersicht (projektübergreifend, Einstieg über Einstellungen). */
+  | { kind: 'worktrees' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }

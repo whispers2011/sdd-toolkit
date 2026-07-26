@@ -553,6 +553,105 @@ export interface ApproveMergeRequest {
   createBranch?: boolean;
 }
 
+// ---------- Worktree-Übersicht (Feature "worktree-uebersicht") ----------
+
+/** Art eines Eintrags in der Worktree-Übersicht (der Haupt-Checkout ist ein eigener Typ). */
+export type WorktreeEntryKind = 'feature' | 'chat' | 'orphan';
+/** Verhältnis zwischen Git-Registrierung und tatsächlichem Verzeichnis. */
+export type WorktreeDirState = 'present' | 'missing' | 'registry_only';
+export type FileChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
+export type FileChangeState = 'committed' | 'uncommitted' | 'both';
+export type WorktreeWarningKind = 'overlap' | 'behind_target' | 'already_merged';
+
+/** Eine gegenüber dem Zielbranch geänderte Datei eines Worktrees. */
+export interface WorktreeFileChange {
+  /** Repo-relativ; bei Umbenennung der NEUE Pfad. */
+  path: string;
+  /** Nur bei kind === 'renamed' gesetzt. */
+  oldPath: string | null;
+  kind: FileChangeKind;
+  state: FileChangeState;
+  /** Datei wurde auch in einem anderen offenen Worktree desselben Projekts geändert. */
+  overlapping: boolean;
+  /** Datei wurde seit dem Abzweigpunkt auch auf dem Zielbranch geändert. */
+  behindTarget: boolean;
+}
+
+/** Eine erkannte Risikolage eines Worktrees. */
+export interface WorktreeWarning {
+  kind: WorktreeWarningKind;
+  /** Betroffene Pfade, für die Anzeige auf 20 gekürzt. */
+  files: string[];
+  /** Gesamtzahl betroffener Dateien (auch bei Kürzung vollständig). */
+  fileCount: number;
+  /** Nur bei kind === 'overlap': die anderen beteiligten Einträge. */
+  others: { entryId: string; label: string; featureId: string | null }[];
+}
+
+/** Der Haupt-Checkout eines Projekts — nie entfernbar, ohne Dateiliste und Warnungen. */
+export interface MainCheckoutInfo {
+  projectId: string;
+  projectName: string;
+  path: string;
+  /** Aktueller Branch; null = detached HEAD. */
+  branch: string | null;
+  defaultBranch: string;
+  uncommittedFileCount: number;
+}
+
+/** Ein bestehender oder erwarteter Worktree eines Projekts. */
+export interface WorktreeEntry {
+  /** Stabile Kennung `<projectId>::<realpath>` — Identität über Erhebungen hinweg. */
+  id: string;
+  projectId: string;
+  kind: WorktreeEntryKind;
+  /** Feature-Name · "Wissens-Chat" · Verzeichnisname (verwaist). */
+  label: string;
+  path: string;
+  /** null = detached HEAD. */
+  branch: string | null;
+  dirState: WorktreeDirState;
+  /** null ⇒ verwaist (keinem Feature zugeordnet). */
+  featureId: string | null;
+  /** feature.integrationTarget ?? project.defaultBranch. */
+  targetBranch: string;
+  createdAt: number | null;
+  /** Nicht beendete PTY-Session mit cwd innerhalb des Worktrees. */
+  sessionActive: boolean;
+  removable: boolean;
+  /** Gesamtzahl geänderter Dateien — auch wenn `files` gekürzt ist. */
+  changedFileCount: number;
+  uncommittedFileCount: number;
+  /** Auf 300 Einträge gekürzt. */
+  files: WorktreeFileChange[];
+  filesTruncated: boolean;
+  warnings: WorktreeWarning[];
+  /** Erhebung dieses Eintrags fehlgeschlagen — der Eintrag bleibt trotzdem sichtbar. */
+  error: string | null;
+}
+
+/** Ein Projektblock der Übersicht. */
+export interface WorktreeProjectGroup {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  defaultBranch: string;
+  /** null NUR wenn error !== null. */
+  main: MainCheckoutInfo | null;
+  /** Ohne Haupt-Checkout; Sortierung feature → chat → orphan, je Gruppe alphabetisch. */
+  worktrees: WorktreeEntry[];
+  worktreeCount: number;
+  /** Projekt nicht erreichbar / kein Git-Repository. */
+  error: string | null;
+}
+
+/** Wurzel der Antwort von GET /api/worktrees. */
+export interface WorktreeOverview {
+  groups: WorktreeProjectGroup[];
+  /** Erhebungszeitpunkt (ms) — die Oberfläche weist ihn als „Stand" aus. */
+  collectedAt: number;
+}
+
 export function resolveAutomation(
   global: AutomationSettings,
   project: Partial<AutomationSettings>,

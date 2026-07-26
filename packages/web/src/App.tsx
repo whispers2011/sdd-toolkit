@@ -13,6 +13,7 @@ import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { AgentsPanel } from './components/AgentsPanel.js';
 import { ReviewOverview } from './components/ReviewOverview.js';
 import { WorkflowOverview } from './components/WorkflowOverview.js';
+import { WorktreeOverview } from './components/WorktreeOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { TooltipLayer } from './components/Tooltip.js';
@@ -132,6 +133,7 @@ export function App() {
           {state.view.kind === 'executions' && <ExecutionsView />}
           {state.view.kind === 'review' && <ReviewOverview />}
           {state.view.kind === 'workflow' && <WorkflowOverview />}
+          {state.view.kind === 'worktrees' && <WorktreeOverview />}
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}

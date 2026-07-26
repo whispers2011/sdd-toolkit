@@ -25,6 +25,7 @@ import { PtySessionManager } from './pty/sessionManager.js';
 import { Orchestrator } from './services/orchestrator.js';
 import { MergeQueueService } from './services/mergeQueueService.js';
 import { OnboardingService } from './services/onboardingService.js';
+import { WorktreeOverviewService } from './services/worktreeOverviewService.js';
 import { ChangeGuard } from './services/changeGuard.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
@@ -156,6 +157,10 @@ async function main(): Promise<void> {
   const chatIdleInterval = setInterval(() => chatWork.reapIdleSessions(), 60_000);
 
   const onboarding = new OnboardingService(projects, features);
+
+  // Worktree-Übersicht: tool-weite Sicht auf Git-Realität + Feature-Zuordnung.
+  const worktreeOverview = new WorktreeOverviewService({ projects, features, ptys, worktrees, bus });
+
   const app = await buildServer({
     projects,
     features,
@@ -178,6 +183,7 @@ async function main(): Promise<void> {
     jira,
     jiraBrowse,
     jiraImport,
+    worktreeOverview,
     ptys,
     dataDir: config.dataDir,
     webDir: config.webDir,

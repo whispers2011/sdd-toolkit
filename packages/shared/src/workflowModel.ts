@@ -15,6 +15,7 @@ import { FEATURE_PHASES, OPTIONAL_PHASES } from './types.js';
 import type {
   AgentTriggerKind,
   AutomationSettings,
+  Feature,
   FeaturePhase,
   IntegrationStage,
 } from './types.js';
@@ -163,6 +164,42 @@ export const INTEGRATION_STAGE_META: Record<IntegrationStage, { label: string; t
   conflict_escalated: { label: 'Konflikt eskaliert', tone: 'escalation' },
   merged: { label: 'gemergt', tone: 'done' },
 };
+
+/**
+ * Kurzform einzelner Integrations-Stufen für Übersichten. Nur wo die
+ * Pipeline-Beschriftung zu lang oder zu technisch wäre — alle übrigen Stufen
+ * kommen unverändert aus {@link INTEGRATION_STAGE_META}.
+ */
+const INTEGRATION_PROGRESS_LABEL: Partial<Record<IntegrationStage, string>> = {
+  awaiting_human_review: 'Bereit zum Review',
+  merged: 'Abgeschlossen',
+};
+
+/**
+ * Bearbeitungsstand eines Features als ein kurzer Satzteil („Umsetzen läuft",
+ * „Bereit zum Review", „Abgeschlossen") — für Übersichten, die Features neben
+ * anderen Objekten zeigen (Worktree-Übersicht, FR-007).
+ *
+ * Rein abgeleitet aus `phases`/`integration`; die Beschriftungen stammen
+ * ausschließlich aus PHASE_META/INTEGRATION_STAGE_META, damit eine neue Phase
+ * oder Stufe hier nicht still veraltet.
+ */
+export function featureProgressLabel(feature: Pick<Feature, 'phases' | 'integration'>): string {
+  if (feature.integration !== 'none') {
+    return INTEGRATION_PROGRESS_LABEL[feature.integration] ?? INTEGRATION_STAGE_META[feature.integration].label;
+  }
+  const running = FEATURE_PHASES.find((p) => feature.phases[p]?.status === 'running');
+  if (running) return `${PHASE_META[running].label} läuft`;
+
+  const awaiting = FEATURE_PHASES.find((p) => feature.phases[p]?.status === 'awaiting_review');
+  if (awaiting) return `${PHASE_META[awaiting].label}: Ergebnis prüfen`;
+
+  // Weiteste bereits freigegebene Phase — der Stand, auf dem die Arbeit steht.
+  const approved = [...FEATURE_PHASES].reverse().find((p) => feature.phases[p]?.status === 'approved');
+  if (approved) return `${PHASE_META[approved].label} abgeschlossen`;
+
+  return 'noch nicht begonnen';
+}
 
 /**
  * Ein Schritt der Integrations-Pipeline (nach `implement`). Deklarative

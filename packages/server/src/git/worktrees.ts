@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { mkdirSync, existsSync } from 'node:fs';
 import { git, gitOk, isCleanWorkingTree, isGitRepo, localBranchExists } from './git.js';
+import { readWorktreeInventory } from './worktreeInventory.js';
 
 /** Zustand eines Worktrees nach der Gesundheitsprüfung. */
 export type WorktreeHealth = 'ok' | 'repaired' | 'missing';
@@ -131,18 +132,7 @@ export class WorktreeManager {
   }
 
   async list(projectPath: string): Promise<{ path: string; branch: string | null }[]> {
-    const out = await gitOk(projectPath, ['worktree', 'list', '--porcelain']);
-    const entries: { path: string; branch: string | null }[] = [];
-    let cur: { path: string; branch: string | null } | null = null;
-    for (const line of out.split('\n')) {
-      if (line.startsWith('worktree ')) {
-        if (cur) entries.push(cur);
-        cur = { path: line.slice('worktree '.length), branch: null };
-      } else if (line.startsWith('branch refs/heads/') && cur) {
-        cur.branch = line.slice('branch refs/heads/'.length);
-      }
-    }
-    if (cur) entries.push(cur);
-    return entries;
+    const inventory = await readWorktreeInventory(projectPath);
+    return inventory.map((e) => ({ path: e.path, branch: e.branch }));
   }
 }

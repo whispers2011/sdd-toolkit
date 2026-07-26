@@ -44,6 +44,7 @@ import type {
   SavePhaseDefinitionRequest,
   SavePhaseDefinitionResult,
   SelectionDecision,
+  WorktreeOverview,
 } from '@sdd/shared';
 
 export type { RunSummary };
@@ -89,6 +90,27 @@ export interface AppState {
   queues: Record<string, MergeQueueItem[]>;
   automation: AutomationSettings;
   optimization: OptimizationSettings;
+}
+
+/** Abweisungsgründe von `POST /api/worktrees/remove`. */
+export type WorktreeRemoveCode =
+  | 'not_a_worktree'
+  | 'main_checkout'
+  | 'not_removable'
+  | 'session_active'
+  | 'uncommitted'
+  | 'remove_failed';
+
+export class WorktreeRemoveError extends Error {
+  constructor(
+    message: string,
+    public readonly code: WorktreeRemoveCode,
+    /** Nur bei code === 'uncommitted': Anzahl gefährdeter Dateien (FR-024). */
+    public readonly uncommittedFileCount = 0,
+  ) {
+    super(message);
+    this.name = 'WorktreeRemoveError';
+  }
 }
 
 /** Jira-Routen-Fehler mit HTTP-Status + Verbindungszustand (401 → reauth/disconnected). */
@@ -384,6 +406,41 @@ export const api = {
       'GET',
       `/api/features/${featureId}/agent-runs/${encodeURIComponent(runId)}/report`,
     ),
+
+  // Worktree-Übersicht (tool-weit, projektübergreifend)
+  worktrees: (refresh = false) =>
+    request<WorktreeOverview>('GET', refresh ? '/api/worktrees?refresh=1' : '/api/worktrees'),
+  /**
+   * Einen Worktree entfernen. Abweisungen kommen als {@link WorktreeRemoveError}
+   * mit unterscheidbarem Code — insbesondere `uncommitted` inkl. Anzahl, die den
+   * zweistufigen Bestätigungsfluss auslöst.
+   */
+  removeWorktree: async (body: {
+    projectId: string;
+    path: string;
+    force?: boolean;
+  }): Promise<{ ok: true; featureId: string | null }> => {
+    const res = await fetch('/api/worktrees/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: WorktreeRemoveCode;
+      message?: string;
+      uncommittedFileCount?: number;
+      ok?: true;
+      featureId?: string | null;
+    };
+    if (!res.ok) {
+      throw new WorktreeRemoveError(
+        data.message ?? `Entfernen fehlgeschlagen (${res.status})`,
+        data.error ?? 'remove_failed',
+        data.uncommittedFileCount ?? 0,
+      );
+    }
+    return { ok: true, featureId: data.featureId ?? null };
+  },
 
   // Agents-Verwaltung
   agents: (projectId?: string) =>

@@ -11,9 +11,11 @@ import {
   INTEGRATION_STAGE_META,
   INTEGRATION_STEPS,
   PHASE_META,
+  featureProgressLabel,
   isOptionalPhase,
   orderedEnabledPhases,
 } from './workflowModel.js';
+import type { Feature, IntegrationStage, PhaseState, PhaseStatus } from './types.js';
 
 /**
  * Drift-Guard: Das Workflow-Modell muss die Domänen-Unions vollständig abdecken.
@@ -86,5 +88,57 @@ describe('isOptionalPhase', () => {
     for (const p of OPTIONAL_PHASES) expect(isOptionalPhase(p)).toBe(true);
     expect(isOptionalPhase('specify')).toBe(false);
     expect(isOptionalPhase('implement')).toBe(false);
+  });
+});
+
+describe('featureProgressLabel', () => {
+  const idle: PhaseState = { status: 'idle', stale: false };
+  const phases = (overrides: Partial<Record<FeaturePhase, PhaseStatus>>): Feature['phases'] =>
+    Object.fromEntries(
+      FEATURE_PHASES.map((p) => [p, overrides[p] ? { status: overrides[p], stale: false } : idle]),
+    ) as Feature['phases'];
+
+  const feature = (
+    integration: IntegrationStage,
+    overrides: Partial<Record<FeaturePhase, PhaseStatus>> = {},
+  ): Pick<Feature, 'phases' | 'integration'> => ({ integration, phases: phases(overrides) });
+
+  it('nennt die laufende Phase', () => {
+    expect(featureProgressLabel(feature('none', { implement: 'running' }))).toBe('Umsetzen läuft');
+    expect(featureProgressLabel(feature('none', { specify: 'running' }))).toBe('Spezifizieren läuft');
+  });
+
+  it('nennt eine Phase, deren Ergebnis geprüft werden muss', () => {
+    expect(featureProgressLabel(feature('none', { plan: 'awaiting_review' }))).toBe(
+      'Planen: Ergebnis prüfen',
+    );
+  });
+
+  it('nennt die weiteste freigegebene Phase, wenn nichts läuft', () => {
+    expect(
+      featureProgressLabel(feature('none', { specify: 'approved', plan: 'approved' })),
+    ).toBe('Planen abgeschlossen');
+  });
+
+  it('meldet ein unberührtes Feature als „noch nicht begonnen"', () => {
+    expect(featureProgressLabel(feature('none'))).toBe('noch nicht begonnen');
+  });
+
+  it('bevorzugt die Integrations-Stufe vor jedem Phasenstand', () => {
+    expect(featureProgressLabel(feature('awaiting_human_review', { implement: 'running' }))).toBe(
+      'Bereit zum Review',
+    );
+    expect(featureProgressLabel(feature('merged', { implement: 'approved' }))).toBe('Abgeschlossen');
+    expect(featureProgressLabel(feature('verifying'))).toBe(INTEGRATION_STAGE_META.verifying.label);
+    expect(featureProgressLabel(feature('conflict_escalated'))).toBe(
+      INTEGRATION_STAGE_META.conflict_escalated.label,
+    );
+  });
+
+  it('liefert für jede Integrations-Stufe außer „none" einen nicht-leeren Text', () => {
+    for (const stage of Object.keys(INTEGRATION_STAGE_META) as IntegrationStage[]) {
+      if (stage === 'none') continue;
+      expect(featureProgressLabel(feature(stage)).length).toBeGreaterThan(0);
+    }
   });
 });
