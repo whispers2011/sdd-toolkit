@@ -6,7 +6,7 @@ import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
-import { ChevronDownIcon, KnowledgeIcon, SettingsIcon } from './icons.js';
+import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon } from './icons.js';
 
 // ---- Projekt-Reihenfolge (gerätelokal, per Drag&Drop) ----
 const PROJECT_ORDER_KEY = 'sdd-project-order';
@@ -80,7 +80,15 @@ export function Sidebar() {
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-800 bg-zinc-925">
       <div className="flex items-center justify-between px-4 py-3">
-        <h1 className="text-sm font-bold tracking-wide text-zinc-100">SDD TOOLKIT</h1>
+        {/* Logo = Heimweg: zurück auf das Board des aktuell gewählten Projekts. */}
+        <button
+          onClick={() => dispatch({ type: 'set_view', view: { kind: 'board' } })}
+          title="Zur Board-Übersicht"
+          className="-mx-1 flex items-center gap-2 rounded px-1 py-0.5 hover:bg-zinc-900"
+        >
+          <LogoMark className="text-xl" />
+          <h1 className="text-sm font-bold tracking-wide text-zinc-100">SDD TOOLKIT</h1>
+        </button>
         <button
           onClick={() => setShowNewProject(true)}
           className="rounded bg-zinc-800 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-700"

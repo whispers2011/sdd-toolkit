@@ -395,6 +395,46 @@ export function SettingsIcon(props: IconProps) {
   );
 }
 
+/**
+ * Produktmarke (Kachel + Merge-Graph) — identisch zum Favicon (public/favicon.svg).
+ * Nicht Teil des Outline-Sets: eigene Geometrie (32er-Grid) und eigene Flächen,
+ * Farben über Tailwind-Utilities, damit der Light-Mode (Skalen-Inversion) greift.
+ */
+export function LogoMark({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width="1em"
+      height="1em"
+      viewBox="0 0 32 32"
+      className={className}
+      aria-hidden={true}
+      focusable={false}
+    >
+      <rect width="32" height="32" rx="7.5" className="fill-zinc-900" />
+      <rect
+        x="0.75"
+        y="0.75"
+        width="30.5"
+        height="30.5"
+        rx="6.75"
+        fill="none"
+        strokeWidth={1.5}
+        className="stroke-zinc-700"
+      />
+      <g fill="none" strokeWidth={2.6} strokeLinecap="round" className="stroke-emerald-400">
+        <path d="M10 9v14" />
+        <path d="M22 9v2.5a5.5 5.5 0 0 1-5.5 5.5H10" />
+      </g>
+      <g className="fill-emerald-400">
+        <circle cx="10" cy="9" r="2.5" />
+        <circle cx="22" cy="9" r="2.5" />
+        <circle cx="10" cy="23" r="2.5" />
+      </g>
+    </svg>
+  );
+}
+
 /** Ergebnis-Icon je artefakt-erzeugendem Speckit-Schritt (Kacheln, Artefakt-Navigation). */
 export const RESULT_ICONS: Partial<Record<FeaturePhase, (p: IconProps) => ReactElement>> = {
   specify: SpecifyResultIcon,
