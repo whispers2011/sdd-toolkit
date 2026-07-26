@@ -74,7 +74,7 @@ bleibt; sie kann lesen, Dateien ändern und Kommandos ausführen. Freigaben lauf
 Permission-/„Braucht dich"-Fluss und erben den **Automation-Dial** wie Feature-Sessions. Das
 Panel ist **frei größenverstellbar** (Griff oben links). Schließen beendet die Session nicht —
 sie läuft am Server weiter (`--resume` + Snapshot-Replay), Turns erscheinen als `chat_work`-Läufe
-im Kosten-Audit.
+im Verbrauchs-Audit.
 
 **Feature-Anlage aus dem Gespräch:** Kristallisiert sich in der Unterhaltung ein (oder mehrere)
 Feature(s) heraus, weist die Session darauf hin und gibt einen `<sdd:features>`-Marker aus. Das
@@ -177,7 +177,7 @@ Verifikations-Kommandos pro Projekt: `PATCH /api/projects/:id` mit
   Bild-Paste, Confirm-Dialoge
 - **Token-Reduktion (2026-07)**: autoritative Token-Messung pro Phase aus dem Claude-
   Transkript (statt Terminal-Schätzung; inkl. `cache_read` = akkumulierter Kontext),
-  Kosten-Aufschlüsselung je Phase/Art mit Quelle-Badge (`GET /api/features/:id/cost-breakdown`,
+  Token-Aufschlüsselung je Phase/Art mit Quelle-Badge (`GET /api/features/:id/cost-breakdown`,
   Executions-View), plus ein **Optimierungs-Dial** (global → Projekt → Feature): Kontext-Reset
   vor Downstream-Phasen (`compact`/`fresh`) und deterministische Verdichtung signalarmer
   Inhalte. Default `full`/`off` = unverändertes Verhalten (reversibel).

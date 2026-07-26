@@ -264,23 +264,21 @@ export class ChatService {
     if (turnResult && !turnResult.isError) {
       const finalText = turnResult.text || streamed;
       const { cleanText, proposal } = parseFeatureProposal(finalText);
-      // Kosten (R7): primär aus dem Result-Event, sonst costMeter-Schätzung.
+      // Tokens (R7): primär aus dem Result-Event, sonst costMeter-Schätzung.
       const fallback = meter({
         ...(this.deps.model ? { model: this.deps.model } : {}),
         promptText: prompt,
         outputText: finalText,
       });
-      const costUsd = turnResult.costUsd ?? fallback.costUsd;
       const tokens = turnResult.tokens ?? fallback.totalTokens;
       log.end();
       finish({
         status: 'complete',
         content: cleanText,
         proposal: proposal ? { ...proposal, status: 'offen' } : null,
-        costUsd,
         tokens,
       });
-      executions.finish(execId, 0, costUsd, tokens);
+      executions.finish(execId, 0, tokens);
       return;
     }
 

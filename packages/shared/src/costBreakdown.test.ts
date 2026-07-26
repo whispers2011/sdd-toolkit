@@ -13,7 +13,6 @@ function exec(partial: Partial<ExecutionRecord>): ExecutionRecord {
     startedAt: 0,
     finishedAt: 1,
     exitCode: 0,
-    costUsd: 0,
     tokens: 0,
     inputTokens: null,
     outputTokens: null,
@@ -33,9 +32,9 @@ function exec(partial: Partial<ExecutionRecord>): ExecutionRecord {
 describe('aggregateBreakdown', () => {
   it('summiert je Phase und hält die Invariante byPhase + phasenlos == total', () => {
     const execs = [
-      exec({ kind: 'phase', phase: 'plan', tokens: 30000, costUsd: 0.45, tokensSource: 'transcript' }),
-      exec({ kind: 'phase', phase: 'implement', tokens: 40000, costUsd: 0.6, tokensSource: 'transcript' }),
-      exec({ kind: 'review', phase: null, tokens: 500, costUsd: 0.01, tokensSource: 'estimated' }),
+      exec({ kind: 'phase', phase: 'plan', tokens: 30000, tokensSource: 'transcript' }),
+      exec({ kind: 'phase', phase: 'implement', tokens: 40000, tokensSource: 'transcript' }),
+      exec({ kind: 'review', phase: null, tokens: 500, tokensSource: 'estimated' }),
     ];
     const b = aggregateBreakdown(execs, { featureId: 'f1' });
     expect(b.total.tokens).toBe(70500);

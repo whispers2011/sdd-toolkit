@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { estimateTokens, meter, parseUsage, priceFor, stripAnsi } from './costMeter.js';
+import { estimateTokens, meter, parseUsage, stripAnsi } from './costMeter.js';
 
 describe('costMeter', () => {
   it('stripAnsi entfernt Farb- und OSC-Sequenzen', () => {
@@ -16,9 +16,9 @@ describe('costMeter', () => {
     expect(b.outputTokens).toBe(3400);
   });
 
-  it('parseUsage: Kosten und total_cost_usd', () => {
-    expect(parseUsage('Total cost: $1.25').costUsd).toBe(1.25);
-    expect(parseUsage('"total_cost_usd": 0.0421').costUsd).toBe(0.0421);
+  it('parseUsage: Geldbeträge werden nicht mehr extrahiert', () => {
+    expect('costUsd' in parseUsage('Total cost: $1.25')).toBe(false);
+    expect('costUsd' in parseUsage('"total_cost_usd": 0.0421')).toBe(false);
   });
 
   it('parseUsage: "total tokens" ja, nacktes "tokens:" nein', () => {
@@ -29,22 +29,27 @@ describe('costMeter', () => {
   it('meter: geparste Werte → source parsed', () => {
     const m = meter({ promptText: 'p', outputText: 'Total cost: $0.50\ninput tokens: 100\noutput tokens: 200' });
     expect(m.source).toBe('parsed');
-    expect(m.costUsd).toBe(0.5);
+    expect(m.inputTokens).toBe(100);
+    expect(m.outputTokens).toBe(200);
     expect(m.totalTokens).toBe(300);
   });
 
-  it('meter: ohne Parse-Treffer → Schätzung × Preistabelle', () => {
+  it('meter: ohne Parse-Treffer → Token-Schätzung', () => {
     const out = 'x'.repeat(4000); // ≈1000 Tokens
     const m = meter({ model: 'claude-opus-4-8', promptText: '', outputText: out });
     expect(m.source).toBe('estimated');
     expect(m.outputTokens).toBe(1000);
-    expect(m.costUsd).toBeCloseTo((1000 / 1e6) * 75, 5);
+    expect(m.totalTokens).toBe(1000);
   });
 
-  it('priceFor normalisiert Modellnamen', () => {
-    expect(priceFor('claude-opus-4-8[1m]').outputPerM).toBe(75);
-    expect(priceFor('claude-haiku-4-5-20251001').inputPerM).toBe(0.8);
-    expect(priceFor('unbekannt')).toEqual(priceFor('claude-sonnet-5'));
+  it('meter: liefert kein Kostenfeld', () => {
+    const m = meter({ promptText: 'p', outputText: 'Total cost: $0.50\ninput tokens: 100' });
+    expect('costUsd' in m).toBe(false);
+  });
+
+  it('meter: nur ein Geldbetrag ohne Token-Angabe zählt als estimated', () => {
+    const m = meter({ promptText: 'p', outputText: '"total_cost_usd": 0.0421' });
+    expect(m.source).toBe('estimated');
   });
 
   it('estimateTokens ignoriert ANSI', () => {

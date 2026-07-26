@@ -253,9 +253,9 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
     const feature = mustFeature(req.params.id);
     const project = mustProject(feature.projectId);
     const runs = deps.agentRuns.listForFeature(feature.id);
-    const withCosts = runs.map((run) => attachCosts(run, deps.executions));
+    const withTokens = runs.map((run) => attachTokens(run, deps.executions));
     const fallback = await markdownFallback(feature, project, runs);
-    return [...withCosts, ...fallback];
+    return [...withTokens, ...fallback];
   });
 
   app.get<{ Params: { id: string; runId: string } }>('/api/features/:id/agent-runs/:runId/report', async (req) => {
@@ -271,12 +271,12 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
   });
 }
 
-/** costUsd/totalTokens aus der verknüpften Execution anreichern. */
-function attachCosts(run: AgentRunSummary, executions: ExecutionRepo): AgentRunSummary {
+/** totalTokens aus der verknüpften Execution anreichern. */
+function attachTokens(run: AgentRunSummary, executions: ExecutionRepo): AgentRunSummary {
   if (!run.executionId) return run;
   const exec = executions.get(run.executionId);
   if (!exec) return run;
-  return { ...run, costUsd: exec.costUsd, totalTokens: exec.tokens };
+  return { ...run, totalTokens: exec.tokens };
 }
 
 /** Jüngster Lauf je Agent inkl. Markdown-Fallback (für Audit-Zähler der Übersicht). */

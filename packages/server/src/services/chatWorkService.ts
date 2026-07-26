@@ -363,7 +363,7 @@ export class ChatWorkService {
       phase: null,
       logPath: null,
     });
-    this.deps.executions.finish(execId, 0, cost.costUsd, cost.totalTokens);
+    this.deps.executions.finish(execId, 0, cost.totalTokens);
   }
 
   handleExit(session: LiveSession, exitCode: number): void {

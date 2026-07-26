@@ -911,7 +911,6 @@ export async function buildServer(deps: ApiDeps) {
           lastRun?.executionId != null
             ? {
                 ...lastRun,
-                costUsd: deps.executions.get(lastRun.executionId)?.costUsd ?? null,
                 totalTokens: deps.executions.get(lastRun.executionId)?.tokens ?? null,
               }
             : lastRun,

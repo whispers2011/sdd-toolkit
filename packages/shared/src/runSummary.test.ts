@@ -16,7 +16,6 @@ function exec(patch: Partial<ExecutionRecord>): ExecutionRecord {
     startedAt: 1000 + seq,
     finishedAt: 2000 + seq,
     exitCode: 0,
-    costUsd: 0.1,
     tokens: 100,
     inputTokens: 10,
     outputTokens: 20,
@@ -147,5 +146,25 @@ describe('buildRunSummaries', () => {
     expect(run!.sourceMix.transcript).toBeCloseTo(1 / 11);
     const measured = run!.sourceMix.transcript + run!.sourceMix.parsed + run!.sourceMix.estimated;
     expect(measured).toBeLessThan(0.1); // der Rest ist ungemessen
+  });
+
+  it('der ausgelieferte Payload trägt kein costUsd, aber alle Token-Angaben', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [exec({ phase: 'plan', tokens: 200 }), exec({ kind: 'verify', phase: null, tokens: 50 })],
+    );
+    const payload = JSON.stringify(runs);
+
+    expect(payload.includes('costUsd')).toBe(false);
+    for (const key of [
+      'tokens',
+      'inputTokens',
+      'outputTokens',
+      'cacheReadTokens',
+      'cacheCreationTokens',
+      'sourceMix',
+    ]) {
+      expect(payload.includes(key)).toBe(true);
+    }
   });
 });

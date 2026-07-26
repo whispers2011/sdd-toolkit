@@ -15,7 +15,7 @@ import {
   startPhase,
   sumUsage,
   displayStatus,
-  usageToCost,
+  usageTotalTokens,
   type AutomationSettings,
   type Feature,
   type FeaturePhase,
@@ -696,9 +696,8 @@ export class Orchestrator {
         const offset = path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
         const usage = sumUsage(readTranscriptDelta(path, offset));
         if (hasUsage(usage)) {
-          const { totalTokens, costUsd } = usageToCost(usage);
+          const totalTokens = usageTotalTokens(usage);
           return {
-            costUsd,
             tokens: totalTokens,
             inputTokens: usage.inputTokens,
             outputTokens: usage.outputTokens,
@@ -712,7 +711,6 @@ export class Orchestrator {
     const outputText = session.scrollback.slice(running.scrollbackStart);
     const cost = meter({ promptText: running.promptText, outputText });
     return {
-      costUsd: cost.costUsd,
       tokens: cost.totalTokens,
       tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
     };

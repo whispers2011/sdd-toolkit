@@ -1,14 +1,13 @@
 /**
- * Kosten-/Token-Metering (Port von speckit-assistant CostMeter):
+ * Token-Metering (Port von speckit-assistant CostMeter):
  * opportunistisches Parsing expliziter Usage-Ausgaben der CLI, Fallback auf
- * Token-Schätzung × Preistabelle. Preise sind bewusst grobe Schätzwerte.
+ * Token-Schätzung anhand der Zeichenlänge.
  */
 
 export interface CostMetadata {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
-  costUsd: number;
   model: string;
   source: 'parsed' | 'estimated';
 }
@@ -39,20 +38,16 @@ function matchTokens(text: string, label: string): number | undefined {
 }
 
 export interface ParsedUsage {
-  costUsd?: number;
   inputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   model?: string;
 }
 
-/** Best-effort-Scrape expliziter Usage-/Kosten-Angaben aus CLI-Output. */
+/** Best-effort-Scrape expliziter Usage-Angaben aus CLI-Output. */
 export function parseUsage(raw: string): ParsedUsage {
   const text = stripAnsi(raw);
   const out: ParsedUsage = {};
-
-  const cost = text.match(/(?:total_cost_usd|total\s*cost|cost)["']?\s*[:=]\s*\$?\s*([\d.]+)/i);
-  if (cost?.[1]) out.costUsd = parseFloat(cost[1]);
 
   const input = matchTokens(text, 'input|prompt');
   if (input !== undefined) out.inputTokens = input;
@@ -69,43 +64,12 @@ export function parseUsage(raw: string): ParsedUsage {
   return out;
 }
 
-export interface ModelPrice {
-  inputPerM: number;
-  outputPerM: number;
-}
-
-/** Cache-Multiplikatoren (Anthropic-Standard): Read = 0.1× Input, Write (5 min) = 1.25× Input. */
-export const CACHE_READ_FACTOR = 0.1;
-export const CACHE_WRITE_FACTOR = 1.25;
-
-export const MODEL_PRICES: Record<string, ModelPrice> = {
-  'claude-opus': { inputPerM: 15, outputPerM: 75 },
-  'claude-sonnet': { inputPerM: 3, outputPerM: 15 },
-  'claude-haiku': { inputPerM: 0.8, outputPerM: 4 },
-};
-
-export const DEFAULT_PRICE: ModelPrice = MODEL_PRICES['claude-sonnet']!;
 export const DEFAULT_MODEL = 'claude-sonnet';
-
-export function normalizeModel(model?: string): string | undefined {
-  if (!model) return undefined;
-  const m = model.toLowerCase();
-  if (m.includes('opus')) return 'claude-opus';
-  if (m.includes('sonnet') || m.includes('fable')) return 'claude-sonnet';
-  if (m.includes('haiku')) return 'claude-haiku';
-  return MODEL_PRICES[m] ? m : undefined;
-}
-
-export function priceFor(model?: string): ModelPrice {
-  const key = normalizeModel(model);
-  return (key ? MODEL_PRICES[key] : undefined) ?? DEFAULT_PRICE;
-}
 
 /** Parsing + Schätzung kombinieren — liefert immer eine CostMetadata. */
 export function meter(input: { model?: string; promptText: string; outputText: string }): CostMetadata {
   const parsed = parseUsage(input.outputText);
   const hasParsed =
-    parsed.costUsd !== undefined ||
     parsed.inputTokens !== undefined ||
     parsed.outputTokens !== undefined ||
     parsed.totalTokens !== undefined;
@@ -115,11 +79,5 @@ export function meter(input: { model?: string; promptText: string; outputText: s
   const totalTokens = parsed.totalTokens ?? inputTokens + outputTokens;
   const model = parsed.model ?? input.model ?? DEFAULT_MODEL;
 
-  let costUsd = parsed.costUsd;
-  if (costUsd === undefined) {
-    const price = priceFor(model);
-    costUsd = (inputTokens / 1_000_000) * price.inputPerM + (outputTokens / 1_000_000) * price.outputPerM;
-  }
-
-  return { inputTokens, outputTokens, totalTokens, costUsd, model, source: hasParsed ? 'parsed' : 'estimated' };
+  return { inputTokens, outputTokens, totalTokens, model, source: hasParsed ? 'parsed' : 'estimated' };
 }

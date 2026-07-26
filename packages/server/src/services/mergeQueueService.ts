@@ -471,7 +471,7 @@ export class MergeQueueService {
         executionId: execId,
       });
       await this.captureDiff(feature.worktreePath, execId, 'post');
-      this.deps.executions.finish(execId, res.exitCode, res.costUsd, res.tokens);
+      this.deps.executions.finish(execId, res.exitCode, res.tokens);
       if (res.exitCode !== 0) break;
 
       rebase = await this.engine.continueRebase(feature.worktreePath);

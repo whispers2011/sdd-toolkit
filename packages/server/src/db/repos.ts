@@ -406,7 +406,6 @@ export interface ExecutionStartInput {
 
 /** Autoritative/geschätzte Verbrauchsdaten beim Abschluss eines Laufs. */
 export interface ExecutionUsageInput {
-  costUsd?: number | null;
   tokens?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
@@ -441,16 +440,16 @@ export class ExecutionRepo {
     return id;
   }
 
-  /** Schlanker Abschluss (Kosten/Tokens geschätzt, ohne Komponenten). */
-  finish(id: string, exitCode: number, costUsd: number | null = null, tokens: number | null = null): void {
-    this.finishWithUsage(id, exitCode, { costUsd, tokens });
+  /** Schlanker Abschluss (Tokens geschätzt, ohne Komponenten). */
+  finish(id: string, exitCode: number, tokens: number | null = null): void {
+    this.finishWithUsage(id, exitCode, { tokens });
   }
 
   /** Abschluss mit autoritativen Komponenten + Herkunft. */
   finishWithUsage(id: string, exitCode: number, usage: ExecutionUsageInput = {}): void {
     this.db
       .prepare(
-        `UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=?, tokens=?,
+        `UPDATE executions SET status=?, finished_at=?, exit_code=?, tokens=?,
            input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
          WHERE id=?`,
       )
@@ -458,7 +457,6 @@ export class ExecutionRepo {
         exitCode === 0 ? 'succeeded' : 'failed',
         Date.now(),
         exitCode,
-        usage.costUsd ?? null,
         usage.tokens ?? null,
         usage.inputTokens ?? null,
         usage.outputTokens ?? null,
@@ -524,7 +522,6 @@ export class ExecutionRepo {
       startedAt: r.started_at as number,
       finishedAt: r.finished_at as number | null,
       exitCode: r.exit_code as number | null,
-      costUsd: r.cost_usd as number | null,
       tokens: (r.tokens as number | null) ?? null,
       inputTokens: (r.input_tokens as number | null) ?? null,
       outputTokens: (r.output_tokens as number | null) ?? null,
@@ -744,7 +741,6 @@ interface ChatMessageRow {
   status: string;
   error: string | null;
   proposal_json: string | null;
-  cost_usd: number | null;
   tokens: number | null;
   created_at: number;
 }
@@ -770,7 +766,6 @@ function toChatMessage(r: ChatMessageRow): ChatMessage {
     status: r.status as ChatMessageStatus,
     error: r.error,
     proposal: r.proposal_json ? (JSON.parse(r.proposal_json) as FeatureProposal) : null,
-    costUsd: r.cost_usd,
     tokens: r.tokens,
     createdAt: r.created_at,
   };
@@ -861,7 +856,6 @@ export class ChatRepo {
       status: m.status,
       error: null,
       proposal: null,
-      costUsd: null,
       tokens: null,
       createdAt: Date.now(),
     };
@@ -890,13 +884,12 @@ export class ChatRepo {
       content?: string;
       error?: string | null;
       proposal?: FeatureProposal | null;
-      costUsd?: number | null;
       tokens?: number | null;
     },
   ): void {
     this.db
       .prepare(
-        `UPDATE chat_messages SET status=?, content=COALESCE(?, content), error=?, proposal_json=?, cost_usd=?, tokens=?
+        `UPDATE chat_messages SET status=?, content=COALESCE(?, content), error=?, proposal_json=?, tokens=?
          WHERE id=? AND status='streaming'`,
       )
       .run(
@@ -904,7 +897,6 @@ export class ChatRepo {
         outcome.content ?? null,
         outcome.error ?? null,
         outcome.proposal ? JSON.stringify(outcome.proposal) : null,
-        outcome.costUsd ?? null,
         outcome.tokens ?? null,
         id,
       );

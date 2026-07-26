@@ -11,7 +11,6 @@ export type ChatStreamEvent =
       kind: 'result';
       text: string;
       isError: boolean;
-      costUsd: number | null;
       tokens: number | null;
       sessionId: string | null;
     }
@@ -55,7 +54,6 @@ export function parseChatStreamLine(line: string): ChatStreamEvent {
         kind: 'result',
         text: typeof obj.result === 'string' ? obj.result : '',
         isError: obj.is_error === true || obj.subtype !== 'success',
-        costUsd: typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : null,
         tokens: inTok !== null || outTok !== null ? (inTok ?? 0) + (outTok ?? 0) : null,
         sessionId: typeof obj.session_id === 'string' ? obj.session_id : null,
       };

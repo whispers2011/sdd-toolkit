@@ -20,7 +20,7 @@ export function fmtTokens(n: number): string {
 }
 
 /** Horizontales Balkendiagramm: ein Balken pro Eintrag, skaliert aufs Maximum. */
-export function HBarChart({ items }: { items: { label: string; value: number; color: string; sub?: string }[] }) {
+export function HBarChart({ items }: { items: { label: string; value: number; color: string }[] }) {
   const max = Math.max(1, ...items.map((i) => i.value));
   return (
     <div className="flex flex-col gap-1.5">
@@ -35,7 +35,6 @@ export function HBarChart({ items }: { items: { label: string; value: number; co
               <span className="whitespace-nowrap text-[10px] font-medium text-black/70">{fmtTokens(i.value)}</span>
             </div>
           </div>
-          <span className="w-16 shrink-0 text-zinc-500">{i.sub ?? ''}</span>
         </div>
       ))}
       {items.length === 0 && <span className="text-xs text-zinc-600">Keine Daten.</span>}

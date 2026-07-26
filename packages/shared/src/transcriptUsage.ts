@@ -5,7 +5,6 @@
  * Eine `assistant`-Zeile trägt `message.usage` mit input/output sowie
  * cache_read/cache_creation — letzteres macht den akkumulierten Kontext sichtbar.
  */
-import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, priceFor } from './costMeter.js';
 
 export interface TurnUsage {
   inputTokens: number;
@@ -93,19 +92,9 @@ export function hasUsage(u: TurnUsage): boolean {
 }
 
 /**
- * TurnUsage → Gesamt-Tokens + Kosten. Cache-Read kostet 0.1× Input, Cache-Write 1.25×
- * (Anthropic-Standardpreise) — Cache-Reads wie volle Input-Tokens zu bepreisen würde
- * die Kosten kontextlastiger Läufe um ~10× überzeichnen.
+ * TurnUsage → Gesamt-Tokens: Summe aus Input, Output, Cache-Read und Cache-Creation.
+ * Cache-Anteile zählen voll mit, weil sie den tatsächlich bewegten Kontext abbilden.
  */
-export function usageToCost(u: TurnUsage): { totalTokens: number; costUsd: number } {
-  const totalTokens =
-    u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
-  const price = priceFor(u.model);
-  const inputLike =
-    u.inputTokens +
-    u.cacheReadTokens * CACHE_READ_FACTOR +
-    u.cacheCreationTokens * CACHE_WRITE_FACTOR;
-  const costUsd =
-    (inputLike / 1_000_000) * price.inputPerM + (u.outputTokens / 1_000_000) * price.outputPerM;
-  return { totalTokens, costUsd };
+export function usageTotalTokens(u: TurnUsage): number {
+  return u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens;
 }

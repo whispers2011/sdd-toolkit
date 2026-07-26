@@ -14,7 +14,6 @@ export interface CostRollup {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
-  costUsd: number;
 }
 
 export interface FeatureCostBreakdown {
@@ -36,7 +35,6 @@ function emptyRollup(): CostRollup {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
-    costUsd: 0,
   };
 }
 
@@ -47,7 +45,6 @@ function add(r: CostRollup, e: ExecutionRecord): void {
   r.outputTokens += e.outputTokens ?? 0;
   r.cacheReadTokens += e.cacheReadTokens ?? 0;
   r.cacheCreationTokens += e.cacheCreationTokens ?? 0;
-  r.costUsd += e.costUsd ?? 0;
 }
 
 /**

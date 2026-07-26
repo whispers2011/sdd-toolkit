@@ -91,7 +91,6 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
       .catch(() => setTreeFiles([]));
   }, [tab, treeFiles, featureId]);
 
-  const totalCost = useMemo(() => executions.reduce((sum, e) => sum + (e.costUsd ?? 0), 0), [executions]);
   const resolutions = executions.filter((e) => e.kind === 'conflict_resolution');
   const lastVerify = executions.find((e) => e.kind === 'verify' && e.status !== 'running');
   const latestAudits = useMemo(() => {
@@ -181,7 +180,6 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               value={lastVerify ? (lastVerify.status === 'succeeded' ? '✓' : '✗') : '–'}
               tone={lastVerify ? (lastVerify.status === 'succeeded' ? 'ok' : 'bad') : undefined}
             />
-            <HeaderStat label="Kosten" value={`$${totalCost.toFixed(2)}`} />
           </div>
           <button onClick={onClose} className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800">
             ✕

@@ -512,7 +512,6 @@ export interface ExecutionInfo {
   startedAt: number;
   finishedAt: number | null;
   exitCode: number | null;
-  costUsd: number | null;
   tokens: number | null;
   inputTokens: number | null;
   outputTokens: number | null;

@@ -4,7 +4,7 @@ import { fmtTokens } from '../charts.js';
 
 /**
  * Verify-Dashboard (aufbereitete Verify-Executions, keine Report-Parser):
- * Status/Dauer/Exit-Code pro Lauf, aggregierte Token/Kosten, Log-Viewer.
+ * Status/Dauer/Exit-Code pro Lauf, aggregierte Tokens, Log-Viewer.
  */
 export function TestsPane({ featureId, onError }: { featureId: string; onError: (e: Error) => void }) {
   const [executions, setExecutions] = useState<ExecutionInfo[] | null>(null);
@@ -31,7 +31,6 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
   const totals = useMemo(() => {
     const list = executions ?? [];
     return {
-      cost: list.reduce((s, e) => s + (e.costUsd ?? 0), 0),
       tokens: list.reduce((s, e) => s + (e.tokens ?? 0), 0),
       passed: list.filter((e) => e.status === 'succeeded').length,
     };
@@ -52,7 +51,6 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
         <StatCard label="Läufe" value={`${totals.passed}/${executions.length} grün`} />
         <StatCard label="Letzter Lauf" value={executions[0]!.status === 'succeeded' ? '✓ bestanden' : '✗ fehlgeschlagen'} tone={executions[0]!.status === 'succeeded' ? 'ok' : 'bad'} />
         <StatCard label="Tokens" value={fmtTokens(totals.tokens)} />
-        <StatCard label="Kosten" value={`$${totals.cost.toFixed(2)}`} />
       </div>
       <ul className="space-y-1">
         {executions.map((e) => (
@@ -73,7 +71,6 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
               {e.exitCode !== null && <span className="text-zinc-600">exit {e.exitCode}</span>}
               <span className="ml-auto text-zinc-500">
                 {e.tokens ? `${fmtTokens(e.tokens)} tok` : ''}
-                {e.costUsd ? ` · $${e.costUsd.toFixed(2)}` : ''}
               </span>
             </button>
             {selected === e.id && (

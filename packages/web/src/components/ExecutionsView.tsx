@@ -153,7 +153,6 @@ export function ExecutionsView() {
   );
 
   const totalTokens = visible.reduce((s, r) => s + r.total.tokens, 0);
-  const totalCost = visible.reduce((s, r) => s + r.total.costUsd, 0);
   const measured = visible.length
     ? visible.reduce((s, r) => s + r.sourceMix.transcript, 0) / visible.length
     : 0;
@@ -164,7 +163,7 @@ export function ExecutionsView() {
         <div className="mb-3 flex items-center gap-2 text-xs text-zinc-500">
           <span className="font-semibold text-zinc-400">Läufe (1 Lauf = 1 Worktree/Feature)</span>
           <span className="ml-auto">
-            {visible.length} Läufe · {fmtTokens(totalTokens)} Tokens · ${totalCost.toFixed(2)} ·{' '}
+            {visible.length} Läufe · {fmtTokens(totalTokens)} Tokens ·{' '}
             {(measured * 100).toFixed(0)} % gemessen
           </span>
         </div>
@@ -252,7 +251,6 @@ export function RunCard({
           {fmtTokens(run.total.tokens)}
           <SourceBadge source={dominantSource} />
         </span>
-        <span className="w-14 shrink-0 text-right text-zinc-400">${run.total.costUsd.toFixed(2)}</span>
       </button>
 
       {expanded && (
@@ -267,7 +265,6 @@ export function RunCard({
                   label: STEP_LABELS[s.key] ?? s.key,
                   value: s.rollup.tokens,
                   color: CATEGORY_COLORS[s.category]!,
-                  sub: `$${s.rollup.costUsd.toFixed(2)}`,
                 }))}
               />
             </div>
@@ -298,7 +295,6 @@ export function RunCard({
                     <th className="px-2 py-1">Art</th>
                     <th className="px-2 py-1">Status</th>
                     <th className="px-2 py-1 text-right">Dauer</th>
-                    <th className="px-2 py-1 text-right">Kosten</th>
                     <th className="px-2 py-1 text-right">Tokens</th>
                     <th className="px-2 py-1" />
                   </tr>
@@ -317,9 +313,6 @@ export function RunCard({
                       </td>
                       <td className="px-2 py-1 text-right text-zinc-500">
                         {e.finishedAt ? formatDuration(e.finishedAt - e.startedAt) : '…'}
-                      </td>
-                      <td className="px-2 py-1 text-right text-zinc-400">
-                        {e.costUsd !== null ? `$${e.costUsd.toFixed(3)}` : '—'}
                       </td>
                       <td className="px-2 py-1 text-right text-zinc-500">
                         {e.tokens !== null ? fmtTokens(e.tokens) : '—'}

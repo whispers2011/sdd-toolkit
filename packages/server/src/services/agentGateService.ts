@@ -170,7 +170,7 @@ export class AgentGateService {
 
     const output = await readFile(logPath, 'utf8').catch(() => '');
     const cost = meter({ promptText: prompt, outputText: output });
-    this.deps.executions.finish(execId, verdict === 'PASS' ? 0 : 1, cost.costUsd, cost.totalTokens);
+    this.deps.executions.finish(execId, verdict === 'PASS' ? 0 : 1, cost.totalTokens);
     this.deps.agentRuns.finish(runId, { verdict, decisionLabel, summary, reportPath: reviewFile });
 
     this.raiseApprovalIfNeeded(agent, feature, content, reviewFile, decisionLabel);

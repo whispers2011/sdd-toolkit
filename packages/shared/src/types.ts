@@ -267,7 +267,6 @@ export interface ExecutionRecord {
   startedAt: number;
   finishedAt: number | null;
   exitCode: number | null;
-  costUsd: number | null;
   tokens: number | null;
   /** Autoritative Token-Komponenten (aus Transkript); null wenn nur geschätzt. */
   inputTokens: number | null;
@@ -438,7 +437,6 @@ export interface ChatMessage {
   status: ChatMessageStatus;
   error: string | null;
   proposal: FeatureProposal | null;
-  costUsd: number | null;
   tokens: number | null;
   createdAt: number;
 }
@@ -494,7 +492,6 @@ export interface AgentRunSummary {
   createdAt: number;
   finishedAt: number | null;
   /** Aus der verknüpften Execution (Join); nur in API-Antworten gefüllt. */
-  costUsd?: number | null;
   totalTokens?: number | null;
   /** 'markdown' = Alt-Bericht aus der Zeit vor der strukturierten Ablage. */
   source?: 'db' | 'markdown';

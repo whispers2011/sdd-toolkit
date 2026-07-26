@@ -21,7 +21,7 @@ export async function resolveConflicts(opts: {
   executionId: string;
   model?: string;
   timeoutMs?: number;
-}): Promise<{ exitCode: number; logPath: string; costUsd: number; tokens: number }> {
+}): Promise<{ exitCode: number; logPath: string; tokens: number }> {
   const logPath = join(opts.logDir, `${opts.executionId}.log`);
   const specDir = `specs/${opts.featureName}`;
   const specHint = existsSync(join(opts.worktreePath, specDir))
@@ -73,8 +73,8 @@ export async function resolveConflicts(opts: {
 
   log.end();
 
-  // Kosten-Metering (WP3) aus dem Lauf-Log.
+  // Token-Metering (WP3) aus dem Lauf-Log.
   const output = await readFile(logPath, 'utf8').catch(() => '');
   const cost = meter({ ...(opts.model !== undefined ? { model: opts.model } : {}), promptText: prompt, outputText: output });
-  return { exitCode, logPath, costUsd: cost.costUsd, tokens: cost.totalTokens };
+  return { exitCode, logPath, tokens: cost.totalTokens };
 }

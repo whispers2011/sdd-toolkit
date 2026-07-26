@@ -21,7 +21,7 @@ function triggerLabel(t: AgentTrigger): string {
 
 /**
  * Audit-Leiste (rechte Portal-Spalte): alle Agent-Läufe des Features gruppiert
- * nach Auslöser — Verdict-Pills, Entscheidungs-Label, Zusammenfassung, Kosten,
+ * nach Auslöser — Verdict-Pills, Entscheidungs-Label, Zusammenfassung,
  * SVG-Fortschrittsring, Bericht-Dialog. Alt-Berichte (source markdown) werden
  * bestmöglich angezeigt.
  */
@@ -98,7 +98,6 @@ export function AuditSidebar({ featureId, runs }: { featureId: string; runs: Age
                 <div className="mt-0.5 text-[10px] text-zinc-600">
                   {new Date(run.createdAt).toLocaleString('de-CH')}
                   {run.totalTokens ? ` · ${fmtTokens(run.totalTokens)} tok` : ''}
-                  {run.costUsd ? ` · $${run.costUsd.toFixed(2)}` : ''}
                 </div>
               </li>
             ))}
