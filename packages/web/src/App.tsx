@@ -78,12 +78,8 @@ export function App() {
             >
               Grid
             </TabButton>
-            <TabButton
-              active={state.view.kind === 'workflow'}
-              onClick={() => dispatch({ type: 'set_view', view: { kind: 'workflow' } })}
-            >
-              Workflow
-            </TabButton>
+            {/* Workflow-Übersicht sitzt in den Einstellungen (wie die Worktree-Übersicht):
+                projektweite Konfiguration, kein Arbeitsmodus fürs tägliche Board. */}
             <TabButton
               active={state.view.kind === 'executions'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}

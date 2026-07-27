@@ -279,6 +279,10 @@ export function Sidebar() {
             setShowToolSettings(false);
             setShowJiraSettings(true);
           }}
+          onOpenWorkflow={() => {
+            setShowToolSettings(false);
+            dispatch({ type: 'set_view', view: { kind: 'workflow' } });
+          }}
           onOpenWorktrees={() => {
             setShowToolSettings(false);
             dispatch({ type: 'set_view', view: { kind: 'worktrees' } });
@@ -356,15 +360,17 @@ function NewFeatureFlow({
 
 /**
  * Tool-weite Einstellungen (Zentrale): nutzerweite, projektübergreifende Konfiguration.
- * Jira-Anbindung und Worktree-Übersicht — hier künftig weiter erweiterbar.
+ * Jira-Anbindung, Workflow-Übersicht und Worktree-Übersicht — weiter erweiterbar.
  */
 function ToolSettings({
   onClose,
   onOpenJira,
+  onOpenWorkflow,
   onOpenWorktrees,
 }: {
   onClose: () => void;
   onOpenJira: () => void;
+  onOpenWorkflow: () => void;
   onOpenWorktrees: () => void;
 }) {
   return (
@@ -378,6 +384,18 @@ function ToolSettings({
           <span className="flex-1">
             <span className="block text-sm font-medium text-zinc-200">Jira-Verbindung</span>
             <span className="block text-xs text-zinc-500">Atlassian-Konto verbinden, Sites &amp; Projekte wählen</span>
+          </span>
+          <span className="text-zinc-500">→</span>
+        </button>
+        <button
+          onClick={onOpenWorkflow}
+          className="flex w-full items-center gap-3 rounded border border-zinc-700 px-3 py-2 text-left hover:bg-zinc-800"
+        >
+          <span className="flex-1">
+            <span className="block text-sm font-medium text-zinc-200">Workflow-Übersicht</span>
+            <span className="block text-xs text-zinc-500">
+              Ablauf von der Idee bis zum Merge — Phasen, Agenten-Gates, Automatisierung
+            </span>
           </span>
           <span className="text-zinc-500">→</span>
         </button>
