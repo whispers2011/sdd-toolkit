@@ -19,6 +19,7 @@ import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
 import {
   bracketedPaste,
+  KILL_LINE,
   SUBMIT_DELAY_MS,
   SUBMIT_KEY,
   SUBMIT_CONFIRM_MS,
@@ -93,6 +94,12 @@ export interface SessionCallbacks {
    * zurück und erzeugt ein „braucht dich"-Item.
    */
   onSubmitFailed?: (session: LiveSession, text: string) => void;
+  /**
+   * Ein Prompt wurde nachweislich angenommen (Gegenstück zu onSubmitFailed).
+   * Der Orchestrator markiert damit den Phasenprompt als zugestellt — erst danach
+   * darf ein `Stop` als Abschluss DIESER Phase gelten.
+   */
+  onSubmitConfirmed?: (session: LiveSession, text: string) => void;
 }
 
 /**
@@ -269,7 +276,9 @@ export class PtySessionManager {
   private dispatch(session: LiveSession, signal: SessionSignal): void {
     // Zustellung bestätigen, sobald der abgeschickte Prompt nachweislich angenommen wurde.
     if (session.submitPending && isSubmitConfirming(signal)) {
+      const confirmed = session.submitPending.text;
       this.clearSubmitPending(session);
+      this.callbacks.onSubmitConfirmed?.(session, confirmed);
     }
     const before = session.machine.state;
     const { machine, effects } = reduceSession(session.machine, signal);
@@ -375,6 +384,14 @@ export class PtySessionManager {
 
   /** Paste schreiben und den bestätigten Submit anstoßen. */
   private deliver(s: LiveSession, text: string): void {
+    // Eingabezeile vorher leeren. Wird ein Prompt getippt, während Claude noch
+    // arbeitet, nimmt die TUI den Text zwar an, sendet ihn aber nicht ab; das CR
+    // verpufft, die Retries laufen leer und der NÄCHSTE Prompt landet als Paste
+    // hinter dem alten Text in derselben Zeile. So entstand real
+    // `/clear/speckit-implement` aus zwei getrennten Prompts — der Reset wurde
+    // dadurch nie als TUI-Kommando ausgeführt und die Phasenbuchführung verrutschte
+    // um eine Position. Bei leerer Zeile ist das Kill-Line ein No-op.
+    s.pty.write(KILL_LINE);
     s.pty.write(bracketedPaste(text));
     s.submitPending = { text, attempts: 0 };
     this.armSubmit(s, SUBMIT_DELAY_MS);

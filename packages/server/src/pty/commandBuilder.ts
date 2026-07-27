@@ -88,6 +88,13 @@ export const SUBMIT_DELAY_MS = 80;
 export const SUBMIT_KEY = '\r';
 
 /**
+ * Ctrl-U (kill line): leert die Eingabezeile der TUI vor einem Paste, damit ein
+ * neuer Prompt sich nie hinter einen noch nicht abgesendeten hängt. Bei leerer
+ * Zeile wirkungslos.
+ */
+export const KILL_LINE = '\x15';
+
+/**
  * Zuverlässiges, bestätigtes Absenden (Feature „Kommandos direkt ausführen"):
  * Nach dem CR wird auf ein Bestätigungssignal (user_prompt_submit / working)
  * gewartet; bleibt es aus, wird das CR bis MAX_SUBMIT_RETRIES-mal wiederholt.

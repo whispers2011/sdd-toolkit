@@ -56,6 +56,12 @@ export interface OrchestratorDeps {
   dataDir: string;
 }
 
+/**
+ * Wartezeit, bis Claude Code die Schlusszeilen eines Turns geschrieben hat.
+ * Grosszügig bemessen: zu früh misst zu wenig, zu spät kostet nur Latenz in der Anzeige.
+ */
+const TRANSCRIPT_TAIL_DELAY_MS = 8_000;
+
 /** Laufender Phasen-Kontext pro Feature (ephemer). */
 interface RunningPhase {
   phase: FeaturePhase;
@@ -71,6 +77,15 @@ interface RunningPhase {
    */
   transcriptPathStart: string | null;
   promptText: string;
+  /**
+   * Der Phasenprompt wurde nachweislich zugestellt (`user_prompt_submit`).
+   * Vorher darf ein `Stop` NICHT als Abschluss dieser Phase gelten: Das
+   * vorgeschaltete Reset-Kommando (`/clear`) erzeugt einen eigenen Turn, und
+   * dessen Stop hat real eine nie gelaufene Phase als erfolgreich abgeschlossen —
+   * Phasenversatz um eins und ein "implementation"-Commit ohne Code.
+   * Gegenstück zur Reset-Unterscheidung, die handleSubmitFailed bereits kennt.
+   */
+  promptConfirmed: boolean;
 }
 
 /**
@@ -93,6 +108,7 @@ export class Orchestrator {
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
+  private transcriptTailTimers = new Set<NodeJS.Timeout>(); // Nachtrag der Turn-Schlussnachricht
 
   constructor(private deps: OrchestratorDeps) {}
 
@@ -425,6 +441,7 @@ export class Orchestrator {
       transcriptOffsetStart,
       transcriptPathStart,
       promptText: prompt,
+      promptConfirmed: false,
     });
 
     // Reset-Kommando (opt-in) VOR dem Phasenprompt; Session-Prozess/-ID bleiben.
@@ -615,6 +632,17 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Zustellung des Phasenprompts bestätigt. Erst ab hier zählt ein `Stop` als
+   * Abschluss dieser Phase — siehe RunningPhase.promptConfirmed.
+   */
+  handleSubmitConfirmed(session: LiveSession, text: string): void {
+    const featureId = session.featureId;
+    if (!featureId) return;
+    const running = this.runningPhases.get(featureId);
+    if (running && text === running.promptText) running.promptConfirmed = true;
+  }
+
   private async handleTurnCompleted(session: LiveSession): Promise<void> {
     if (!session.featureId) return;
     const featureId = session.featureId;
@@ -622,12 +650,24 @@ export class Orchestrator {
     const feature = this.deps.features.get(featureId);
     if (!feature) return;
 
+    // Der Stop gehört noch nicht zu dieser Phase: Ihr Prompt ist nicht zugestellt,
+    // also stammt er von einem vorgeschalteten Kommando (Reset). Die Phase läuft
+    // gleich erst an — sie hier abzuschliessen meldete Erfolg ohne jede Arbeit.
+    if (running && !running.promptConfirmed) {
+      console.warn(
+        `[orchestrator] Turn-Ende vor Zustellung des Phasenprompts (${running.phase}) — Reset-Turn, Phase bleibt offen`,
+      );
+      return;
+    }
+
     if (running) {
       this.runningPhases.delete(featureId);
       // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
       this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
       // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
       this.persistTranscriptRange(session, running);
+      // ... und nach kurzer Frist erneut, weil die Schlusszeilen erst danach kommen.
+      this.scheduleTranscriptTailReconcile(session, running);
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
@@ -744,6 +784,40 @@ export class Orchestrator {
    * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null. Hat die Datei
    * während der Phase gewechselt (/clear), wird der Start-Offset auf 0 korrigiert.
    */
+  /**
+   * Transkript nach kurzer Frist erneut vermessen und die Zahl nachziehen.
+   *
+   * Claude Code schreibt die Schlusszeilen eines Turns samt `usage`-Record erst NACH
+   * dem Stop-Hook. `persistTranscriptRange` fotografiert den End-Offset aber genau
+   * beim Stop und schnitt sie damit systematisch ab.
+   *
+   * Gemessen am 27.07.2026 in einem realen Lauf, jeweils exakt die letzte Nachricht:
+   *   specify  1 483 586 verbucht, 117 169 verloren   (7,3 %)
+   *   clarify    144 280 verbucht,  61 520 verloren  (29,9 %)
+   * Die verbuchten Summen trafen `executions.tokens` exakt — die Differenz ist
+   * echter, nicht erfasster Verbrauch. Der Anteil ist NICHT konstant: je kürzer die
+   * Phase, desto schwerer wiegt ihre Schlussnachricht. Ein pauschaler
+   * Korrekturfaktor auf Altdaten wäre deshalb falsch.
+   *
+   * Schätzungen (Scrollback-Fallback) werden nicht nachgezogen — nur eine echte
+   * Transkript-Messung darf eine echte Transkript-Messung ersetzen.
+   */
+  private scheduleTranscriptTailReconcile(session: LiveSession, running: RunningPhase): void {
+    const timer = setTimeout(() => {
+      this.transcriptTailTimers.delete(timer);
+      try {
+        const usage = this.meterTurn(session, running);
+        if (usage.tokensSource !== 'transcript') return;
+        this.deps.executions.updateUsage(running.executionId, usage);
+        this.persistTranscriptRange(session, running);
+      } catch (err) {
+        console.warn('[metering] Nachtrag der Schlussnachricht fehlgeschlagen:', (err as Error).message);
+      }
+    }, TRANSCRIPT_TAIL_DELAY_MS);
+    timer.unref?.();
+    this.transcriptTailTimers.add(timer);
+  }
+
   private persistTranscriptRange(session: LiveSession, running: RunningPhase): void {
     const path = session.claudeSessionId
       ? locateTranscript(session.cwd, session.claudeSessionId)

@@ -206,6 +206,7 @@ export class MergeQueueService {
     // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
     if ((await this.reconcile(feature, project)) !== 'proceed') return;
     if (!feature.worktreePath) throw new Error(`Feature ${feature.name} hat keinen Worktree`);
+    if (!hasAnyTaskDone(feature)) throw new Error(NO_TASKS_DONE);
 
     this.setStage(feature, 'verifying');
     try {
@@ -708,4 +709,26 @@ export class MergeQueueService {
     if (!p) throw new Error(`Projekt ${id} nicht gefunden`);
     return p;
   }
+}
+
+/** Ablehnungsgrund, wortgleich in Oberfläche und HTTP-Antwort. */
+export const NO_TASKS_DONE =
+  'Kein einziger Task aus tasks.md ist erledigt — die Umsetzung hat offenbar nicht stattgefunden.';
+
+/**
+ * Zweite Verteidigungslinie gegen ein Feature, dessen Umsetzung nie stattfand.
+ *
+ * Am 27.07.2026 lief ein Feature vollständig durch die Pipeline — Verifikation grün,
+ * Review-Gate bestanden — und trug im Commit ausschliesslich Markdown: die
+ * implement-Phase war fälschlich als abgeschlossen verbucht worden. Sichtbar war das
+ * allein an `tasksDone/tasksTotal = 0/56`, und dieser Wert floss in keine
+ * Freigabeentscheidung ein. Die Verifikation kann den Fall prinzipiell nicht erkennen:
+ * sie prüft „baut und testet das Repository“, und das ist bei einem reinen
+ * Markdown-Commit trivial erfüllt (dieselben Tests wie auf main).
+ *
+ * Greift bewusst nur im pathologischen Fall — Tasks vorhanden und KEINER erledigt.
+ * Ohne tasks.md (`tasksTotal === 0`) bleibt das Verhalten unverändert.
+ */
+export function hasAnyTaskDone(feature: Pick<Feature, 'tasksDone' | 'tasksTotal'>): boolean {
+  return feature.tasksTotal === 0 || feature.tasksDone > 0;
 }
