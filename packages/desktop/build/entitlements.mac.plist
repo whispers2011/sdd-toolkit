@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!--
+      Kein App-Sandbox: Das Toolkit arbeitet auf beliebigen Git-Repositories im
+      Dateisystem und startet fremde Programme (claude, git, zsh). Beides ist
+      mit Sandbox nicht möglich.
+
+      Hardened Runtime bleibt aktiv (Voraussetzung für die Notarisierung); die
+      folgenden Ausnahmen sind das Minimum, das Electron + native Module und
+      der Serverprozess brauchen.
+    -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+    <!-- Lädt better_sqlite3.node / pty.node und node-ptys spawn-helper. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <!-- osascript-Ordnerdialog bei der Projektauswahl. -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+  </dict>
+</plist>

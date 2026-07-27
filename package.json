@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @sdd/server --filter @sdd/web dev",
     "build": "pnpm -r build",
+    "app": "pnpm --filter @sdd/desktop app",
+    "app:dist": "pnpm --filter @sdd/desktop dist",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   },
@@ -14,7 +16,7 @@
     "node": ">=22"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "node-pty", "esbuild"],
+    "onlyBuiltDependencies": ["better-sqlite3", "node-pty", "esbuild", "electron"],
     "overrides": {
       "esbuild": "0.25.12"
     }

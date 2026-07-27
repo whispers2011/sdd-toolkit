@@ -25,6 +25,10 @@ export async function loginShellEnv(): Promise<Record<string, string>> {
       delete base[k];
     }
   }
+  // In der Desktop-App läuft der Server als Electron-Binary im Node-Modus. Die
+  // Marke darf nicht weitervererbt werden — sie würde jede gestartete
+  // Electron-Anwendung in einen kopflosen Node-Prozess verwandeln.
+  delete base.ELECTRON_RUN_AS_NODE;
   base.CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = '1';
 
   const shell = process.env.SHELL ?? '/bin/zsh';
