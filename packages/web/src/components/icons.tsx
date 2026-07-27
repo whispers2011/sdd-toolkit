@@ -34,6 +34,18 @@ function Base({ className, title, children }: IconProps & { children: ReactNode 
   );
 }
 
+/** Übersichten (Läufe, Workflow, Worktrees) — Balken über gemeinsamer Achse. */
+export function InsightsIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M4 20h16" />
+      <path d="M7 20v-6" />
+      <path d="M12 20V8" />
+      <path d="M17 20v-9" />
+    </Base>
+  );
+}
+
 /** Wissensdatenbank öffnen (ersetzt 📚). */
 export function KnowledgeIcon(props: IconProps) {
   return (

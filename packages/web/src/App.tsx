@@ -17,6 +17,7 @@ import { WorktreeOverview } from './components/WorktreeOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { TooltipLayer } from './components/Tooltip.js';
+import { InsightsIcon } from './components/icons.js';
 import { api } from './api.js';
 
 export function App() {
@@ -78,14 +79,6 @@ export function App() {
             >
               Grid
             </TabButton>
-            {/* Die drei Übersichten teilen sich einen Menüpunkt; die Unterleiste
-                darunter schaltet zwischen ihnen um. */}
-            <TabButton
-              active={isOverview(state.view.kind)}
-              onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
-            >
-              Übersichten
-            </TabButton>
             <TabButton
               active={state.view.kind === 'review'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'review' } })}
@@ -110,6 +103,22 @@ export function App() {
             </TabButton>
           </nav>
           <div className="ml-auto flex items-center gap-2">
+            {/* Links stehen die Modi der täglichen Arbeit. Die Übersichten sind
+                Nachschlagewerk, nicht Arbeitsmodus — darum rechts bei den übrigen
+                Werkzeugen, als Icon wie Theme-Umschalter und Automation-Dial. */}
+            <button
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
+              title="Übersichten — Läufe, Workflow, Worktrees"
+              aria-label="Übersichten"
+              aria-current={isOverview(state.view.kind) ? 'page' : undefined}
+              className={`rounded-md p-1.5 transition-colors ${
+                isOverview(state.view.kind)
+                  ? 'bg-zinc-800 text-zinc-100'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+              }`}
+            >
+              <InsightsIcon className="h-5 w-5" />
+            </button>
             <ThemeToggle />
             <AutomationDial />
           </div>
