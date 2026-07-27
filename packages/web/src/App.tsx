@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useStore } from './store.js';
+import { useStore, type View } from './store.js';
 import { Sidebar } from './components/Sidebar.js';
 import { KanbanBoard } from './components/KanbanBoard.js';
 import { FeatureConsole } from './components/FeatureConsole.js';
@@ -78,13 +78,13 @@ export function App() {
             >
               Grid
             </TabButton>
-            {/* Workflow-Übersicht sitzt in den Einstellungen (wie die Worktree-Übersicht):
-                projektweite Konfiguration, kein Arbeitsmodus fürs tägliche Board. */}
+            {/* Die drei Übersichten teilen sich einen Menüpunkt; die Unterleiste
+                darunter schaltet zwischen ihnen um. */}
             <TabButton
-              active={state.view.kind === 'executions'}
+              active={isOverview(state.view.kind)}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
             >
-              Läufe
+              Übersichten
             </TabButton>
             <TabButton
               active={state.view.kind === 'review'}
@@ -114,6 +114,19 @@ export function App() {
             <AutomationDial />
           </div>
         </header>
+        {isOverview(state.view.kind) && (
+          <nav className="flex gap-1 border-b border-zinc-800 bg-zinc-950/40 px-4 py-1.5">
+            {OVERVIEWS.map((o) => (
+              <TabButton
+                key={o.kind}
+                active={state.view.kind === o.kind}
+                onClick={() => dispatch({ type: 'set_view', view: { kind: o.kind } })}
+              >
+                {o.label}
+              </TabButton>
+            ))}
+          </nav>
+        )}
         {state.error && (
           <div className="flex items-center justify-between bg-red-950 px-4 py-1.5 text-sm text-red-300">
             {state.error}
@@ -177,6 +190,20 @@ function SpecKitBanner() {
       ))}
     </div>
   );
+}
+
+/**
+ * Die drei Übersichten hinter dem Menüpunkt „Übersichten". Reihenfolge = Reihenfolge
+ * in der Unterleiste; `executions` ist der Einstieg beim Klick auf den Menüpunkt.
+ */
+const OVERVIEWS = [
+  { kind: 'executions', label: 'Läufe' },
+  { kind: 'workflow', label: 'Workflow' },
+  { kind: 'worktrees', label: 'Worktrees' },
+] as const;
+
+function isOverview(kind: View['kind']): boolean {
+  return OVERVIEWS.some((o) => o.kind === kind);
 }
 
 function TabButton({
