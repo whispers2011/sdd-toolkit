@@ -63,6 +63,7 @@ async function main(): Promise<void> {
       if (s.kind === 'chat_work') chatWork.onAssistantText(s, text);
     },
     onSubmitFailed: (s, text) => orchestrator.handleSubmitFailed(s, text),
+    onSubmitConfirmed: (s, text) => orchestrator.handleSubmitConfirmed(s, text),
   });
 
   const agentGate = new AgentGateService({

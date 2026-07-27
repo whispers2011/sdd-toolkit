@@ -436,6 +436,31 @@ export class ExecutionRepo {
     this.finishWithUsage(id, exitCode, { costUsd, tokens });
   }
 
+  /**
+   * Verbrauchszahlen eines BEREITS abgeschlossenen Laufs nachziehen. Status,
+   * exit_code und finished_at bleiben unangetastet — der Lauf ist fertig, nur seine
+   * Zahl wird vervollständigt (Nachtrag der Schlussnachricht, siehe
+   * Orchestrator.reconcileTranscriptTail).
+   */
+  updateUsage(id: string, usage: ExecutionUsageInput): void {
+    this.db
+      .prepare(
+        `UPDATE executions SET cost_usd=?, tokens=?, input_tokens=?, output_tokens=?,
+           cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
+         WHERE id=?`,
+      )
+      .run(
+        usage.costUsd ?? null,
+        usage.tokens ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.cacheReadTokens ?? null,
+        usage.cacheCreationTokens ?? null,
+        usage.tokensSource ?? null,
+        id,
+      );
+  }
+
   /** Abschluss mit autoritativen Komponenten + Herkunft. */
   finishWithUsage(id: string, exitCode: number, usage: ExecutionUsageInput = {}): void {
     this.db
