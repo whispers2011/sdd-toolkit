@@ -113,7 +113,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('ordnet einen Worktree seinem Feature zu, obwohl der DB-Pfad unaufgelöst ist (kein falsches „verwaist")', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'zuordnung',
       branch: 'feature/zuordnung',
@@ -134,7 +134,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('ordnet über Branch-Gleichheit zu, wenn der Pfad nicht mehr passt', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'verschoben',
       branch: 'feature/verschoben',
@@ -152,7 +152,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
   it('vergleicht gegen das integrationTarget des Features, nicht gegen den Projekt-Default', async () => {
     sh(repo, ['branch', 'release/1.0']);
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'eigenes-ziel',
       branch: 'feature/eigenes-ziel',
@@ -203,7 +203,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
       [projectId2, repo2],
     ] as const) {
       const wt = await worktrees.create({
-        projectId: pid,
+        project: { id: pid, name: 'Demo' },
         projectPath: path,
         featureName: 'gleicher-name',
         branch: 'feature/gleicher-name',
@@ -265,7 +265,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('meldet eine Registry-Leiche als "registry_only" und nicht entfernbar', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'leiche',
       branch: 'feature/leiche',
@@ -282,7 +282,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('sperrt das Entfernen bei laufender Session im Worktree', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'aktiv',
       branch: 'feature/aktiv',
@@ -298,7 +298,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('sortiert feature → chat → orphan und zählt korrekt', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'zzz-feature',
       branch: 'feature/zzz',
@@ -316,7 +316,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('zählt geänderte und uncommittete Dateien getrennt', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'dateien',
       branch: 'feature/dateien',
@@ -337,7 +337,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('meldet einen änderungsfreien Worktree ehrlich mit 0', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'leer',
       branch: 'feature/leer',
@@ -354,7 +354,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('kürzt die Dateiliste auf 300, ohne die Gesamtzahl zu verfälschen', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'viele',
       branch: 'feature/viele',
@@ -373,14 +373,14 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('warnt bei Überschneidung und nennt Datei und das jeweils andere Feature', async () => {
     const a = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'eins',
       branch: 'feature/eins',
       defaultBranch: 'main',
     });
     const b = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'zwei',
       branch: 'feature/zwei',
@@ -406,7 +406,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('warnt, wenn eine geänderte Datei auch auf dem Zielbranch bewegt wurde', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'veraltet',
       branch: 'feature/veraltet',
@@ -431,7 +431,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('warnt „bereits integriert" und unterdrückt dann „veraltet"', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'integriert',
       branch: 'feature/integriert',
@@ -453,14 +453,14 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('hält die Warn-Reihenfolge stabil, wenn mehrere Lagen zutreffen', async () => {
     const a = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'a-doppelt',
       branch: 'feature/a-doppelt',
       defaultBranch: 'main',
     });
     const b = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'b-doppelt',
       branch: 'feature/b-doppelt',
@@ -484,7 +484,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('warnt bei einem frischen, sauberen Worktree gar nicht', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'sauber',
       branch: 'feature/sauber',
@@ -503,7 +503,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
   it('erzeugt für Einträge ohne vorhandenes Verzeichnis keine Warnungen', async () => {
     makeFeature('fehlt', 'feature/fehlt', join(dataDir, 'nie-angelegt'));
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'leiche2',
       branch: 'feature/leiche2',
@@ -518,7 +518,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('lässt den Haupt-Checkout an keiner Warnung teilnehmen', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'gegenprobe',
       branch: 'feature/gegenprobe',
@@ -618,7 +618,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('weist eine Registry-Leiche ab (Prune ist außerhalb des Umfangs)', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'leiche-rm',
       branch: 'feature/leiche-rm',
@@ -632,7 +632,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('weist ab, solange eine Session im Worktree läuft', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'session-rm',
       branch: 'feature/session-rm',
@@ -647,7 +647,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('verlangt bei uncommitteten Änderungen eine ausdrückliche Zweitbestätigung', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'dreckig',
       branch: 'feature/dreckig',
@@ -669,7 +669,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('entfernt einen sauberen Worktree und löst die Feature-Zuordnung', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'weg-damit',
       branch: 'feature/weg-damit',
@@ -735,7 +735,7 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
 
   it('verwirft den Cache nach erfolgreichem Entfernen', async () => {
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'cache-weg',
       branch: 'feature/cache-weg',

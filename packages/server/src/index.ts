@@ -184,6 +184,7 @@ async function main(): Promise<void> {
     jiraBrowse,
     jiraImport,
     worktreeOverview,
+    worktrees,
     ptys,
     dataDir: config.dataDir,
     webDir: config.webDir,

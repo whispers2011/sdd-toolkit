@@ -22,7 +22,7 @@ describe('WorktreeManager.create() — race-fest & idempotent', () => {
   let worktrees: WorktreeManager;
 
   const opts = (featureName: string, branch: string) => ({
-    projectId: 'P',
+    project: { id: 'P', name: 'Demo' },
     projectPath: repo,
     featureName,
     branch,

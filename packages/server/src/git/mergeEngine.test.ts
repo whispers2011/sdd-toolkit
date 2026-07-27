@@ -36,7 +36,7 @@ describe('git-Layer (Integration)', () => {
 
   it('Worktree anlegen, sauberer Rebase, ff-Merge, Cleanup', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-a',
       branch: 'feature/feat-a',
@@ -76,7 +76,7 @@ describe('git-Layer (Integration)', () => {
 
   it('Konflikt wird erkannt und Dateien benannt; abort stellt Zustand wieder her', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-b',
       branch: 'feature/feat-b',
@@ -119,7 +119,7 @@ describe('git-Layer (Integration)', () => {
 
   it('continueRebase committet KEINE unaufgelösten Konfliktmarker (Regression)', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-marker',
       branch: 'feature/feat-marker',
@@ -157,7 +157,7 @@ describe('git-Layer (Integration)', () => {
 
   it('Merge verweigert bei dreckigem Haupt-Checkout', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-c',
       branch: 'feature/feat-c',
@@ -182,7 +182,7 @@ describe('git-Layer (Integration)', () => {
 
   it('mergeIntoTarget: Nicht-Default-Ziel via ephemerem Worktree, Haupt-Checkout bleibt unberührt', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-e',
       branch: 'feature/feat-e',
@@ -224,7 +224,7 @@ describe('git-Layer (Integration)', () => {
     sh(repo, ['worktree', 'add', foreign, 'integration/busy']);
 
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-f',
       branch: 'feature/feat-f',
@@ -261,7 +261,7 @@ describe('git-Layer (Integration)', () => {
 
   it('Worktree-Remove verweigert bei uncommitteten Änderungen (ohne force)', async () => {
     const wt = await worktrees.create({
-      projectId: 'p1',
+      project: { id: 'p1', name: 'Demo' },
       projectPath: repo,
       featureName: 'feat-d',
       branch: 'feature/feat-d',

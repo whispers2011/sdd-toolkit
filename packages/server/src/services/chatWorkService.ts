@@ -89,7 +89,7 @@ export class ChatWorkService {
     let worktreePath: string;
     try {
       worktreePath = await this.deps.worktrees.create({
-        projectId: project.id,
+        project,
         projectPath: project.path,
         featureName: worktreeName,
         branch,
@@ -169,7 +169,7 @@ export class ChatWorkService {
     const old = this.deps.chatRepo.getActive(projectId);
 
     if (old) {
-      const worktreePath = this.deps.worktrees.pathFor(project.id, `chat-${old.id}`);
+      const worktreePath = this.deps.worktrees.pathFor(project, `chat-${old.id}`);
 
       // Guard (FR-006): arbeitet die Session ODER hat die Arbeitskopie unbestätigte Änderungen?
       const live = this.deps.ptys.forConversation(old.id);

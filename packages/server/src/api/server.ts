@@ -50,6 +50,7 @@ import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
 import { git } from '../git/git.js';
+import type { WorktreeManager } from '../git/worktrees.js';
 import { collectUnmergedChanges, hasUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
 import { ActionGuard } from '../services/actionGuard.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
@@ -88,6 +89,7 @@ export interface ApiDeps {
   jiraBrowse: JiraBrowseService;
   jiraImport: JiraImportService;
   worktreeOverview: WorktreeOverviewService;
+  worktrees: WorktreeManager;
   ptys: PtySessionManager;
   dataDir: string;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
@@ -232,9 +234,25 @@ export async function buildServer(deps: ApiDeps) {
     return deps.projects.get(req.params.id);
   });
 
-  app.delete<{ Params: { id: string } }>('/api/projects/:id', (req) => {
+  /**
+   * Projekt löschen — inklusive seiner Arbeitsverzeichnisse. Ohne diesen Schritt
+   * blieben Worktrees und ihre git-Registrierungen im Ziel-Repo zurück, während
+   * das Projekt aus der DB verschwand (so entstanden neun verwaiste Worktrees).
+   * Uncommittete Arbeit wird nicht gelöscht, sondern als `kept` zurückgegeben.
+   */
+  app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req) => {
+    const project = deps.projects.get(req.params.id);
+    const cleanup = project
+      ? await deps.worktrees.removeAllForProject(project, project.path).catch((err: Error) => {
+          app.log.warn(`Worktree-Aufräumen für '${project.name}' fehlgeschlagen: ${err.message}`);
+          return { removed: [], kept: [{ path: project.path, reason: err.message }] };
+        })
+      : { removed: [], kept: [] };
+    for (const k of cleanup.kept) {
+      app.log.warn(`Worktree bleibt stehen (${k.reason}): ${k.path}`);
+    }
     deps.projects.remove(req.params.id);
-    return { ok: true };
+    return { ok: true, ...cleanup };
   });
 
   /** Projekt-Terminal (WP11): persistente Login-Shell im Projekt-cwd. */

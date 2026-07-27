@@ -1,10 +1,49 @@
-import { join } from 'node:path';
-import { mkdirSync, existsSync } from 'node:fs';
+import { join, resolve, sep } from 'node:path';
+import { mkdirSync, existsSync, readdirSync, realpathSync, rmdirSync } from 'node:fs';
 import { git, gitOk, isCleanWorkingTree, isGitRepo, localBranchExists } from './git.js';
 import { readWorktreeInventory } from './worktreeInventory.js';
 
 /** Zustand eines Worktrees nach der Gesundheitsprüfung. */
 export type WorktreeHealth = 'ok' | 'repaired' | 'missing';
+
+/** So viel eines Projekts, wie der Worktree-Pfad braucht. */
+export interface WorktreeProject {
+  id: string;
+  name: string;
+}
+
+/**
+ * Ordnername eines Projekts: `<name>-<id>`. Die ID allein ist eindeutig, aber
+ * unlesbar — Reste gelöschter Projekte waren dadurch im Datenverzeichnis nicht
+ * zuzuordnen (neun verwaiste Worktrees am 26.07.2026). Der Name macht sie
+ * erkennbar, die ID hält sie eindeutig.
+ */
+export function projectDirName(project: WorktreeProject): string {
+  const slug = project.name
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '') // Diakritika nach der Zerlegung (ä → a)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/g, '');
+  return slug ? `${slug}-${project.id}` : project.id;
+}
+
+/** Aufgelöster Pfad; fällt auf resolve() zurück, wenn er (noch) nicht existiert. */
+function realPath(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** Zusammenfassung eines Aufräumlaufs; `kept` ist das, was bewusst stehenblieb. */
+export interface WorktreeCleanup {
+  removed: string[];
+  kept: { path: string; reason: string }[];
+}
 
 /**
  * Worktree-Lifecycle pro Feature (WhisperM8-AgentWorktreeManager-Muster).
@@ -25,8 +64,66 @@ export class WorktreeManager {
     return run;
   }
 
-  pathFor(projectId: string, featureName: string): string {
-    return join(this.dataDir, 'worktrees', projectId, featureName);
+  /**
+   * Projektordner unter <dataDir>/worktrees. Neu: `<name>-<id>`. Ein bereits
+   * belegter Alt-Ordner `<id>` bleibt in Benutzung — bestehende Worktrees werden
+   * nicht umgezogen (ihre Pfade stehen in der DB und in .git-Verknüpfungen).
+   * Ein LEERER Alt-Ordner zählt nicht als Bestand.
+   */
+  projectDir(project: WorktreeProject): string {
+    const legacy = join(this.dataDir, 'worktrees', project.id);
+    try {
+      if (readdirSync(legacy).length > 0) return legacy;
+    } catch {
+      /* nicht vorhanden → neuer Name */
+    }
+    return join(this.dataDir, 'worktrees', projectDirName(project));
+  }
+
+  pathFor(project: WorktreeProject, featureName: string): string {
+    return join(this.projectDir(project), featureName);
+  }
+
+  /**
+   * Alle vom Toolkit angelegten Worktrees eines Projekts entfernen — der fehlende
+   * Schritt beim Projekt-Löschen, durch den neun verwaiste Worktrees liegenblieben.
+   *
+   * Zwei Sicherungen: angefasst wird ausschließlich, was unter <dataDir>/worktrees
+   * liegt (eigene Worktrees des Nutzers bleiben unberührt), und uncommittete Arbeit
+   * wird NIE gelöscht, sondern gemeldet. Branches werden nur entfernt, wenn sie im
+   * Zielbranch enthalten sind (`git branch -d`) — ein ungemergter Branch ist das
+   * einzige, was die Arbeit noch hält.
+   */
+  async removeAllForProject(project: WorktreeProject, projectPath: string): Promise<WorktreeCleanup> {
+    // Über realpath vergleichen: `git worktree list` meldet den aufgelösten Pfad,
+    // dataDir kann über einen Symlink zeigen (macOS: /var → /private/var).
+    const owned = realPath(join(this.dataDir, 'worktrees')) + sep;
+    const cleanup: WorktreeCleanup = { removed: [], kept: [] };
+
+    for (const entry of await this.list(projectPath).catch(() => [])) {
+      if (!realPath(entry.path).startsWith(owned)) continue;
+      if (existsSync(entry.path) && !(await isCleanWorkingTree(entry.path).catch(() => true))) {
+        cleanup.kept.push({ path: entry.path, reason: 'uncommittete Änderungen' });
+        continue;
+      }
+      try {
+        await this.remove(projectPath, entry.path);
+        if (entry.branch) await git(projectPath, ['branch', '-d', entry.branch]);
+        cleanup.removed.push(entry.path);
+      } catch (err) {
+        cleanup.kept.push({ path: entry.path, reason: (err as Error).message });
+      }
+    }
+
+    await git(projectPath, ['worktree', 'prune']).catch(() => {});
+    for (const dir of [join(this.dataDir, 'worktrees', project.id), join(this.dataDir, 'worktrees', projectDirName(project))]) {
+      try {
+        if (readdirSync(dir).length === 0) rmdirSync(dir);
+      } catch {
+        /* nicht vorhanden oder nicht leer → stehen lassen */
+      }
+    }
+    return cleanup;
   }
 
   /**
@@ -36,7 +133,7 @@ export class WorktreeManager {
    * und beide `add -b` rufen — die Ursache von „cannot lock ref … reference already exists".
    */
   async create(opts: {
-    projectId: string;
+    project: WorktreeProject;
     projectPath: string;
     featureName: string;
     branch: string;
@@ -46,14 +143,14 @@ export class WorktreeManager {
   }
 
   private async createUnlocked(opts: {
-    projectId: string;
+    project: WorktreeProject;
     projectPath: string;
     featureName: string;
     branch: string;
     defaultBranch: string;
   }): Promise<string> {
-    const dest = this.pathFor(opts.projectId, opts.featureName);
-    mkdirSync(join(this.dataDir, 'worktrees', opts.projectId), { recursive: true });
+    const dest = this.pathFor(opts.project, opts.featureName);
+    mkdirSync(this.projectDir(opts.project), { recursive: true });
 
     // Registry-Leichen entfernen (Verzeichnis weg, Admin-Eintrag geblieben) — sonst
     // scheitert `worktree add` mit „already used by worktree".

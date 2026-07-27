@@ -124,7 +124,7 @@ export class Orchestrator {
     }
     const branch = `feature/${slug}`;
     const worktreePath = await this.deps.worktrees.create({
-      projectId,
+      project,
       projectPath: project.path,
       featureName: slug,
       branch,
@@ -185,7 +185,7 @@ export class Orchestrator {
     if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
       if (feature.worktreePath) await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
       const wt = await this.deps.worktrees.create({
-        projectId: project.id,
+        project,
         projectPath: project.path,
         featureName: feature.name,
         branch: feature.branch,

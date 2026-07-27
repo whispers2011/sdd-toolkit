@@ -86,7 +86,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
 
   it('räumt Worktree + Branch + DB-worktree_path für ein gemergtes Feature ab', async () => {
     const branch = 'feature/leftover';
-    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: 'leftover', branch, defaultBranch: 'main' });
+    const wt = await worktrees.create({ project: { id: projectId, name: 'Demo' }, projectPath: repo, featureName: 'leftover', branch, defaultBranch: 'main' });
     // Branch ist in main integriert (Merge-Base-Ancestor) — hier: keine eigenen Commits.
     const feature = features.create({
       projectId,
@@ -112,7 +112,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     const attention = new AttentionRepo(db);
     const executions = new ExecutionRepo(db);
     const branch = 'feature/wegdamit';
-    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: 'wegdamit', branch, defaultBranch: 'main' });
+    const wt = await worktrees.create({ project: { id: projectId, name: 'Demo' }, projectPath: repo, featureName: 'wegdamit', branch, defaultBranch: 'main' });
     const feature = features.create({
       projectId,
       name: 'wegdamit',
@@ -145,7 +145,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
 
   it('lässt einen NICHT integrierten Branch stehen (kein Datenverlust)', async () => {
     const branch = 'feature/unmerged';
-    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: 'unmerged', branch, defaultBranch: 'main' });
+    const wt = await worktrees.create({ project: { id: projectId, name: 'Demo' }, projectPath: repo, featureName: 'unmerged', branch, defaultBranch: 'main' });
     // Eigener, nicht nach main gemergter Commit → Branch darf nicht gelöscht werden.
     writeFileSync(join(wt, 'only-here.txt'), 'x\n');
     sh(wt, ['add', '-A']);
@@ -175,7 +175,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
 
   async function makeReviewReadyFeature(name: string) {
     const branch = `feature/${name}`;
-    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: name, branch, defaultBranch: 'main' });
+    const wt = await worktrees.create({ project: { id: projectId, name: 'Demo' }, projectPath: repo, featureName: name, branch, defaultBranch: 'main' });
     writeFileSync(join(wt, `${name}.txt`), `${name}\n`);
     sh(wt, ['add', '-A']);
     sh(wt, ['commit', '-m', `feat ${name}`]);
@@ -250,7 +250,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   /** Worktree ohne eigene Commits und ohne Änderungen — es gibt nichts zu integrieren. */
   async function makeEmptyFeature(name: string) {
     const branch = `feature/${name}`;
-    const wt = await worktrees.create({ projectId, projectPath: repo, featureName: name, branch, defaultBranch: 'main' });
+    const wt = await worktrees.create({ project: { id: projectId, name: 'Demo' }, projectPath: repo, featureName: name, branch, defaultBranch: 'main' });
     const feature = features.create({
       projectId,
       name,
@@ -304,7 +304,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     // Feature (am 26.07.2026 dreimal in Folge beobachtet).
     const branch = 'feature/uncommittet';
     const wt = await worktrees.create({
-      projectId,
+      project: { id: projectId, name: 'Demo' },
       projectPath: repo,
       featureName: 'uncommittet',
       branch,

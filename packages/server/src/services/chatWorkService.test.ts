@@ -146,7 +146,7 @@ describe('ChatWorkService — Neustart (restart)', () => {
     wt = { remove: 0, deleteBranch: [] };
 
     const worktrees = {
-      pathFor: (pid: string, name: string) => join(dataDir, 'worktrees', pid, name),
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'worktrees', p.id, name),
       remove: async () => {
         wt.remove++;
       },
