@@ -17,6 +17,7 @@ import { KnowledgeService } from './services/knowledgeService.js';
 import { AtlassianMcpClient } from './services/atlassianMcpClient.js';
 import { JiraBrowseService } from './services/jiraBrowseService.js';
 import { JiraImportService } from './services/jiraImportService.js';
+import { FeatureDocumentsService } from './services/featureDocuments.js';
 import { ChatService } from './services/chatService.js';
 import { ChatWorkService } from './services/chatWorkService.js';
 import { AgentGateService } from './services/agentGateService.js';
@@ -78,6 +79,10 @@ async function main(): Promise<void> {
     port: config.port,
   });
 
+  // Feature-Dokumente (Ablage + Manifest); vor dem Orchestrator, der den
+  // Dokument-Verweis in jeden Phasenauftrag hängt.
+  const featureDocuments = new FeatureDocumentsService({ projects, features });
+
   orchestrator = new Orchestrator({
     projects,
     features,
@@ -88,6 +93,7 @@ async function main(): Promise<void> {
     worktrees,
     ptys,
     knowledge: knowledgeService,
+    featureDocuments,
     agentGate,
     dataDir: config.dataDir,
     telemetry,
@@ -194,6 +200,7 @@ async function main(): Promise<void> {
     jira,
     jiraBrowse,
     jiraImport,
+    featureDocuments,
     worktreeOverview,
     worktrees,
     ptys,

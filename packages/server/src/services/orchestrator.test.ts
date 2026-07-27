@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
-import { initialPhases, type Feature } from '@sdd/shared';
+import { afterAll, describe, expect, it, vi } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { initialPhases, type Feature, type FeatureDocument, type OptimizationSettings } from '@sdd/shared';
 import { Orchestrator, type OrchestratorDeps } from './orchestrator.js';
 import type { LiveSession } from '../pty/sessionManager.js';
 
@@ -38,10 +41,22 @@ function setup(
     feature?: Partial<Feature>;
     gate?: { hasAgentsFor?: (...args: unknown[]) => boolean; runTrigger?: ReturnType<typeof vi.fn> };
     automation?: Record<string, unknown>;
+    /** Laufende Session bereitstellen, damit `launchPhase` erreicht wird. */
+    withSession?: boolean;
+    /** Hinterlegte Dokumente; `'wirft'` simuliert ein defektes Manifest. */
+    documents?: FeatureDocument[] | 'wirft';
+    optimization?: Partial<OptimizationSettings>;
+    projectPath?: string;
+    /** Ausgangsstatus einzelner Phasen (die Maschine verlangt approve-Reihenfolge). */
+    phaseStatus?: Partial<Record<'specify' | 'plan', string>>;
   } = {},
 ) {
   let phases = initialPhases(['specify', 'plan']);
   if (opts.running) phases = { ...phases, specify: { ...phases.specify, status: 'running' } };
+  for (const [phase, status] of Object.entries(opts.phaseStatus ?? {})) {
+    const key = phase as 'specify' | 'plan';
+    phases = { ...phases, [key]: { ...phases[key], status } } as typeof phases;
+  }
   const state = { get phases() { return phases; } };
   const savePhases = vi.fn((_id: string, p: typeof phases) => {
     phases = p;
@@ -49,6 +64,14 @@ function setup(
   const raise = vi.fn((a: { kind: string }) => ({ id: 'a1', ...a }));
   const finish = vi.fn();
   const runTrigger = opts.gate?.runTrigger ?? vi.fn();
+  const sendPrompt = vi.fn();
+  const session = opts.withSession
+    ? ({ id: 's1', kind: 'feature', featureId: 'f1', projectId: 'p1', scrollback: '', claudeSessionId: null, cwd: '/nonexistent' } as unknown as LiveSession)
+    : undefined;
+  const listDocuments = vi.fn(() => {
+    if (opts.documents === 'wirft') throw new Error('documents.json ist kaputt');
+    return opts.documents ?? [];
+  });
   const deps = {
     features: {
       get: () => makeFeature(phases, opts.feature),
@@ -61,7 +84,13 @@ function setup(
       get: () =>
         opts.projectExists === false
           ? undefined
-          : { id: 'p1', name: 'proj', path: '/p', defaultBranch: 'main', enabledPhases: ['specify', 'plan'] },
+          : {
+              id: 'p1',
+              name: 'proj',
+              path: opts.projectPath ?? '/p',
+              defaultBranch: 'main',
+              enabledPhases: ['specify', 'plan'],
+            },
     },
     attention: { raise, resolveFor: vi.fn(), listOpen: () => [], resolve: vi.fn() },
     executions: {
@@ -81,11 +110,12 @@ function setup(
         autoMode: true,
         ...(opts.automation ?? {}),
       }),
-      getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+      getOptimization: () => ({ contextStrategy: 'full', compression: 'off', ...(opts.optimization ?? {}) }),
     },
     worktrees: {},
-    ptys: { forFeature: () => undefined, spawn: vi.fn(), remove: vi.fn(), sendPrompt: vi.fn(), list: () => [] },
+    ptys: { forFeature: () => session, spawn: vi.fn(), remove: vi.fn(), sendPrompt, list: () => [] },
     knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+    featureDocuments: { listDocuments },
     agentGate: {
       hasAgentsFor: opts.gate?.hasAgentsFor ?? (() => false),
       runTrigger,
@@ -94,7 +124,7 @@ function setup(
     dataDir: '/tmp',
   } as unknown as OrchestratorDeps;
   const orch = new Orchestrator(deps);
-  return { orch, state, savePhases, raise, finish, runTrigger };
+  return { orch, state, savePhases, raise, finish, runTrigger, sendPrompt, listDocuments };
 }
 
 describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
@@ -529,5 +559,185 @@ describe('Orchestrator — Telemetrie schlägt Transkript', () => {
     // eventsFor('sess1') liefert leer → Rückfall, kein fremder Verbrauch am Lauf.
     const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
     expect(usage.tokensSource).not.toBe('telemetry');
+  });
+});
+
+// ---------- Dokument-Verweis im Phasenauftrag (US2) ----------
+
+/**
+ * Der Verweis auf hinterlegte Dokumente muss in JEDEM Phasenauftrag stehen —
+ * über alle drei Startwege, auch nach einem Kontext-Reset (FR-007/FR-008,
+ * SC-003). Ohne Dokumente muss der Prompt zeichengleich mit dem bisherigen
+ * bleiben (FR-017, SC-006).
+ */
+describe('Orchestrator — Dokument-Verweis im Phasenauftrag', () => {
+  const DOCS: FeatureDocument[] = [
+    {
+      name: 'Anforderungen 2026.pdf',
+      storedName: 'Anforderungen 2026.pdf',
+      relPath: 'specs/feat/docs/Anforderungen 2026.pdf',
+      bytes: 1258291,
+      mimeType: 'application/pdf',
+      uploadedAt: 1785312000000,
+    },
+    {
+      name: 'schema.sql',
+      storedName: 'schema.sql',
+      relPath: 'specs/feat/docs/schema.sql',
+      bytes: 4403,
+      mimeType: 'application/sql',
+      uploadedAt: 1785312000000,
+    },
+  ];
+
+  const BLOCK_HEAD = '[Dokumente] Zu diesem Feature wurden 2 Dokumente hinterlegt (Ablage: specs/feat/docs/):';
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+  const lastPrompt = (sendPrompt: { mock: { calls: unknown[][] } }) =>
+    String(sendPrompt.mock.calls.at(-1)?.[1] ?? '');
+
+  /** Phase erneut startbar machen (Maschine + Buchführung), um den 2. Start zu prüfen. */
+  function restartable(
+    orch: unknown,
+    savePhases: (id: string, phases: Record<string, { status: string }>) => void,
+    state: { phases: Record<string, { status: string }> },
+  ): void {
+    (orch as { runningPhases: Map<string, unknown> }).runningPhases.clear();
+    savePhases('f1', { ...state.phases, plan: { ...state.phases.plan, status: 'idle' } });
+  }
+
+  /** Worktree mit vorhandener spec.md — nur so lässt der Guard einen Reset zu. */
+  const worktrees: string[] = [];
+  function worktreeWithSpec(): string {
+    const root = mkdtempSync(join(tmpdir(), 'sdd-orch-docs-'));
+    mkdirSync(join(root, 'specs', 'feat'), { recursive: true });
+    writeFileSync(join(root, 'specs', 'feat', 'spec.md'), '# spec\n');
+    worktrees.push(root);
+    return root;
+  }
+
+  afterAll(() => {
+    for (const dir of worktrees) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('hängt den Verweis an den regulären Phasenstart (FR-007)', async () => {
+    const { orch, sendPrompt } = setup({ withSession: true, documents: DOCS });
+
+    await orch.startPhaseRun('f1', 'specify', 'Kundendaten übernehmen');
+
+    const prompt = lastPrompt(sendPrompt);
+    expect(prompt).toContain(BLOCK_HEAD);
+    expect(prompt).toContain('- `schema.sql` → specs/feat/docs/schema.sql (4.3 KB)');
+    expect(prompt).toContain('Verwende dieses Material als Ausgangsbasis der Spezifikation.');
+  });
+
+  it('hängt den Verweis auch an den Start nach einem bestandenen Gate (FR-007)', async () => {
+    const runTrigger = vi.fn(async () => ({ ok: true, runs: [] }));
+    const { orch, sendPrompt } = setup({
+      withSession: true,
+      documents: DOCS,
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+    });
+
+    // Erster Aufruf deferrt auf das Gate; der PASS startet die Phase intern.
+    expect(await orch.startPhaseRun('f1', 'specify')).toEqual({ gateRunning: true });
+    await tick();
+
+    expect(runTrigger).toHaveBeenCalledTimes(1);
+    expect(lastPrompt(sendPrompt)).toContain(BLOCK_HEAD);
+  });
+
+  it('hängt den Verweis auch an die Auto-Progress-Kette (SC-003)', async () => {
+    const { orch, sendPrompt } = setup({
+      withSession: true,
+      documents: DOCS,
+      phaseStatus: { specify: 'awaiting_review' },
+      automation: { autoProgressUntil: 'plan' },
+    });
+
+    // approve(specify) löst den Effekt start_agent für 'plan' aus.
+    orch.approve('f1', 'specify');
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalled());
+
+    const prompt = lastPrompt(sendPrompt);
+    expect(prompt).toContain(BLOCK_HEAD);
+    expect(prompt).toContain('Berücksichtige dieses Material bei diesem Schritt');
+  });
+
+  it.each(['compact', 'fresh'] as const)(
+    'sendet den Verweis auch im Schritt direkt nach dem Reset (%s) — kein Dedupe (FR-008)',
+    async (contextStrategy) => {
+      const root = worktreeWithSpec();
+      const { orch, sendPrompt } = setup({
+        withSession: true,
+        documents: DOCS,
+        feature: { worktreePath: root },
+        optimization: { contextStrategy },
+        phaseStatus: { specify: 'approved' },
+      });
+
+      await orch.startPhaseRun('f1', 'plan');
+
+      // Reset geht als eigener Prompt VOR dem Phasenprompt raus.
+      expect(sendPrompt.mock.calls.map((c) => c[1])).toContain(contextStrategy === 'compact' ? '/compact' : '/clear');
+      expect(lastPrompt(sendPrompt)).toContain(BLOCK_HEAD);
+    },
+  );
+
+  it('sendet den Verweis bei jedem Start erneut, statt ihn zu deduplizieren (FR-008)', async () => {
+    const root = worktreeWithSpec();
+    const { orch, sendPrompt, savePhases, state } = setup({
+      withSession: true,
+      documents: DOCS,
+      feature: { worktreePath: root },
+      phaseStatus: { specify: 'approved' },
+    });
+
+    await orch.startPhaseRun('f1', 'plan');
+    const ersterPrompt = lastPrompt(sendPrompt);
+    restartable(orch, savePhases, state);
+    await orch.startPhaseRun('f1', 'plan');
+    const zweiterPrompt = lastPrompt(sendPrompt);
+
+    expect(ersterPrompt).toContain(BLOCK_HEAD);
+    expect(zweiterPrompt).toContain(BLOCK_HEAD); // beim zweiten Mal genauso
+  });
+
+  // SC-006: die einzige Absicherung dagegen, dass der dokumentlose Auftrag wächst.
+  it('lässt den Prompt ohne Dokumente zeichengleich mit dem bisherigen (FR-017, SC-006)', async () => {
+    const { orch, sendPrompt } = setup({ withSession: true, documents: [] });
+
+    await orch.startPhaseRun('f1', 'specify', 'Beschreibungstext');
+
+    expect(lastPrompt(sendPrompt)).toBe(
+      '/speckit-specify specs/feat Beschreibungstext' +
+        '\n\n[Hinweis] `spec.md` liegt im Spec-Ordner bereits als Vorlage vor. ' +
+        'Lies sie, bevor du sie schreibst — sonst schlägt der erste Schreibvorgang fehl.',
+    );
+  });
+
+  it('startet die Phase auch bei defektem Manifest — ohne Block statt mit Fehler', async () => {
+    const { orch, sendPrompt, state } = setup({ withSession: true, documents: 'wirft' });
+
+    await expect(orch.startPhaseRun('f1', 'specify', 'Text')).resolves.toEqual({ gateRunning: false });
+
+    expect(state.phases.specify.status).toBe('running');
+    expect(lastPrompt(sendPrompt)).not.toContain('[Dokumente]');
+  });
+
+  it('liest die Dokumente bei jedem Start frisch aus dem Manifest (R5)', async () => {
+    const root = worktreeWithSpec();
+    const { orch, listDocuments, savePhases, state } = setup({
+      withSession: true,
+      documents: DOCS,
+      feature: { worktreePath: root },
+      phaseStatus: { specify: 'approved' },
+    });
+
+    await orch.startPhaseRun('f1', 'plan');
+    restartable(orch, savePhases, state);
+    await orch.startPhaseRun('f1', 'plan');
+
+    expect(listDocuments).toHaveBeenCalledTimes(2); // nicht aus dem Prozessspeicher
+    expect(listDocuments).toHaveBeenCalledWith('f1');
   });
 });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FEATURE_PHASES, evaluateAction } from '@sdd/shared';
 import { api } from '../api.js';
 import { featureActionContext, useStore } from '../store.js';
@@ -7,7 +7,8 @@ import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
-import { CodeIcon, CopyIcon, DeleteIcon, FolderOpenIcon, KnowledgeIcon, ShieldIcon } from './icons.js';
+import { FeatureDocumentsDialog } from './FeatureDocumentsDialog.js';
+import { CodeIcon, CopyIcon, DeleteIcon, DocumentIcon, FolderOpenIcon, KnowledgeIcon, ShieldIcon } from './icons.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { FeatureDashboard } from './FeatureDashboard.js';
 
@@ -18,6 +19,20 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showDocuments, setShowDocuments] = useState(false);
+  // Einstieg nur zeigen, wenn es etwas zu zeigen gibt (FR-016).
+  const [documentCount, setDocumentCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .featureDocuments(featureId)
+      .then((d) => !cancelled && setDocumentCount(d.length))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [featureId]);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
@@ -85,6 +100,15 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
               </HeaderIcon>
             </>
           )}
+          {/* Ausgangsmaterial bleibt auch nach Abschluss einsehbar (SC-007). */}
+          {documentCount > 0 && (
+            <HeaderIcon
+              title={`Hinterlegte Dokumente (${documentCount})`}
+              onClick={() => setShowDocuments(true)}
+            >
+              <DocumentIcon />
+            </HeaderIcon>
+          )}
           {/* Wissen/Agents konfigurieren künftige Läufe — nach Abschluss wirkungslos, daher ausgeblendet. */}
           {!completed && (
             <>
@@ -112,6 +136,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           {completed ? 'abgeschlossen ✓' : connected ? 'verbunden' : 'getrennt …'}
         </span>
       </div>
+      {showDocuments && <FeatureDocumentsDialog featureId={featureId} onClose={() => setShowDocuments(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
       {showDelete && (
