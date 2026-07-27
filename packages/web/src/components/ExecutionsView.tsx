@@ -152,7 +152,11 @@ export function ExecutionsView() {
     [runs, state.selectedProjectId],
   );
 
-  const totalTokens = visible.reduce((s, r) => s + r.total.tokens, 0);
+  // Bewusst KEINE Gesamtsumme über alle Token-Arten: sie besteht zu 94–98 % aus
+  // Cache-Reads (erneut gelesener Kontext) und lässt jeden Lauf gewaltig aussehen,
+  // obwohl kaum etwas neu verarbeitet wurde. Getrennt ausgewiesen ist beides lesbar.
+  const totalOutput = visible.reduce((s, r) => s + r.total.outputTokens, 0);
+  const totalCacheRead = visible.reduce((s, r) => s + r.total.cacheReadTokens, 0);
   const measured = visible.length
     ? visible.reduce((s, r) => s + r.sourceMix.transcript, 0) / visible.length
     : 0;
@@ -163,10 +167,14 @@ export function ExecutionsView() {
         <div className="mb-3 flex items-center gap-2 text-xs text-zinc-500">
           <span className="font-semibold text-zinc-400">Läufe (1 Lauf = 1 Worktree/Feature)</span>
           <span className="ml-auto">
-            {visible.length} Läufe · {fmtTokens(totalTokens)} Tokens ·{' '}
-            {(measured * 100).toFixed(0)} % gemessen
+            {visible.length} Läufe · <span className="text-emerald-400">{fmtTokens(totalOutput)} Output</span> ·{' '}
+            {fmtTokens(totalCacheRead)} Cache-Read · {(measured * 100).toFixed(0)} % gemessen
           </span>
         </div>
+        <p className="mb-3 text-[10px] text-zinc-600">
+          Output = neu erzeugte Tokens, das Mass für geleistete Arbeit. Cache-Read = erneut
+          gelesener Kontext; er wächst mit jedem Turn und macht den Grossteil jeder Summe aus.
+        </p>
 
         <div className="flex flex-col gap-2">
           {visible.map((run) => (
@@ -247,9 +255,14 @@ export function RunCard({
         <div className="w-44 shrink-0">
           <StackedBar segments={catSegments} height={8} />
         </div>
-        <span className="w-20 shrink-0 text-right text-zinc-300">
-          {fmtTokens(run.total.tokens)}
-          <SourceBadge source={dominantSource} />
+        <span className="w-28 shrink-0 text-right">
+          <span className="block text-emerald-400">
+            {fmtTokens(run.total.outputTokens)} <span className="text-zinc-600">Output</span>
+          </span>
+          <span className="block text-[10px] text-zinc-600">
+            {fmtTokens(run.total.cacheReadTokens)} Cache-Read
+            <SourceBadge source={dominantSource} />
+          </span>
         </span>
       </button>
 
@@ -258,12 +271,12 @@ export function RunCard({
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div>
               <h3 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">
-                Tokens pro Step
+                Output pro Step
               </h3>
               <HBarChart
                 items={run.byStep.map((s) => ({
                   label: STEP_LABELS[s.key] ?? s.key,
-                  value: s.rollup.tokens,
+                  value: s.rollup.outputTokens,
                   color: CATEGORY_COLORS[s.category]!,
                 }))}
               />
@@ -295,7 +308,8 @@ export function RunCard({
                     <th className="px-2 py-1">Art</th>
                     <th className="px-2 py-1">Status</th>
                     <th className="px-2 py-1 text-right">Dauer</th>
-                    <th className="px-2 py-1 text-right">Tokens</th>
+                    <th className="px-2 py-1 text-right">Output</th>
+                    <th className="px-2 py-1 text-right">Cache-Read</th>
                     <th className="px-2 py-1" />
                   </tr>
                 </thead>
@@ -314,8 +328,11 @@ export function RunCard({
                       <td className="px-2 py-1 text-right text-zinc-500">
                         {e.finishedAt ? formatDuration(e.finishedAt - e.startedAt) : '…'}
                       </td>
+                      <td className="px-2 py-1 text-right text-emerald-400">
+                        {e.outputTokens !== null ? fmtTokens(e.outputTokens) : '—'}
+                      </td>
                       <td className="px-2 py-1 text-right text-zinc-500">
-                        {e.tokens !== null ? fmtTokens(e.tokens) : '—'}
+                        {e.cacheReadTokens !== null ? fmtTokens(e.cacheReadTokens) : '—'}
                         <SourceBadge source={e.tokensSource} />
                       </td>
                       <td className="px-2 py-1">
