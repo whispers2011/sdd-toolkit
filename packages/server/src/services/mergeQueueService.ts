@@ -202,15 +202,24 @@ export class MergeQueueService {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
 
-    // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
-    // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
-    if ((await this.reconcile(feature, project)) !== 'proceed') return;
     if (!feature.worktreePath) throw new Error(`Feature ${feature.name} hat keinen Worktree`);
     if (!hasAnyTaskDone(feature)) throw new Error(NO_TASKS_DONE);
 
     this.setStage(feature, 'verifying');
     try {
+      // Festschreiben MUSS vor reconcile() laufen. Solange die Arbeit uncommittet
+      // ist, hat der Branch keinen eigenen Commit und ist damit trivial Vorfahre
+      // des Ziels — reconcile() hält ihn für „bereits gemergt". Der Guard dort
+      // zählt dann die uncommitteten Dateien und eskaliert, ohne dass je committet
+      // würde: der Schritt, der die Bedingung auflöst, lag hinter der Prüfung, die
+      // auf sie reagiert. Das ist der Normalfall am Ende von implement (das
+      // Committen ist Aufgabe des Toolkits, nicht des Agenten) und blockierte damit
+      // JEDES Feature — am 26.07.2026 dreimal in Folge beobachtet.
       await this.commitWorktree(feature);
+
+      // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
+      // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
+      if ((await this.reconcile(feature, project)) !== 'proceed') return;
 
       if (project.verifyCommands.length > 0) {
         const execId = this.deps.executions.start({
