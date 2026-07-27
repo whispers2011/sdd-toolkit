@@ -141,9 +141,9 @@ pnpm-Monorepo, keine neuen Pakete (siehe plan.md → Project Structure):
 
 - [X] T041 [P] Icon für „Dokumente" in `packages/web/src/components/icons.tsx` ergänzen, falls dort noch keines passt (wird von T039/T040 genutzt)
 - [X] T042 `pnpm typecheck` und `pnpm -r test` im Repo-Root grün — insbesondere `packages/server/src/services/jiraImportService.test.ts` nach der Umstellung aus T011
-- [ ] T043 Pfad-Härtung ohne Browser prüfen: `curl`-Aufruf aus quickstart.md → Szenario 3 („Pfad-Härtung") gegen eine eigene Instanz auf einem freien Port ausführen; `/tmp/entkommen.txt` darf **nicht** entstehen (FR-005)
-- [ ] T044 Manuelle Validierung quickstart.md Szenario 1, 2 und 4 auf einer eigenen Instanz — Instanz auf freien Ports starten, **nicht** 4820/4830, und gezielt per `lsof -ti:<port> | xargs -r kill` beenden (CLAUDE.md)
-- [ ] T045 Manuelle Validierung quickstart.md Szenario 3 und 5 (Grenzen, Kollisionen, Ansicht, Fehlerfälle inkl. schreibgeschütztem `docs/`-Ordner); anschließend `rm -rf /tmp/doc-test` und die Testfeatures im Toolkit löschen
+- [X] T043 Pfad-Härtung ohne Browser prüfen: `curl`-Aufruf aus quickstart.md → Szenario 3 („Pfad-Härtung") gegen eine eigene Instanz auf einem freien Port ausführen; `/tmp/entkommen.txt` darf **nicht** entstehen (FR-005)
+- [X] T044 Manuelle Validierung quickstart.md Szenario 1, 2 und 4 auf einer eigenen Instanz — Instanz auf freien Ports starten, **nicht** 4820/4830, und gezielt per `lsof -ti:<port> | xargs -r kill` beenden (CLAUDE.md)
+- [X] T045 Manuelle Validierung quickstart.md Szenario 3 und 5 (Grenzen, Kollisionen, Ansicht, Fehlerfälle inkl. schreibgeschütztem `docs/`-Ordner); anschließend `rm -rf /tmp/doc-test` und die Testfeatures im Toolkit löschen
 - [X] T046 [P] `specs/dokument-upload-bei-manueller-feature-erfassung/checklists/requirements.md` durchgehen und die abgedeckten Punkte abhaken
 
 ---
