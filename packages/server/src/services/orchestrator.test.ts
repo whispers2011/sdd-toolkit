@@ -84,7 +84,7 @@ function setup(
       getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
     },
     worktrees: {},
-    ptys: { forFeature: () => undefined, spawn: vi.fn(), remove: vi.fn(), sendPrompt: vi.fn() },
+    ptys: { forFeature: () => undefined, spawn: vi.fn(), remove: vi.fn(), sendPrompt: vi.fn(), list: () => [] },
     knowledge: { materializeForFeature: () => ({ preamble: '' }) },
     agentGate: {
       hasAgentsFor: opts.gate?.hasAgentsFor ?? (() => false),
@@ -161,6 +161,68 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
     ).toBe(true); // Buchführung intakt → Turn-Abschluss greift später
   });
 
+  // Regression zum Phasenversatz vom 27.07.2026: Das Reset-Kommando (/clear) erzeugt
+  // einen EIGENEN Turn. Dessen Stop hat die Phase abgeschlossen, bevor ihr Prompt
+  // überhaupt zugestellt war — `tasks` galt nach 6 s als erfolgreich, ohne dass
+  // tasks.md existierte, und alle Folgephasen verrutschten um eine Position.
+  it('Turn-Ende vor Zustellung des Phasenprompts schließt die Phase NICHT ab', async () => {
+    const { orch, state, savePhases, finish } = setup({ running: true });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      startedAt: 0,
+      promptText: '/speckit-specify etwas',
+      promptConfirmed: false, // nur das Reset ging bisher raus
+    });
+    const session = {
+      kind: 'feature', featureId: 'f1', projectId: 'p1', id: 's1',
+      machine: { state: { kind: 'turn_done' }, hooksLive: true }, scrollback: '',
+    } as unknown as LiveSession;
+
+    orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
+    await new Promise((r) => setTimeout(r, 0)); // handleTurnCompleted läuft als void-Promise
+
+    expect(state.phases.specify.status).toBe('running'); // Phase bleibt offen
+    expect(savePhases).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled(); // keine Execution als erfolgreich verbucht
+    expect(
+      (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.has('f1'),
+    ).toBe(true);
+  });
+
+  it('nach Bestätigung des Phasenprompts schließt derselbe Turn die Phase ab', async () => {
+    const { orch, state, savePhases } = setup({ running: true });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      startedAt: 0,
+      promptText: '/speckit-specify etwas',
+      promptConfirmed: false,
+    });
+    const session = {
+      kind: 'feature', featureId: 'f1', projectId: 'p1', id: 's1',
+      machine: { state: { kind: 'turn_done' }, hooksLive: true }, scrollback: '',
+    } as unknown as LiveSession;
+
+    orch.handleSubmitConfirmed(session, '/clear'); // Reset bestätigt → zählt NICHT
+    orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(state.phases.specify.status).toBe('running');
+
+    orch.handleSubmitConfirmed(session, '/speckit-specify etwas'); // jetzt der Phasenprompt
+    orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(savePhases).toHaveBeenCalled();
+    expect(state.phases.specify.status).not.toBe('running');
+  });
+
   it('reapOnBoot setzt verwaiste running-Phasen auf idle und meldet run_interrupted', () => {
     const { orch, state, raise } = setup({ running: true });
 
@@ -235,6 +297,7 @@ describe('Orchestrator — Agent-Gates (before_phase / after_phase)', () => {
       transcriptOffsetStart: 0,
       transcriptPathStart: null,
       promptText: '',
+      promptConfirmed: true, // Phasenprompt war zugestellt — der Stop gehört zu dieser Phase
     });
     const session = {
       kind: 'feature',

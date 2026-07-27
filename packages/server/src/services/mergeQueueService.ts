@@ -227,6 +227,9 @@ export class MergeQueueService {
     if (!(await this.hasIntegrableChanges(feature, project))) {
       return { started: false, reason: ACTION_REASON.noChanges };
     }
+    if (!hasAnyTaskDone(feature)) {
+      return { started: false, reason: ACTION_REASON.noTasksDone };
+    }
 
     this.setStage(feature, 'verifying');
     try {
@@ -757,4 +760,22 @@ export class MergeQueueService {
     if (!p) throw new Error(`Projekt ${id} nicht gefunden`);
     return p;
   }
+}
+
+/**
+ * Zweite Verteidigungslinie gegen ein Feature, dessen Umsetzung nie stattfand.
+ *
+ * Am 27.07.2026 lief ein Feature vollständig durch die Pipeline — Verifikation grün,
+ * Review-Gate bestanden — und trug im Commit ausschließlich Markdown: die
+ * implement-Phase war fälschlich als abgeschlossen verbucht worden. Sichtbar war das
+ * allein an `tasksDone/tasksTotal = 0/56`, und dieser Wert floss in keine
+ * Freigabeentscheidung ein. Die Verifikation kann den Fall prinzipiell nicht erkennen:
+ * sie prüft „baut und testet das Repository", und das ist bei einem reinen
+ * Markdown-Commit trivial erfüllt (dieselben Tests wie auf main).
+ *
+ * Greift bewusst nur im pathologischen Fall — Tasks vorhanden und KEINER erledigt.
+ * Ohne tasks.md (`tasksTotal === 0`) bleibt das Verhalten unverändert.
+ */
+export function hasAnyTaskDone(feature: Pick<Feature, 'tasksDone' | 'tasksTotal'>): boolean {
+  return feature.tasksTotal === 0 || feature.tasksDone > 0;
 }

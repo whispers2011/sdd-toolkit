@@ -84,6 +84,15 @@ interface RunningPhase {
   /** Startzeit des Laufs — Startmarke, wenn transcriptPathStart null ist. */
   startedAt: number;
   promptText: string;
+  /**
+   * Der Phasenprompt wurde nachweislich zugestellt (`user_prompt_submit`).
+   * Vorher darf ein `Stop` NICHT als Abschluss dieser Phase gelten: Das
+   * vorgeschaltete Reset-Kommando (`/clear`) erzeugt einen eigenen Turn, und
+   * dessen Stop hat real eine nie gelaufene Phase als erfolgreich abgeschlossen
+   * (Ergebnis: Phasenversatz um eins, „implementation"-Commit ohne Code).
+   * Gegenstück zur Reset-Unterscheidung in handleSubmitFailed().
+   */
+  promptConfirmed: boolean;
 }
 
 export class Orchestrator {
@@ -438,6 +447,7 @@ export class Orchestrator {
       transcriptPathStart,
       startedAt: Date.now(),
       promptText: prompt,
+      promptConfirmed: false,
     });
 
     // Reset-Kommando (opt-in) VOR dem Phasenprompt; Session-Prozess/-ID bleiben.
@@ -610,12 +620,33 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Zustellung des Phasenprompts bestätigt. Erst ab hier zählt ein `Stop` als
+   * Abschluss dieser Phase — siehe RunningPhase.promptConfirmed.
+   */
+  handleSubmitConfirmed(session: LiveSession, text: string): void {
+    const featureId = session.featureId;
+    if (!featureId) return;
+    const running = this.runningPhases.get(featureId);
+    if (running && text === running.promptText) running.promptConfirmed = true;
+  }
+
   private async handleTurnCompleted(session: LiveSession): Promise<void> {
     if (!session.featureId) return;
     const featureId = session.featureId;
     const running = this.runningPhases.get(featureId);
     const feature = this.deps.features.get(featureId);
     if (!feature) return;
+
+    // Der Stop gehört noch nicht zu dieser Phase: Ihr Prompt ist nicht zugestellt,
+    // also stammt er von einem vorgeschalteten Kommando (Reset). Die Phase läuft
+    // gleich erst an — sie hier abzuschließen meldete Erfolg ohne jede Arbeit.
+    if (running && !running.promptConfirmed) {
+      console.warn(
+        `[orchestrator] Turn-Ende vor Zustellung des Phasenprompts (${running.phase}) — Reset-Turn, Phase bleibt offen`,
+      );
+      return;
+    }
 
     if (running) {
       this.runningPhases.delete(featureId);

@@ -330,6 +330,47 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     expect(sh(wt, ['log', '--oneline', 'main..HEAD']).trim()).not.toBe('');
   });
 
+  // Regression zum 27.07.2026: Ein Feature lief komplett durch die Pipeline und trug
+  // im Commit ausschliesslich Markdown — die implement-Phase war fälschlich als
+  // abgeschlossen verbucht. Verifikation und Review-Gate konnten das nicht sehen
+  // (dieselben Tests wie auf main). Einziges Signal war 0 von 56 erledigten Tasks.
+  it('lehnt die Integration ab, wenn kein einziger Task erledigt ist', async () => {
+    const branch = 'feature/keine-tasks-erledigt';
+    const wt = await worktrees.create({
+      project: { id: projectId, name: 'Demo' },
+      projectPath: repo,
+      featureName: 'keine-tasks-erledigt',
+      branch,
+      defaultBranch: 'main',
+    });
+    writeFileSync(join(wt, 'nur-spec.md'), '# Spezifikation, kein Code\n');
+    const feature = features.create({
+      projectId,
+      name: 'keine-tasks-erledigt',
+      branch,
+      worktreePath: wt,
+      phases: {},
+      integration: 'none',
+      automation: { autoReviewAgents: false, autoMerge: false },
+      tasksDone: 0,
+      tasksTotal: 56,
+    });
+
+    const result = await svc.beginIntegration(feature.id);
+
+    expect(result).toEqual({ started: false, reason: ACTION_REASON.noTasksDone });
+    expect(features.get(feature.id)?.integration).toBe('none'); // nichts angefasst
+    expect(sh(wt, ['status', '--porcelain'])).not.toBe(''); // auch nicht committet
+  });
+
+  it('lässt ein Feature mit mindestens einem erledigten Task durch', async () => {
+    const { feature } = await makeReviewReadyFeature('teilweise-erledigt');
+    features.setIntegration(feature.id, 'none');
+    features.setTasks(feature.id, 1, 56);
+    const result = await svc.beginIntegration(feature.id);
+    expect(result.started).toBe(true);
+  });
+
   it('lehnt ein bereits integrierendes Feature ab', async () => {
     const { feature } = await makeReviewReadyFeature('schon-drin');
     const result = await svc.beginIntegration(feature.id);

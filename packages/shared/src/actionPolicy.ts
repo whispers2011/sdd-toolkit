@@ -128,6 +128,8 @@ export const ACTION_REASON = {
   noWorktree: 'Kein Arbeitsverzeichnis vorhanden.',
   notComplete: 'Erst integrierbar, wenn alle aktiven Schritte freigegeben sind.',
   noChanges: 'Keine Änderungen zu integrieren.',
+  noTasksDone:
+    'Kein einziger Task aus tasks.md ist erledigt — die Umsetzung hat offenbar nicht stattgefunden.',
   noFailedIntegration: 'Es gibt keine fehlgeschlagene Integration zum Wiederholen.',
   notAwaitingReview: 'Das Feature wartet nicht auf ein Review.',
 } as const;
