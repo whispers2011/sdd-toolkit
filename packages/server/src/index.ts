@@ -172,6 +172,7 @@ async function main(): Promise<void> {
   const worktreeOverview = new WorktreeOverviewService({ projects, features, ptys, worktrees, bus });
 
   const app = await buildServer({
+    allowedOrigins: config.allowedOrigins,
     projects,
     features,
     sessions,

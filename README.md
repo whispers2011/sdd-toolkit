@@ -155,6 +155,69 @@ Kernideen (aus der Analyse von WhisperM8 & speckit-assistant destilliert):
 - **SQLite (WAL)** für Orchestrierungs-State; die Spec-Wahrheit bleibt als Dateien
   im Ziel-Repo (`specs/`), `~/.claude/` wird strikt read-only behandelt.
 
+## macOS-App
+
+Statt `pnpm dev` lässt sich das Toolkit als installierbare `.app` bauen — Electron-Fenster,
+Dock-Icon, Menüleiste. Server und Web-UI stecken im Bundle; ein zweiter Prozess
+(Electron-Binary im Node-Modus) trägt den Fastify-Server.
+
+```bash
+pnpm app          # bauen und direkt starten (Entwicklung)
+pnpm app:dist     # → packages/desktop/release/SDD Toolkit-<version>-arm64.dmg
+```
+
+**Zwei Betriebsarten.** Antwortet auf Port 4820 bereits ein SDD-Server (typisch eine laufende
+`pnpm dev`-Instanz), hängt sich die App nur an dessen UI an und lässt ihn beim Beenden in Ruhe —
+zwei Prozesse auf derselben SQLite-Datei wären ein Datenrisiko. Sonst startet sie einen eigenen
+Server und beendet ihn per `SIGTERM` sauber mit (Snapshots werden gesichert, Sitzungen beendet).
+Das Datenverzeichnis ist dasselbe wie im Dev-Betrieb: `~/.sdd-toolkit`.
+
+Fenster schließen beendet die App **nicht** (macOS-Konvention) — der Server läuft weiter,
+laufende Claude-Sitzungen bleiben unberührt. Erst „SDD Toolkit beenden" (⌘Q) fährt herunter.
+Serverausgaben landen in `~/.sdd-toolkit/logs/desktop-server.log`, erreichbar über
+das Menü „Hilfe".
+
+### Aufbau des Builds
+
+| Schritt | Ergebnis |
+|---|---|
+| `packages/desktop/build.mjs` | staged `app/` — Hauptprozess, Server-Bundle, Web-Bundle, native Module |
+| `electron-builder.yml` | packt `app/` zu `.app` + `.dmg` |
+
+Die nativen Module (`better-sqlite3`, `node-pty`) liegen in `app/node_modules` als **eigene, mit
+npm installierte Kopie** und werden dort gegen die Electron-ABI gebaut. Grund: pnpm teilt eine
+physische Kopie zwischen allen Paketen — ein Rebuild an Ort und Stelle würde das Modul zerschießen,
+das `pnpm dev` benutzt (`NODE_MODULE_VERSION mismatch`). Ein Rebuild läuft nur, wenn sich Versionen,
+Electron-Version oder Architektur geändert haben (`app/.native-stamp`).
+
+Gebaut wird für **arm64**. Für Intel-Macs muss in `electron-builder.yml` `arch` um `x64` ergänzt
+und `build.mjs` je Architektur durchlaufen werden.
+
+Icon ändern: `packages/desktop/assets/icon.svg` bearbeiten, dann `pnpm --filter @sdd/desktop icon`
+(braucht `brew install librsvg`). Das erzeugte `build/icon.icns` ist eingecheckt.
+
+### Verteilung an andere Macs
+
+`pnpm app:dist` erzeugt derzeit ein **ad-hoc signiertes** Bundle: läuft auf diesem Mac, wird auf
+fremden Macs aber von Gatekeeper blockiert. Für die Weitergabe im IWF fehlen nur noch die
+Zertifikate — die Build-Konfiguration (Hardened Runtime, Entitlements) ist fertig:
+
+1. Apple-Developer-Account (99 $/Jahr), Zertifikat **Developer ID Application** erzeugen und in
+   die Schlüsselbundverwaltung importieren.
+2. App-spezifisches Passwort für die Apple-ID anlegen (appleid.apple.com).
+3. Notarisiert bauen:
+
+```bash
+export APPLE_ID="l.michel@iwf.ch"
+export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+export APPLE_TEAM_ID="<Team-ID>"
+pnpm --filter @sdd/desktop dist:signed
+```
+
+electron-builder signiert dann mit der gefundenen Developer-ID, lädt das Ergebnis bei Apple
+zur Notarisierung hoch und heftet das Ticket an die `.dmg`. Prüfen mit
+`spctl -a -vvv -t install "SDD Toolkit.app"`.
+
 ## Konfiguration
 
 | Env | Default | Zweck |
@@ -223,7 +286,11 @@ pnpm test         # alle Tests (Domain-Machines + Git-Integration)
 pnpm typecheck    # alle Pakete
 pnpm --filter @sdd/server dev   # nur Server
 pnpm --filter @sdd/web dev      # nur Web-UI
+pnpm --filter @sdd/desktop app  # macOS-App bauen und starten
 ```
+
+Pakete: `@sdd/server` (Fastify, SQLite, PTY, Git), `@sdd/web` (React/Vite),
+`@sdd/shared` (Typen, Zustandsmaschinen), `@sdd/desktop` (Electron-Hülle).
 
 Referenz-Analysen und Anforderungen: `docs/` (Inventare beider Referenz-Repos,
 Level-3-Anforderungen, Funktionsumfang mit Prioritäten).

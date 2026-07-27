@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { ExecutionRepo } from '../db/repos.js';
+import { buildAllowedOrigins } from './originGuard.js';
 import { buildServer, type ApiDeps } from './server.js';
 
 /**
@@ -23,7 +24,7 @@ describe('GET /api/executions/:id/log', () => {
   const line = (obj: unknown) => JSON.stringify(obj) + '\n';
 
   const build = async (ptys: unknown) => {
-    const deps = { executions, dataDir, ptys } as unknown as ApiDeps;
+    const deps = { executions, dataDir, ptys , allowedOrigins: buildAllowedOrigins([80]) } as unknown as ApiDeps;
     app = await buildServer(deps);
   };
 

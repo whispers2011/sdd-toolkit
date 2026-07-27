@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import { WS_ORIGIN_REJECTED, isOriginAllowed, registerOriginGuard } from './originGuard.js';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { readFile } from 'node:fs/promises';
@@ -101,11 +102,17 @@ export interface ApiDeps {
   port: number;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
   webDir?: string | null;
+  /** Browser-Origins, die HTTP-API und WebSockets nutzen dürfen (api/originGuard.ts). */
+  allowedOrigins: readonly string[];
 }
 
 export async function buildServer(deps: ApiDeps) {
   const app = Fastify({ logger: { level: 'info' } });
-  await app.register(cors, { origin: true });
+  // Der lokale Server ist über localhost von JEDER Webseite erreichbar — ohne
+  // Origin-Prüfung könnte eine beliebige Seite im Browser die API bedienen.
+  const allowedOrigins = deps.allowedOrigins;
+  registerOriginGuard(app, allowedOrigins);
+  await app.register(cors, { origin: (origin, cb) => cb(null, isOriginAllowed(origin, allowedOrigins)) });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 
@@ -1350,7 +1357,13 @@ export async function buildServer(deps: ApiDeps) {
   // ---------- WebSockets ----------
 
   /** Event-Broadcast: alle Bus-Events als {type, payload} an alle Clients. */
-  app.get('/ws/events', { websocket: true }, (socket) => {
+  app.get('/ws/events', { websocket: true }, (socket, req) => {
+    // Zweite Verteidigungslinie neben dem onRequest-Guard: WebSockets kennen keine
+    // Same-Origin-Policy, ein durchgerutschter Handshake wäre unmittelbar ausnutzbar.
+    if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
+      socket.close(WS_ORIGIN_REJECTED, 'Origin nicht erlaubt');
+      return;
+    }
     const listeners: [string, (...args: unknown[]) => void][] = [];
     for (const event of BUS_EVENT_NAMES) {
       const listener = (...args: unknown[]) => {
@@ -1368,6 +1381,10 @@ export async function buildServer(deps: ApiDeps) {
 
   /** Terminal-Stream: bidirektional, Scrollback-Replay, Focus-Drosselung (WP8). */
   app.get<{ Params: { sessionId: string } }>('/ws/terminal/:sessionId', { websocket: true }, (socket, req) => {
+    if (!isOriginAllowed(req.headers.origin, allowedOrigins)) {
+      socket.close(WS_ORIGIN_REJECTED, 'Origin nicht erlaubt');
+      return;
+    }
     const { sessionId } = req.params;
     const handle = deps.ptys.subscribe(sessionId, (data) => {
       if (socket.readyState === socket.OPEN) socket.send(data);

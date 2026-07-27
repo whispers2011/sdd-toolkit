@@ -76,6 +76,41 @@ export interface ParsedHookEvent {
   claudeSessionId: string | null;
 }
 
+/** Auf Inbox-Länge kürzen — die Meldung soll konkret, aber nicht seitenlang sein. */
+function shorten(text: string, max = 140): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Kurzfassung der Rückfrage aus `tool_input` — damit „braucht dich" den echten
+ * Fragetext bzw. Plan-Titel zeigt statt nur „hat eine Frage".
+ */
+export function awaitingDetail(toolName: string, toolInput: unknown): string | undefined {
+  if (!toolInput || typeof toolInput !== 'object') return undefined;
+  const input = toolInput as Record<string, unknown>;
+
+  if (toolName === 'AskUserQuestion') {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    const texts = questions
+      .map((q) => (q && typeof q === 'object' ? (q as Record<string, unknown>).question : null))
+      .filter((q): q is string => typeof q === 'string' && q.trim() !== '');
+    return texts.length > 0 ? shorten(texts.join(' · ')) : undefined;
+  }
+
+  if (toolName === 'ExitPlanMode') {
+    const plan = typeof input.plan === 'string' ? input.plan : '';
+    // Erste inhaltliche Zeile des Plans = brauchbarer Titel (Markdown-Marker entfernen).
+    const title = plan
+      .split('\n')
+      .map((l) => l.replace(/^[#>\-*\d.\s]+/, '').trim())
+      .find((l) => l !== '');
+    return title ? shorten(title) : undefined;
+  }
+
+  return undefined;
+}
+
 export function parseHookLine(line: string): ParsedHookEvent {
   let payload: Record<string, unknown>;
   try {
@@ -98,7 +133,7 @@ export function parseHookLine(line: string): ParsedHookEvent {
       return { signal: { name: 'user_prompt_submit' }, claudeSessionId };
     case 'PreToolUse': {
       const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
-      const detail = askDetail(toolName, payload.tool_input);
+      const detail = awaitingDetail(toolName, payload.tool_input);
       return {
         signal: { name: 'pre_tool_use', toolName, ...(detail ? { detail } : {}) },
         claudeSessionId,
@@ -117,50 +152,6 @@ export function parseHookLine(line: string): ParsedHookEvent {
   }
 }
 
-/** Länge der Kurzfassung — genug zum Einschätzen, kurz genug für eine Inbox-Zeile. */
-const DETAIL_MAX = 140;
-
-/**
- * Worum bittet der Agent? Kurzfassung aus dem Hook-Payload.
- *
- * Das Toolkit hatte diese Information bereits und verwarf sie: Die Inbox meldete
- * nur „<Feature>: hat eine Frage", während im Payload drei ausformulierte Fragen
- * mit je drei Optionen standen. Wer priorisieren wollte, musste in die Konsole
- * wechseln — genau die Arbeit, die die Inbox abnehmen soll.
- *
- * Bewusst tolerant: unbekannte Formen liefern null, dann bleibt es beim alten Text.
- */
-export function askDetail(toolName: string, toolInput: unknown): string | null {
-  if (toolInput === null || typeof toolInput !== 'object') return null;
-  const input = toolInput as Record<string, unknown>;
-
-  if (toolName === 'AskUserQuestion') {
-    const questions = Array.isArray(input.questions) ? input.questions : [];
-    const texts = questions
-      .map((q) => (q && typeof q === 'object' ? (q as Record<string, unknown>).question : null))
-      .filter((q): q is string => typeof q === 'string' && q.trim().length > 0);
-    if (texts.length === 0) return null;
-    const first = clamp(texts[0]!);
-    return texts.length > 1 ? `${first} (+${texts.length - 1} weitere)` : first;
-  }
-
-  if (toolName === 'ExitPlanMode') {
-    const plan = typeof input.plan === 'string' ? input.plan : null;
-    if (!plan) return null;
-    const headline = plan
-      .split('\n')
-      .map((l) => l.replace(/^#+\s*/, '').trim())
-      .find((l) => l.length > 0);
-    return headline ? clamp(headline) : null;
-  }
-
-  return null;
-}
-
-function clamp(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length <= DETAIL_MAX ? flat : `${flat.slice(0, DETAIL_MAX - 1)}…`;
-}
 
 /** Watcht ein Event-File und liefert jede neue Zeile inkrementell (offset-basiert). */
 export class HookEventWatcher {

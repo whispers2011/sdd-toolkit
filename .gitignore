@@ -2,6 +2,10 @@ node_modules/
 dist/
 *.log
 .DS_Store
+# Desktop-App: Stagingverzeichnis und fertige Artefakte
+packages/desktop/app/
+packages/desktop/release/
+packages/desktop/assets/icon.iconset/
 # Referenz-Repos (nur zur Analyse geklont)
 reference/
 # Laufzeitdaten

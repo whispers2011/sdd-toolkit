@@ -17,6 +17,7 @@ import {
   SettingsRepo,
 } from '../db/repos.js';
 import { TelemetryStore } from '../telemetry/telemetryStore.js';
+import { buildAllowedOrigins } from './originGuard.js';
 import { buildServer, type ApiDeps } from './server.js';
 
 /**
@@ -152,6 +153,7 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
 
     telemetry = new TelemetryStore({ autoSweep: false });
     app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
       projects,
       features,
       sessions: new SessionRepo(db),
@@ -429,6 +431,7 @@ describe('GET /api/telemetry/status', () => {
     db = openMemoryDatabase();
     telemetry = new TelemetryStore({ autoSweep: false });
     app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
       projects: new ProjectRepo(db),
       features: new FeatureRepo(db),
       sessions: new SessionRepo(db),
