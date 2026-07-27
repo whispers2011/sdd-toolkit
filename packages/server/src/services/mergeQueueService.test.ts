@@ -251,4 +251,41 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     features.setIntegrationTarget(feature.id, null);
     expect(features.get(feature.id)?.integrationTarget).toBeNull();
   });
+
+  // Regression: Der Normalfall am Ende von implement ist ein Worktree mit
+  // UNCOMMITTETER Arbeit — das Festschreiben ist Aufgabe des Toolkits, nicht des
+  // Agenten. Lief reconcile() zuerst, hatte der Branch keinen eigenen Commit, galt
+  // als trivialer Vorfahre von main — also als „bereits gemergt" — und der
+  // uncommittedFileCount-Guard eskalierte, ohne dass je committet wurde. Sackgasse
+  // für JEDES Feature (am 26.07.2026 dreimal in Folge beobachtet).
+  it('schreibt uncommittete Arbeit VOR dem Merged-Abgleich fest', async () => {
+    const branch = 'feature/uncommittet';
+    const wt = await worktrees.create({
+      projectId,
+      projectPath: repo,
+      featureName: 'uncommittet',
+      branch,
+      defaultBranch: 'main',
+    });
+    writeFileSync(join(wt, 'implementierung.txt'), 'fertige arbeit\n');
+    const feature = features.create({
+      projectId,
+      name: 'uncommittet',
+      branch,
+      worktreePath: wt,
+      phases: {},
+      integration: 'none',
+      automation: { autoReviewAgents: false, autoMerge: false },
+      tasksDone: 1,
+      tasksTotal: 1,
+    });
+
+    await svc.beginIntegration(feature.id);
+
+    // Nicht eskaliert, sondern festgeschrieben und weitergelaufen.
+    expect(features.get(feature.id)?.integration).not.toBe('conflict_escalated');
+    expect(sh(wt, ['status', '--porcelain'])).toBe('');
+    expect(sh(wt, ['log', '--oneline', 'main..HEAD']).trim()).not.toBe('');
+  });
+
 });
