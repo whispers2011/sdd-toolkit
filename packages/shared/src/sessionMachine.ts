@@ -26,7 +26,18 @@ export type SessionSignal =
 export type HookSignal =
   | { name: 'session_start' }
   | { name: 'user_prompt_submit' }
-  | { name: 'pre_tool_use'; toolName: string }
+  | {
+      name: 'pre_tool_use';
+      toolName: string;
+      /**
+       * Kurzfassung dessen, worum der Agent bittet (erste Frage bei AskUserQuestion,
+       * Planüberschrift bei ExitPlanMode). Wird an der unreinen Grenze aus dem
+       * Hook-Payload gewonnen und unverändert durchgereicht — die Maschine deutet
+       * ihn nicht. Ohne ihn meldete die Inbox nur „hat eine Frage" und zwang zum
+       * Wechsel in die Konsole, um überhaupt die Dringlichkeit einzuschätzen.
+       */
+      detail?: string;
+    }
   | { name: 'post_tool_use' }
   | { name: 'post_tool_use_failure' }
   | { name: 'permission_request' }
@@ -35,7 +46,7 @@ export type HookSignal =
 
 export type SessionEffect =
   | { kind: 'turn_completed' }
-  | { kind: 'input_requested'; awaiting: AwaitingKind }
+  | { kind: 'input_requested'; awaiting: AwaitingKind; detail?: string }
   | { kind: 'session_ended' };
 
 export interface SessionMachine {
@@ -119,7 +130,7 @@ function reduceHook(
       const awaiting = AWAITING_TOOLS[event.toolName];
       if (awaiting) {
         return next(machine, { kind: 'awaiting_input', awaiting }, [
-          { kind: 'input_requested', awaiting },
+          { kind: 'input_requested', awaiting, ...(event.detail ? { detail: event.detail } : {}) },
         ]);
       }
       return next(machine, { kind: 'working' });

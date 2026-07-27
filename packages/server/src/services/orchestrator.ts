@@ -20,6 +20,7 @@ import {
   usageTotalTokens,
   type AutomationSettings,
   type Feature,
+  artifactStepSpec,
   type FeaturePhase,
   type OptimizationSettings,
   type Project,
@@ -64,6 +65,31 @@ export interface OrchestratorDeps {
   dataDir: string;
   /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
   telemetry?: TelemetryStore;
+}
+
+/**
+ * Hinweis auf die vom spec-kit-Skript VORAB angelegte Zieldatei.
+ *
+ * `/speckit-specify` und Verwandte legen ihre Ausgabedatei aus einem Template an,
+ * bevor der Agent zu schreiben beginnt. Das Write-Tool von Claude Code verweigert
+ * das Überschreiben einer existierenden, in dieser Session nicht gelesenen Datei —
+ * der erste Write scheitert deshalb mit „File has not been read yet".
+ *
+ * Gemessen am 27.07.2026 an spec.md: 10 905 Output-Tokens verloren, sofort erneut
+ * erzeugt. Es trifft den grössten Write der Phase. `/speckit-plan` blieb im selben
+ * Lauf verschont, weil sein Ablauf den Agenten das Template ohnehin lesen lässt —
+ * der Fehler hängt also am Ablauf, nicht an der Datei. Ein Hinweis, der nicht darauf
+ * vertraut, kostet ~25 Tokens und spart im Fehlerfall das Vierhundertfache.
+ *
+ * Zieldatei kommt aus ARTIFACT_STEP_SPECS — keine zweite Liste von Dateinamen.
+ */
+function templateHint(phase: FeaturePhase): string {
+  const relPath = artifactStepSpec(phase)?.primaryRelPath;
+  if (!relPath) return '';
+  return (
+    `\n\n[Hinweis] \`${relPath}\` liegt im Spec-Ordner bereits als Vorlage vor. ` +
+    `Lies sie, bevor du sie schreibst — sonst schlägt der erste Schreibvorgang fehl.`
+  );
 }
 
 /** Laufender Phasen-Kontext pro Feature (ephemer). */
@@ -436,7 +462,7 @@ export class Orchestrator {
     const prevPreamble = this.lastPreamble.get(feature.id);
     const injectPreamble =
       plan.preamble.trim().length > 0 && (plan.reset !== null || plan.preamble !== prevPreamble);
-    const prompt = injectPreamble ? base + plan.preamble : base;
+    const prompt = injectPreamble ? base + plan.preamble + templateHint(phase) : base + templateHint(phase);
     if (injectPreamble) this.lastPreamble.set(feature.id, plan.preamble);
 
     this.runningPhases.set(feature.id, {
@@ -600,10 +626,13 @@ export class Orchestrator {
           projectId: session.projectId,
           featureId: session.featureId,
           sessionId: session.id,
+          // Worum es geht, gehört in die Meldung: Die Inbox ist das Instrument für
+          // „Monitoring by exception" — ohne den Fragetext sagt sie nur DASS etwas
+          // ansteht und zwingt zum Wechsel in die Konsole, um es einzuschätzen.
           message:
             effect.awaiting === 'plan_approval'
-              ? `${feature?.name ?? 'Session'}: wartet auf Plan-Freigabe`
-              : `${feature?.name ?? 'Session'}: hat eine Frage`,
+              ? `${feature?.name ?? 'Session'}: wartet auf Plan-Freigabe${effect.detail ? ` — ${effect.detail}` : ''}`
+              : `${feature?.name ?? 'Session'}: ${effect.detail ?? 'hat eine Frage'}`,
         });
         bus.emitEvent('attention_raised', item);
         if (this.notifyThrottle.allow(session.id, 'input_requested')) {

@@ -96,11 +96,14 @@ export function parseHookLine(line: string): ParsedHookEvent {
       };
     case 'UserPromptSubmit':
       return { signal: { name: 'user_prompt_submit' }, claudeSessionId };
-    case 'PreToolUse':
+    case 'PreToolUse': {
+      const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : '';
+      const detail = askDetail(toolName, payload.tool_input);
       return {
-        signal: { name: 'pre_tool_use', toolName: typeof payload.tool_name === 'string' ? payload.tool_name : '' },
+        signal: { name: 'pre_tool_use', toolName, ...(detail ? { detail } : {}) },
         claudeSessionId,
       };
+    }
     case 'PostToolUse':
       return { signal: { name: 'post_tool_use' }, claudeSessionId };
     case 'PostToolUseFailure':
@@ -112,6 +115,51 @@ export function parseHookLine(line: string): ParsedHookEvent {
     default:
       return { signal: null, claudeSessionId };
   }
+}
+
+/** Länge der Kurzfassung — genug zum Einschätzen, kurz genug für eine Inbox-Zeile. */
+const DETAIL_MAX = 140;
+
+/**
+ * Worum bittet der Agent? Kurzfassung aus dem Hook-Payload.
+ *
+ * Das Toolkit hatte diese Information bereits und verwarf sie: Die Inbox meldete
+ * nur „<Feature>: hat eine Frage", während im Payload drei ausformulierte Fragen
+ * mit je drei Optionen standen. Wer priorisieren wollte, musste in die Konsole
+ * wechseln — genau die Arbeit, die die Inbox abnehmen soll.
+ *
+ * Bewusst tolerant: unbekannte Formen liefern null, dann bleibt es beim alten Text.
+ */
+export function askDetail(toolName: string, toolInput: unknown): string | null {
+  if (toolInput === null || typeof toolInput !== 'object') return null;
+  const input = toolInput as Record<string, unknown>;
+
+  if (toolName === 'AskUserQuestion') {
+    const questions = Array.isArray(input.questions) ? input.questions : [];
+    const texts = questions
+      .map((q) => (q && typeof q === 'object' ? (q as Record<string, unknown>).question : null))
+      .filter((q): q is string => typeof q === 'string' && q.trim().length > 0);
+    if (texts.length === 0) return null;
+    const first = clamp(texts[0]!);
+    return texts.length > 1 ? `${first} (+${texts.length - 1} weitere)` : first;
+  }
+
+  if (toolName === 'ExitPlanMode') {
+    const plan = typeof input.plan === 'string' ? input.plan : null;
+    if (!plan) return null;
+    const headline = plan
+      .split('\n')
+      .map((l) => l.replace(/^#+\s*/, '').trim())
+      .find((l) => l.length > 0);
+    return headline ? clamp(headline) : null;
+  }
+
+  return null;
+}
+
+function clamp(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length <= DETAIL_MAX ? flat : `${flat.slice(0, DETAIL_MAX - 1)}…`;
 }
 
 /** Watcht ein Event-File und liefert jede neue Zeile inkrementell (offset-basiert). */

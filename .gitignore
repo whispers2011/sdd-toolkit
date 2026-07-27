@@ -11,3 +11,15 @@ data/
 .env*
 # IDE
 .idea/
+
+# spec-kit-Laufzeitzeiger: pro Worktree, gehört nicht in die Versionskontrolle.
+# Versioniert zeigte die Datei in jedem NEUEN Worktree auf das zuletzt gemergte
+# Feature (vom main-Commit geerbt) und war zugleich Dauerquelle von Merge-Konflikten.
+# Die spec-kit-Skripte legen sie lokal an; das Toolkit übergibt das Spec-Verzeichnis
+# ohnehin explizit im Slash-Kommando.
+.specify/feature.json
+
+# Materialisiertes Projektwissen im Feature-Worktree (git-excluded, nie committen).
+# knowledgeService.ensureGitExcluded() kann das in einem Worktree nicht leisten:
+# dort ist .git eine Datei (gitdir-Redirect), nicht das Verzeichnis mit info/exclude.
+.sdd/
