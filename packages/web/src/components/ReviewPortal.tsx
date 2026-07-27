@@ -143,7 +143,6 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
       ? {
           availability: 'blocked' as const,
           reason: 'Bitte zuerst einen gültigen Ziel-Branch wählen.',
-          confirmAbortsWork: false,
         }
       : approveV;
 

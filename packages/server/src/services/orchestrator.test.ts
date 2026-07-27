@@ -183,7 +183,8 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
     } as unknown as LiveSession;
 
     orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
-    await new Promise((r) => setTimeout(r, 0)); // handleTurnCompleted läuft als void-Promise
+    // Der Guard sitzt vor jedem await in handleTurnCompleted, greift also synchron.
+    await new Promise((r) => setTimeout(r, 10)); // trotzdem Luft lassen, falls doch etwas nachläuft
 
     expect(state.phases.specify.status).toBe('running'); // Phase bleibt offen
     expect(savePhases).not.toHaveBeenCalled();
@@ -212,14 +213,16 @@ describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
 
     orch.handleSubmitConfirmed(session, '/clear'); // Reset bestätigt → zählt NICHT
     orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
-    await new Promise((r) => setTimeout(r, 0));
+    // Der Guard greift synchron vor jedem await — kein Warten nötig, kein Flackern.
     expect(state.phases.specify.status).toBe('running');
 
     orch.handleSubmitConfirmed(session, '/speckit-specify etwas'); // jetzt der Phasenprompt
     orch.handleStatusChange(session, [{ kind: 'turn_completed' }]);
-    await new Promise((r) => setTimeout(r, 0));
 
-    expect(savePhases).toHaveBeenCalled();
+    // handleTurnCompleted läuft als void-Promise und wartet dazwischen auf IO
+    // (parseTaskProgress). Auf eine feste Anzahl Ticks zu warten ist unter Last
+    // unzuverlässig — daher auf den Zustand warten, nicht auf die Zeit.
+    await vi.waitFor(() => expect(savePhases).toHaveBeenCalled());
     expect(state.phases.specify.status).not.toBe('running');
   });
 

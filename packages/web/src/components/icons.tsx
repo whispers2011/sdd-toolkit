@@ -354,6 +354,39 @@ export function ShieldIcon(props: IconProps) {
   );
 }
 
+/** Archivieren/Aufräumen (Ablagekasten). Ersetzt das Emoji 🗄 auf der Kachel. */
+export function ArchiveIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3 6h18v3H3z" />
+      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
+      <path d="M10 13h4" />
+    </Base>
+  );
+}
+
+/** Qualitäts-Gate läuft (Waage). Ersetzt das Emoji ⚖ auf der Kachel. */
+export function ScalesIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 3v18" />
+      <path d="M7 21h10" />
+      <path d="M4 7h16" />
+      <path d="M7 7l-3 6h6zM17 7l-3 6h6z" />
+    </Base>
+  );
+}
+
+/** Review ansehen (Auge). Ersetzt das Emoji 👀 auf der Kachel. */
+export function ReviewIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </Base>
+  );
+}
+
 /** Verifikation (Klemmbrett mit Häkchen). */
 export function VerifyIcon(props: IconProps) {
   return (

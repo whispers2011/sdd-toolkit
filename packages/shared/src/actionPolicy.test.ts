@@ -382,20 +382,29 @@ describe.each(['archive', 'delete'] as const)('%s — Aufräum-Aktion (FR-017/FR
     }
   });
 
-  it('bleibt in JEDEM Zustand verfügbar — auch beschäftigt und in jeder Stufe', () => {
-    for (const stage of ALL_STAGES) {
-      const v = evaluate(ctx({ integration: stage, session: 'working', phases: phasesWith({ plan: 'running' }) }));
-      expect(v.availability, stage).toBe('available');
+  // Verschärft am 27.07.2026: Aufräumen war zuvor in JEDEM Zustand verfügbar und nur
+  // durch einen Warnsatz im Dialog abgesichert. Beide Aktionen sind destruktiv und
+  // treffen uncommittete Arbeit — an diesem Tag lagen zeitweise 38 ungesicherte
+  // Dateien im Worktree, während die Oberfläche „fertig" zeigte.
+  it('ist gesperrt, solange gearbeitet wird — mit sichtbarem Grund', () => {
+    for (const busy of [
+      ctx({ session: 'working' }),
+      ctx({ session: 'awaiting_input' }),
+      ctx({ phases: phasesWith({ plan: 'running' }) }),
+      ctx({ gateRunning: true }),
+      ctx({ integration: 'merging' }),
+    ]) {
+      const v = evaluate(busy);
+      expect(v.availability).toBe('blocked');
+      expect(v.reason).toBe(busyReason(busy)); // wortgleich mit jeder anderen Aktion
     }
   });
 
-  it('confirmAbortsWork nur, solange gearbeitet wird', () => {
-    expect(evaluate(ctx({ session: 'working' })).confirmAbortsWork).toBe(true);
-    expect(evaluate(ctx({ phases: phasesWith({ plan: 'running' }) })).confirmAbortsWork).toBe(true);
-    expect(evaluate(ctx({ gateRunning: true })).confirmAbortsWork).toBe(true);
-    expect(evaluate(ctx({ integration: 'merging' })).confirmAbortsWork).toBe(true);
-    expect(evaluate(ctx()).confirmAbortsWork).toBe(false);
-    expect(evaluate(ctx({ integration: 'awaiting_human_review' })).confirmAbortsWork).toBe(false);
+  it('ist verfügbar, sobald nichts mehr läuft — auch in Entscheidungsstufen', () => {
+    expect(evaluate(ctx()).availability).toBe('available');
+    expect(evaluate(ctx({ integration: 'awaiting_human_review' })).availability).toBe('available');
+    expect(evaluate(ctx({ integration: 'conflict_escalated' })).availability).toBe('available');
+    expect(evaluate(ctx({ integration: 'merged' })).availability).toBe('available');
   });
 });
 
@@ -519,11 +528,16 @@ describe('SC-002 — beschäftigt sperrt jede auslösende Aktion', () => {
     }
   });
 
-  it('Aufräum-Aktionen bleiben trotzdem auslösbar', () => {
+  // Seit 27.07.2026 gilt SC-002 ausnahmslos: Auch die Aufräum-Aktionen sind
+  // gesperrt, solange gearbeitet wird. Sie sind destruktiv und trafen bis dahin
+  // uncommittete Arbeit, abgesichert nur durch einen Warnsatz im Dialog.
+  it('Aufräum-Aktionen sind ebenfalls gesperrt, solange gearbeitet wird', () => {
     for (const c of beschaeftigt) {
-      expect(evaluateAction('archive', c).availability).toBe('available');
-      expect(evaluateAction('delete', c).availability).toBe('available');
-      expect(evaluateAction('delete', c).confirmAbortsWork).toBe(true);
+      for (const action of ['archive', 'delete'] as const) {
+        const v = evaluateAction(action, c);
+        expect(v.availability).not.toBe('available');
+        expect(v.reason).not.toBeNull();
+      }
     }
   });
 });
@@ -627,9 +641,20 @@ describe('Darstellungsregeln — jede Aktion kennt hidden UND blocked', () => {
     },
   );
 
-  it('delete ist als Aufräum-Aktion immer verfügbar (kein hidden, kein blocked)', () => {
+  // delete wird nie ausgeblendet — es ist die letzte verfügbare Aktion und muss
+  // auffindbar bleiben. Gesperrt wird es nur, solange gearbeitet wird (seit
+  // 27.07.2026); dann trägt es einen Grund.
+  it('delete ist nie versteckt und genau dann gesperrt, wenn gearbeitet wird', () => {
     for (const c of generatedContexts().slice(0, 300)) {
-      expect(evaluateAction('delete', c).availability).toBe('available');
+      const v = evaluateAction('delete', c);
+      expect(v.availability).not.toBe('hidden');
+      if (busyReason(c) === null) {
+        expect(v.availability).toBe('available');
+        expect(v.reason).toBeNull();
+      } else {
+        expect(v.availability).toBe('blocked');
+        expect(v.reason).toBe(busyReason(c));
+      }
     }
   });
 });

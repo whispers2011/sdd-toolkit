@@ -49,8 +49,6 @@ export interface ActionVerdict {
   availability: ActionAvailability;
   /** Ein Satz; null GENAU DANN, wenn availability === 'available'. */
   reason: string | null;
-  /** Rückfrage muss auf den Abbruch laufender Arbeit hinweisen (FR-008). */
-  confirmAbortsWork: boolean;
 }
 
 // ---------- Feature-Zustand ----------
@@ -204,14 +202,14 @@ export function busyReason(ctx: FeatureActionContext): string | null {
 
 // ---------- Entscheidungsmatrix ----------
 
-const AVAILABLE: ActionVerdict = { availability: 'available', reason: null, confirmAbortsWork: false };
+const AVAILABLE: ActionVerdict = { availability: 'available', reason: null };
 
 function blocked(reason: string): ActionVerdict {
-  return { availability: 'blocked', reason, confirmAbortsWork: false };
+  return { availability: 'blocked', reason };
 }
 
 function hidden(reason: string): ActionVerdict {
-  return { availability: 'hidden', reason, confirmAbortsWork: false };
+  return { availability: 'hidden', reason };
 }
 
 /**
@@ -312,7 +310,23 @@ function evaluateReviewDecision(ctx: FeatureActionContext): ActionVerdict {
  * integrierte Features. Sie werden nie gesperrt — stattdessen weist die
  * Rückfrage auf den Abbruch laufender Arbeit hin (FR-008).
  */
+/**
+ * Aufräumen (archivieren/löschen) ist nur an einem ruhenden Feature erlaubt.
+ *
+ * Bis 27.07.2026 gab diese Funktion bedingungslos `available` zurück und benutzte
+ * `busyReason` NUR für den Warnsatz im Bestätigungsdialog — obwohl jede andere
+ * Aktion über genau dieses `busyReason` sperrt. Beide Aktionen sind destruktiv und
+ * treffen uncommittete Arbeit: an diesem Tag lagen zwischenzeitlich 38 ungesicherte
+ * Dateien (32 davon Quellcode) im Worktree, während die Oberfläche „fertig und
+ * verifiziert" zeigte und der Aufräumen-Button ungesperrt auf der Kachel saß.
+ * Zum Vergleich: der Datenverlust vom 24.07. umfasste 31 Dateien.
+ *
+ * `blocked` statt `hidden`: Der Grund soll sichtbar sein („es wird gerade
+ * gearbeitet"), damit die Aktion nicht spurlos verschwindet und erklärbar bleibt.
+ */
 function evaluateCleanup(action: 'archive' | 'delete', ctx: FeatureActionContext): ActionVerdict {
   if (action === 'archive' && ctx.archived) return hidden(ACTION_REASON.alreadyArchived);
-  return { availability: 'available', reason: null, confirmAbortsWork: busyReason(ctx) !== null };
+  const busy = busyReason(ctx);
+  if (busy !== null) return blocked(busy);
+  return AVAILABLE;
 }

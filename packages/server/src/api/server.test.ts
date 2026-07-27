@@ -295,13 +295,23 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
     expect(started).toEqual([]);
   });
 
-  it.each(BUSY_SOURCES)('beschäftigt (%s): Integration wird abgelehnt, Aufräumen nicht', async (_n, busy) => {
+  // Verschärft am 27.07.2026: Aufräumen wird ebenfalls abgelehnt, solange gearbeitet
+  // wird. Es ist destruktiv und traf zuvor uncommittete Arbeit, abgesichert nur durch
+  // einen Warnsatz im Bestätigungsdialog.
+  it.each(BUSY_SOURCES)('beschäftigt (%s): Integration UND Aufräumen werden abgelehnt', async (_n, busy) => {
     features.savePhases(featureId, ALL_APPROVED);
     busy();
-    for (const url of [`/api/features/${featureId}/integrate`, `/api/features/${featureId}/approve-merge`]) {
+    for (const url of [
+      `/api/features/${featureId}/integrate`,
+      `/api/features/${featureId}/approve-merge`,
+      `/api/features/${featureId}/archive`,
+    ]) {
       expect((await post(url)).statusCode, url).toBe(409);
     }
-    // Aufräum-Aktionen werden nie gesperrt (FR-017).
+  });
+
+  it('nach Ende der Arbeit ist Aufräumen wieder möglich', async () => {
+    features.savePhases(featureId, ALL_APPROVED);
     expect((await post(`/api/features/${featureId}/archive`)).statusCode).toBe(200);
   });
 

@@ -148,6 +148,23 @@ export const AGENT_TRIGGER_META: Record<AgentTriggerKind, AgentTriggerMeta> = {
 export type IntegrationTone = 'idle' | 'progress' | 'human' | 'escalation' | 'done';
 
 /**
+ * Textfarbe je Ton — die eine Zuordnung für alle Oberflächen.
+ *
+ * Das Board zeigte bis 27.07.2026 den ROHEN Stage-Bezeichner in Sky-Blau, der Farbe
+ * für laufende Vorgänge. `awaiting_human_review` las sich dadurch wie ein aktiver
+ * Zustand, obwohl die Stufe dauerhaft auf eine Entscheidung wartet — und, ernster:
+ * `verify_failed`, `gate_failed` und `conflict_escalated` sahen aus wie Fortschritt.
+ * Farbkonvention des Projekts: emerald = automatisch, amber = Mensch, rot = eskaliert.
+ */
+export const INTEGRATION_TONE_CLASS: Record<IntegrationTone, string> = {
+  idle: 'text-zinc-400',
+  progress: 'text-sky-400',
+  human: 'text-amber-400',
+  escalation: 'text-red-400',
+  done: 'text-emerald-400',
+};
+
+/**
  * Anzeige je Integrations-Stage. Über `Record<IntegrationStage, …>` getypt ⇒
  * eine neue Stage erzwingt hier einen Eintrag.
  */

@@ -167,8 +167,15 @@ describe('ActionGuard', () => {
     expect(() => guard.assertAllowed('review_reject', featureId)).not.toThrow();
   });
 
-  it('lässt Aufräum-Aktionen auch bei laufender Arbeit durch (FR-017)', () => {
+  // Verschärft am 27.07.2026: destruktive Aufräum-Aktionen sind gesperrt, solange
+  // gearbeitet wird — sie trafen zuvor uncommittete Arbeit.
+  it('sperrt Aufräum-Aktionen bei laufender Arbeit', () => {
     sessionState = { kind: 'working' };
+    expect(() => guard.assertAllowed('archive', featureId)).toThrow();
+    expect(() => guard.assertAllowed('delete', featureId)).toThrow();
+  });
+
+  it('lässt Aufräum-Aktionen am ruhenden Feature durch', () => {
     expect(() => guard.assertAllowed('archive', featureId)).not.toThrow();
   });
 

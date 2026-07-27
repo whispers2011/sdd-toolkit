@@ -9,12 +9,20 @@ import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
 import { FeatureResultDialog } from './FeatureResultDialog.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
-import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
+import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
+import { FeatureAgentSelect } from './FeatureAgentSelect.js';
 import {
   SpecifyResultIcon,
   PlanResultIcon,
   TasksResultIcon,
   ChecklistResultIcon,
+  SettingsIcon,
+  ShieldIcon,
+  ArchiveIcon,
+  ScalesIcon,
+  ArrowRightIcon,
+  RestartIcon,
+  ReviewIcon,
   type IconProps,
 } from './icons.js';
 
@@ -189,7 +197,8 @@ function FeatureCard({
   onDragState: (featureId: string | null) => void;
 }) {
   const { state, dispatch } = useStore();
-  const [showAutomation, setShowAutomation] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [steps, setSteps] = useState<FeatureArtifactStep[]>([]);
   const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
@@ -247,17 +256,18 @@ function FeatureCard({
           {feature.name}
         </button>
         {state.gateRunning[feature.id] && (
-          <span className="ml-auto animate-pulse text-xs text-violet-300" title="Qualitäts-Gate (Agent) läuft">
-            ⚖
+          <span className="ml-auto animate-pulse text-violet-300" title="Qualitäts-Gate (Agent) läuft">
+            <ScalesIcon />
           </span>
         )}
         {session && <span className={`status-dot status-${session.status} ${state.gateRunning[feature.id] ? '' : 'ml-auto'}`} />}
         <button
-          onClick={() => setShowAutomation(!showAutomation)}
-          className={`${session || state.gateRunning[feature.id] ? '' : 'ml-auto '}rounded px-1 text-xs text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
-          title="Automation-Override für dieses Feature"
+          onClick={() => setShowSettings(!showSettings)}
+          className={`${session || state.gateRunning[feature.id] ? '' : 'ml-auto '}rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
+          title="Einstellungen für dieses Feature"
+          aria-expanded={showSettings}
         >
-          ⚙
+          <SettingsIcon />
         </button>
       </div>
       <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
@@ -309,8 +319,15 @@ function FeatureCard({
         />
       )}
 
-      {showAutomation && (
-        <div className="mt-2 space-y-1">
+      {/*
+        Feature-Einstellungen: Automation, Agenten und Aufräumen unter EINEM Einstieg.
+        Vorher war die Automation der einzige Inhalt des Zahnrads, die Agenten hingen
+        an einem eigenen Icon in der Konsolen-Kopfleiste (nur bei geöffneter Konsole
+        erreichbar) und Aufräumen war ein Dauerbutton auf der Karte.
+      */}
+      {showSettings && (
+        <div className="mt-2 space-y-2 rounded border border-zinc-800 bg-zinc-900/60 p-2">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">Automation</div>
           <div className="flex gap-1">
             <PresetChip
               active={Object.keys(feature.automation).length === 0}
@@ -335,8 +352,33 @@ function FeatureCard({
               L3
             </PresetChip>
           </div>
+
+          <div className="flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-2">
+            <button
+              onClick={() => setShowAgents(true)}
+              className={`${CARD_ACTION_CLASS} flex items-center gap-1`}
+              title="Agents für dieses Feature aktivieren oder deaktivieren"
+            >
+              <ShieldIcon /> Agents
+            </button>
+            {/*
+              Aufräumen ist destruktiv und trifft uncommittete Arbeit — die Policy
+              sperrt es, solange gearbeitet wird, und nennt den Grund. Bis 27.07.2026
+              war es in jedem Zustand auslösbar, abgesichert nur durch einen Warnsatz.
+            */}
+            {archiveV && (
+              <ActionButton
+                verdict={archiveV}
+                onClick={() => setConfirmArchive(true)}
+                className={`${CARD_ACTION_CLASS} flex items-center gap-1`}
+              >
+                <ArchiveIcon /> Aufräumen
+              </ActionButton>
+            )}
+          </div>
         </div>
       )}
+      {showAgents && <FeatureAgentSelect featureId={feature.id} onClose={() => setShowAgents(false)} />}
 
       {live ? (
         <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
@@ -398,9 +440,9 @@ function FeatureCard({
           <ActionButton
             verdict={integrateV}
             onClick={() => run(`integrate:${feature.id}`, () => api.integrate(feature.id))}
-            className={CARD_ACTION_CLASS}
+            className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
           >
-            ⇥ Integrieren
+            <ArrowRightIcon /> Integrieren
           </ActionButton>
         )}
         {/* Betrachtend (FR-007): das Portal öffnet nur eine Ansicht und wird nie gesperrt. */}
@@ -409,13 +451,19 @@ function FeatureCard({
           <ActionButton
             verdict={retryV}
             onClick={() => run(`retry:${feature.id}`, () => api.retryIntegration(feature.id))}
-            className={CARD_ACTION_CLASS}
+            className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
           >
-            ↻ Erneut
+            <RestartIcon /> Erneut
           </ActionButton>
         )}
         {feature.integration !== 'none' && feature.integration !== 'merged' && (
-          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-sky-400">{feature.integration}</span>
+          <span
+            className={`rounded bg-zinc-800 px-1.5 py-0.5 text-xs ${
+              INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]
+            }`}
+          >
+            {INTEGRATION_STAGE_META[feature.integration].label}
+          </span>
         )}
         {feature.integration === 'merged' && project?.integrationMode === 'pr' && (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400">PR erstellt</span>
@@ -430,23 +478,13 @@ function FeatureCard({
               → {feature.integrationTarget}
             </span>
           )}
-        {/* Aufräumen statt Abschluss (FR-017): für jedes nicht archivierte Feature. */}
-        {archiveV && (
-          <ActionButton
-            verdict={archiveV}
-            onClick={() => setConfirmArchive(true)}
-            className={CARD_ACTION_CLASS}
-          >
-            🗄 Aufräumen (archivieren)
-          </ActionButton>
-        )}
+        {/* Aufräumen sitzt im Zahnrad-Menü, nicht mehr als Dauerbutton auf der Karte. */}
         {confirmArchive && (
           <ConfirmDialog
             title="Feature archivieren"
             message={
               `„${feature.name}" archivieren?\n\nArchivieren räumt auf — es schließt das Feature nicht ab. ` +
-              `Die Session wird beendet; Specs und Git-Historie bleiben im Repo erhalten.` +
-              (archiveV?.confirmAbortsWork ? '\n\nAchtung: Die laufende Arbeit wird dabei abgebrochen.' : '')
+              `Die Session wird beendet; Specs und Git-Historie bleiben im Repo erhalten.`
             }
             confirmLabel="Archivieren"
             onConfirm={() => run(`archive:${feature.id}`, () => api.archiveFeature(feature.id))}
@@ -464,8 +502,8 @@ const CARD_ACTION_CLASS =
 function OpenReviewButton({ featureId }: { featureId: string }) {
   const openReview = useContext(OpenReviewContext);
   return (
-    <button onClick={() => openReview(featureId)} className={CARD_ACTION_CLASS}>
-      👀 Review
+    <button onClick={() => openReview(featureId)} className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}>
+      <ReviewIcon /> Review
     </button>
   );
 }

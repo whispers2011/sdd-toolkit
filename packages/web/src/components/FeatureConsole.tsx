@@ -23,9 +23,9 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
   const ctx = featureActionContext(state, featureId);
-  // Löschen ist eine Aufräum-Aktion und nie gesperrt — die Rückfrage weist aber
-  // ausdrücklich auf den Abbruch laufender Arbeit hin (FR-008).
-  const deleteAbortsWork = ctx ? evaluateAction('delete', ctx).confirmAbortsWork : false;
+  // Löschen ist destruktiv und trifft uncommittete Arbeit — seit 27.07.2026 sperrt
+  // die Policy es, solange gearbeitet wird, statt nur im Dialog davor zu warnen.
+  const deleteV = ctx ? evaluateAction('delete', ctx) : null;
 
   if (!feature) return <div className="p-8 text-zinc-500">Feature nicht gefunden.</div>;
 
@@ -103,6 +103,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
                 : 'Feature löschen (Worktree + Branch + alle Spuren entfernen)'
             }
             onClick={() => setShowDelete(true)}
+            disabledReason={deleteV && deleteV.availability !== 'available' ? deleteV.reason : null}
           >
             <DeleteIcon />
           </HeaderIcon>
@@ -121,8 +122,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
               ? `„${feature.name}" wird aus dem Toolkit entfernt: Läufe, Logs, Verlauf und interne Spuren. ` +
                 `Der bereits in „${project?.defaultBranch ?? 'den Haupt-Branch'}" gemergte Code bleibt vollständig erhalten.`
               : `„${feature.name}" wird endgültig gelöscht: Worktree und Branch (inkl. NICHT gemergter Arbeit), ` +
-                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`) +
-            (deleteAbortsWork ? '\n\nAchtung: Die laufende Arbeit wird dabei abgebrochen.' : '')
+                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`)
           }
           confirmLabel={merged ? 'Aus Toolkit entfernen' : 'Endgültig löschen'}
           onConfirm={() => {
@@ -156,13 +156,24 @@ function HeaderIcon({
   title,
   onClick,
   children,
+  disabledReason,
 }: {
   title: string;
   onClick: () => void;
   children: React.ReactNode;
+  /** Gesetzt ⇒ Icon ist gesperrt und nennt im Tooltip den Grund. */
+  disabledReason?: string | null;
 }) {
+  const blocked = !!disabledReason;
   return (
-    <button onClick={onClick} title={title} className="rounded px-1.5 py-0.5 text-base leading-none text-zinc-300 hover:bg-zinc-800">
+    <button
+      onClick={blocked ? undefined : onClick}
+      disabled={blocked}
+      title={disabledReason ?? title}
+      className={`rounded px-1.5 py-0.5 text-base leading-none ${
+        blocked ? 'cursor-not-allowed text-zinc-600' : 'text-zinc-300 hover:bg-zinc-800'
+      }`}
+    >
       {children}
     </button>
   );
