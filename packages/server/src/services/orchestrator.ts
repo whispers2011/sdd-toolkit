@@ -778,27 +778,32 @@ export class Orchestrator {
         ...fromTelemetry,
         telemetryFinalAt: finalAt,
       });
-      this.scheduleTelemetryReconcile(session, running, now);
+      this.scheduleLateReconcile(session, running, now);
       return;
     }
 
     this.deps.executions.finishWithUsage(running.executionId, exitCode, this.meterTurn(session, running));
     // Auch ohne Meldungen beim Abschluss kann Telemetrie noch eintreffen (kurzer Lauf,
     // Exportintervall 5 s). Der Nachtrag ersetzt die Transkript-Zahl dann vollständig.
-    this.scheduleTelemetryReconcile(session, running, now);
+    this.scheduleLateReconcile(session, running, now);
   }
 
   /**
-   * Nachtrag verspäteter Meldungen (FR-011): Bis zum Ablauf des Nachlauffensters
-   * wird der Lauf neu verrechnet und die Ansicht über den Bus aktualisiert. Danach
-   * gilt seine Zahl als endgültig und spätere Meldungen verfallen (FR-012, SC-005).
+   * Nachtrag verspäteter Zahlen (FR-011): Bis zum Ablauf des Nachlauffensters wird
+   * der Lauf neu verrechnet und die Ansicht über den Bus aktualisiert. Danach gilt
+   * seine Zahl als endgültig und spätere Meldungen verfallen (FR-012, SC-005).
    *
    * Es wird jedes Mal das VOLLE Fenster neu summiert, nicht addiert — dieselbe
    * requestId kann so nie zweimal zählen (FR-006).
+   *
+   * Gilt AUCH für die Transkript-Rückfallebene: Claude Code schreibt die
+   * Schlusszeilen eines Turns samt `usage` erst NACH dem Stop-Hook. Der beim
+   * Abschluss fotografierte End-Offset schnitt sie deshalb systematisch ab —
+   * gemessen am 27.07.2026 fehlten so 7,3 % (specify) bzw. 29,9 % (clarify) des
+   * Phasenverbrauchs, jeweils exakt die letzte Nachricht. Der Anteil ist nicht
+   * konstant: je kürzer die Phase, desto schwerer wiegt ihre Schlussnachricht.
    */
-  private scheduleTelemetryReconcile(session: LiveSession, running: RunningPhase, finishedAt: number): void {
-    if (!this.deps.telemetry) return;
-
+  private scheduleLateReconcile(session: LiveSession, running: RunningPhase, finishedAt: number): void {
     const attempt = (delay: number, last: boolean) => {
       const timer = setTimeout(() => {
         this.telemetryReconcileTimers.delete(timer);
@@ -810,9 +815,11 @@ export class Orchestrator {
               executionId: running.executionId,
               featureId: session.featureId,
             });
+          } else {
+            this.reconcileTranscriptTail(session, running);
           }
         } catch (err) {
-          console.warn('[telemetry] Nachtrag fehlgeschlagen:', (err as Error).message);
+          console.warn('[metering] Nachtrag fehlgeschlagen:', (err as Error).message);
         }
         if (last) this.deps.telemetry?.forget(session.id);
       }, delay);
@@ -824,6 +831,24 @@ export class Orchestrator {
     // den Regelfall, einmal am Ende des Nachlauffensters als Sicherheitsnetz.
     attempt(8_000, false);
     attempt(TELEMETRY_GRACE_MS, true);
+  }
+
+  /**
+   * Transkript nach Ablauf der Frist erneut vermessen und die Zahl nachziehen,
+   * falls die Datei seit dem Abschluss gewachsen ist.
+   *
+   * Nur relevant ohne Telemetrie — liegen Meldungen vor, ersetzen sie die
+   * Transkript-Zahl ohnehin vollständig (FR-016: genau EIN Schreibpfad je Lauf).
+   */
+  private reconcileTranscriptTail(session: LiveSession, running: RunningPhase): void {
+    const usage = this.meterTurn(session, running);
+    if (usage.tokensSource !== 'transcript') return; // Schätzung nicht nachziehen
+    this.deps.executions.updateTelemetry(running.executionId, usage);
+    this.persistTranscriptRange(session, running); // End-Offset auf den vollen Turn
+    bus.emitEvent('execution_updated', {
+      executionId: running.executionId,
+      featureId: session.featureId,
+    });
   }
 
   /**
