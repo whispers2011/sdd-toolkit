@@ -15,6 +15,7 @@ import type { AgentDefinition, AgentRunSummary, AgentTrigger, Feature, Project }
 import type { AttentionRepo, ExecutionRepo } from '../db/repos.js';
 import type { AgentRepo, AgentRunRepo } from '../db/agentRepo.js';
 import { buildHeadlessArgv } from '../pty/commandBuilder.js';
+import { headlessTelemetry } from '../telemetry/headlessTelemetry.js';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import { isGitRepo } from '../git/git.js';
 import { bus } from '../events.js';
@@ -27,7 +28,12 @@ export interface GateOutcome {
 }
 
 /** Headless-Runner injizierbar für Tests (argv → Exit-Code). */
-export type HeadlessRunner = (argv: string[], cwd: string, logPath: string) => Promise<number>;
+export type HeadlessRunner = (
+  argv: string[],
+  cwd: string,
+  logPath: string,
+  extraEnv?: Record<string, string>,
+) => Promise<number>;
 
 export interface AgentGateDeps {
   agents: AgentRepo;
@@ -35,6 +41,8 @@ export interface AgentGateDeps {
   executions: ExecutionRepo;
   attention: AttentionRepo;
   dataDir: string;
+  /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
+  port: number;
   runner?: HeadlessRunner;
 }
 
@@ -153,8 +161,13 @@ export class AgentGateService {
     });
 
     const logPath = join(this.deps.dataDir, 'logs', `${execId}.log`);
-    const argv = buildHeadlessArgv(prompt, agent.model ? { model: agent.model } : {});
-    const exitCode = await this.runner(argv, worktree, logPath);
+    // Ein Headless-Lauf IST genau ein Lauf — seine Meldungen tragen direkt die execId.
+    const tele = headlessTelemetry(this.deps.dataDir, execId, this.deps.port);
+    const argv = buildHeadlessArgv(prompt, {
+      ...(agent.model ? { model: agent.model } : {}),
+      settingsPath: tele.settingsPath,
+    });
+    const exitCode = await this.runner(argv, worktree, logPath, tele.env);
 
     const reportPath = join(worktree, reviewFile);
     const content = existsSync(reportPath) ? await readFile(reportPath, 'utf8') : null;
@@ -229,8 +242,8 @@ export class AgentGateService {
 }
 
 /** Produktions-Runner: `claude -p …` im Worktree, 20-min-SIGKILL, Log-Mitschnitt. */
-const defaultRunner: HeadlessRunner = async (argv, cwd, logPath) => {
-  const env = await loginShellEnv();
+const defaultRunner: HeadlessRunner = async (argv, cwd, logPath, extraEnv = {}) => {
+  const env = { ...(await loginShellEnv()), ...extraEnv };
   const log = createWriteStream(logPath, { flags: 'a' });
   const [cmd, ...args] = argv;
   return new Promise<number>((resolve) => {

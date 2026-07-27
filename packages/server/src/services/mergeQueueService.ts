@@ -36,6 +36,8 @@ export interface MergeQueueDeps {
   ptys: PtySessionManager;
   agentGate: AgentGateService;
   dataDir: string;
+  /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
+  port: number;
 }
 
 /**
@@ -474,6 +476,8 @@ export class MergeQueueService {
         conflictFiles: rebase.files,
         logDir: join(this.deps.dataDir, 'logs'),
         executionId: execId,
+        dataDir: this.deps.dataDir,
+        port: this.deps.port,
       });
       await this.captureDiff(feature.worktreePath, execId, 'post');
       this.deps.executions.finish(execId, res.exitCode, res.tokens);

@@ -412,6 +412,12 @@ export interface ExecutionUsageInput {
   cacheReadTokens?: number | null;
   cacheCreationTokens?: number | null;
   tokensSource?: ExecutionRecord['tokensSource'];
+  /** Von der CLI gemeldete Werte (Herkunft 'telemetry'). */
+  costMicros?: number | null;
+  subagentTokens?: number | null;
+  subagentCostMicros?: number | null;
+  model?: string | null;
+  telemetryFinalAt?: number | null;
 }
 
 export class ExecutionRepo {
@@ -450,7 +456,8 @@ export class ExecutionRepo {
     this.db
       .prepare(
         `UPDATE executions SET status=?, finished_at=?, exit_code=?, tokens=?,
-           input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
+           input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?,
+           cost_micros=?, subagent_tokens=?, subagent_cost_micros=?, model=?, telemetry_final_at=?
          WHERE id=?`,
       )
       .run(
@@ -463,6 +470,41 @@ export class ExecutionRepo {
         usage.cacheReadTokens ?? null,
         usage.cacheCreationTokens ?? null,
         usage.tokensSource ?? null,
+        usage.costMicros ?? null,
+        usage.subagentTokens ?? null,
+        usage.subagentCostMicros ?? null,
+        usage.model ?? null,
+        usage.telemetryFinalAt ?? null,
+        id,
+      );
+  }
+
+  /**
+   * Nachtrag verspätet eingetroffener Telemetrie (FR-011): aktualisiert NUR die
+   * Verbrauchsfelder eines bereits abgeschlossenen Laufs. Status, exit_code und
+   * finished_at bleiben unangetastet — der Lauf ist fertig, seine Zahl wird nur
+   * vervollständigt. `telemetry_final_at` bleibt ebenfalls stehen, damit das
+   * Endgültigkeitsfenster durch einen Nachtrag nicht wandert (FR-012).
+   */
+  updateTelemetry(id: string, usage: ExecutionUsageInput): void {
+    this.db
+      .prepare(
+        `UPDATE executions SET tokens=?, input_tokens=?, output_tokens=?,
+           cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?,
+           cost_micros=?, subagent_tokens=?, subagent_cost_micros=?, model=?
+         WHERE id=?`,
+      )
+      .run(
+        usage.tokens ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.cacheReadTokens ?? null,
+        usage.cacheCreationTokens ?? null,
+        usage.tokensSource ?? null,
+        usage.costMicros ?? null,
+        usage.subagentTokens ?? null,
+        usage.subagentCostMicros ?? null,
+        usage.model ?? null,
         id,
       );
   }
@@ -528,6 +570,11 @@ export class ExecutionRepo {
       cacheReadTokens: (r.cache_read_tokens as number | null) ?? null,
       cacheCreationTokens: (r.cache_creation_tokens as number | null) ?? null,
       tokensSource: (r.tokens_source as ExecutionRecord['tokensSource']) ?? null,
+      costMicros: (r.cost_micros as number | null) ?? null,
+      subagentTokens: (r.subagent_tokens as number | null) ?? null,
+      subagentCostMicros: (r.subagent_cost_micros as number | null) ?? null,
+      model: (r.model as string | null) ?? null,
+      telemetryFinalAt: (r.telemetry_final_at as number | null) ?? null,
       transcriptOffsetStart: (r.transcript_offset_start as number | null) ?? null,
       transcriptOffsetEnd: (r.transcript_offset_end as number | null) ?? null,
       transcriptPath: (r.transcript_path as string | null) ?? null,

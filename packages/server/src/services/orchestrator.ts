@@ -13,6 +13,8 @@ import {
   resolveOptimization,
   shouldAutoProgress,
   startPhase,
+  selectEventsForWindow,
+  summarizeEvents,
   sumUsage,
   displayStatus,
   usageTotalTokens,
@@ -34,6 +36,7 @@ import {
   transcriptSize,
 } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
+import { TELEMETRY_GRACE_MS, type TelemetryStore } from '../telemetry/telemetryStore.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
 import { bus } from '../events.js';
@@ -59,6 +62,8 @@ export interface OrchestratorDeps {
   knowledge: KnowledgeService;
   agentGate: AgentGateService;
   dataDir: string;
+  /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
+  telemetry?: TelemetryStore;
 }
 
 /** Laufender Phasen-Kontext pro Feature (ephemer). */
@@ -90,6 +95,7 @@ export class Orchestrator {
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
+  private telemetryReconcileTimers = new Set<NodeJS.Timeout>(); // Nachtrag verspäteter Meldungen
 
   constructor(private deps: OrchestratorDeps) {}
 
@@ -613,8 +619,10 @@ export class Orchestrator {
 
     if (running) {
       this.runningPhases.delete(featureId);
-      // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
-      this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
+      // Verbrauch: vorrangig aus den Meldungen der CLI, sonst wie bisher aus dem
+      // Transkript. Genau EIN Schreibpfad je Lauf — die Werte beider Quellen
+      // werden nie addiert (FR-016).
+      this.finishWithMetering(session, running, 0);
       // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
       this.persistTranscriptRange(session, running);
 
@@ -692,9 +700,115 @@ export class Orchestrator {
   }
 
   /**
+   * Lauf abschliessen und dabei die Quelle wählen (FR-014/FR-015/FR-016).
+   *
+   * Liegen Meldungen der CLI vor, gewinnen sie und `meterTurn` läuft GAR NICHT erst —
+   * das Nicht-Addieren ist damit eine strukturelle Eigenschaft und keine Regel, die
+   * eingehalten werden müsste. Zusätzlich bleibt der Lauf fünf Minuten nachtragsfähig,
+   * weil Meldungen in Intervallen eintreffen und ein kurzer Lauf beim Abschluss noch
+   * unvollständig sein kann (FR-011).
+   */
+  private finishWithMetering(session: LiveSession, running: RunningPhase, exitCode: number): void {
+    const now = Date.now();
+    const fromTelemetry = this.meterFromTelemetry(session, running, now);
+
+    if (fromTelemetry) {
+      const finalAt = now + TELEMETRY_GRACE_MS;
+      this.deps.executions.finishWithUsage(running.executionId, exitCode, {
+        ...fromTelemetry,
+        telemetryFinalAt: finalAt,
+      });
+      this.scheduleTelemetryReconcile(session, running, now);
+      return;
+    }
+
+    this.deps.executions.finishWithUsage(running.executionId, exitCode, this.meterTurn(session, running));
+    // Auch ohne Meldungen beim Abschluss kann Telemetrie noch eintreffen (kurzer Lauf,
+    // Exportintervall 5 s). Der Nachtrag ersetzt die Transkript-Zahl dann vollständig.
+    this.scheduleTelemetryReconcile(session, running, now);
+  }
+
+  /**
+   * Nachtrag verspäteter Meldungen (FR-011): Bis zum Ablauf des Nachlauffensters
+   * wird der Lauf neu verrechnet und die Ansicht über den Bus aktualisiert. Danach
+   * gilt seine Zahl als endgültig und spätere Meldungen verfallen (FR-012, SC-005).
+   *
+   * Es wird jedes Mal das VOLLE Fenster neu summiert, nicht addiert — dieselbe
+   * requestId kann so nie zweimal zählen (FR-006).
+   */
+  private scheduleTelemetryReconcile(session: LiveSession, running: RunningPhase, finishedAt: number): void {
+    if (!this.deps.telemetry) return;
+
+    const attempt = (delay: number, last: boolean) => {
+      const timer = setTimeout(() => {
+        this.telemetryReconcileTimers.delete(timer);
+        try {
+          const usage = this.meterFromTelemetry(session, running, finishedAt);
+          if (usage) {
+            this.deps.executions.updateTelemetry(running.executionId, usage);
+            bus.emitEvent('execution_updated', {
+              executionId: running.executionId,
+              featureId: session.featureId,
+            });
+          }
+        } catch (err) {
+          console.warn('[telemetry] Nachtrag fehlgeschlagen:', (err as Error).message);
+        }
+        if (last) this.deps.telemetry?.forget(session.id);
+      }, delay);
+      timer.unref?.();
+      this.telemetryReconcileTimers.add(timer);
+    };
+
+    // Zweimal nachfassen: einmal kurz nach dem üblichen Exportintervall (5 s) für
+    // den Regelfall, einmal am Ende des Nachlauffensters als Sicherheitsnetz.
+    attempt(8_000, false);
+    attempt(TELEMETRY_GRACE_MS, true);
+  }
+
+  /**
+   * Verbrauch eines Laufs aus den Meldungen der CLI (FR-014). Vorrangige Quelle:
+   * jede Meldung trägt ihren eigenen Zeitstempel und die Marke ihrer Session, also
+   * gehört genau das zum Lauf, was zwischen seinem Start und seinem Ende gemeldet
+   * wurde. Damit entfällt die aus Byte-Positionen rekonstruierte Startmarke —
+   * die Quelle des Zwei-Minuten-Laufs mit 62 Mio. Tokens.
+   *
+   * Liefert `null`, wenn keine Meldungen vorliegen; dann greift `meterTurn` (FR-015).
+   */
+  private meterFromTelemetry(session: LiveSession, running: RunningPhase, until: number) {
+    const store = this.deps.telemetry;
+    if (!store) return null;
+
+    const events = selectEventsForWindow(store.eventsFor(session.id), {
+      from: running.startedAt,
+      to: until,
+    });
+    if (events.length === 0) return null;
+
+    const { total, byOrigin, model } = summarizeEvents(events);
+    const hasSubagents = byOrigin.subagent.tokens > 0;
+    return {
+      tokens: total.tokens,
+      inputTokens: total.inputTokens,
+      outputTokens: total.outputTokens,
+      cacheReadTokens: total.cacheReadTokens,
+      cacheCreationTokens: total.cacheCreationTokens,
+      tokensSource: 'telemetry' as const,
+      costMicros: total.costMicros,
+      // null statt 0: ohne Subagenten soll die Ansicht gar nichts zeigen, keine
+      // Null-Zeile (FR-010, US2 Szenario 3).
+      subagentTokens: hasSubagents ? byOrigin.subagent.tokens : null,
+      subagentCostMicros: hasSubagents ? byOrigin.subagent.costMicros : null,
+      model,
+    };
+  }
+
+  /**
    * Verbrauch eines abgeschlossenen Phasen-Turns messen. Bevorzugt autoritative
    * Usage aus dem Transkript-Delta (inkl. cache_read = akkumulierter Kontext);
    * fällt auf die Scrollback-Schätzung zurück, wenn kein Transkript/keine Usage vorliegt.
+   *
+   * Rückfallebene: läuft nur, wenn die Telemetrie nichts geliefert hat (FR-015/FR-016).
    */
   private meterTurn(session: LiveSession, running: RunningPhase) {
     if (session.claudeSessionId) {
@@ -817,11 +931,7 @@ export class Orchestrator {
         this.runningPhases.delete(session.featureId);
         // Abgebrochene Läufe haben Tokens verbraucht — auch sie messen, sonst zeigt das
         // Dashboard 0 für real bezahlte Arbeit.
-        this.deps.executions.finishWithUsage(
-          running.executionId,
-          exitCode || 1,
-          this.meterTurn(session, running),
-        );
+        this.finishWithMetering(session, running, exitCode || 1);
         // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
         this.persistTranscriptRange(session, running);
         const feature = this.deps.features.get(session.featureId);

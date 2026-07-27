@@ -312,3 +312,156 @@ describe('Orchestrator — ensureSession-Guards (offene Sessions auf abgeschloss
     expect(r2).toBeInstanceOf(Error);
   });
 });
+
+/**
+ * Quellenwahl beim Abschluss eines Laufs (Feature "token-und-kostenmessung...").
+ * Der Kern: liegen Meldungen der CLI vor, gewinnen sie und die Transkript-Messung
+ * läuft gar nicht erst — die Werte beider Quellen werden nie addiert (FR-016).
+ */
+describe('Orchestrator — Telemetrie schlägt Transkript', () => {
+  function withTelemetry(events: unknown[]) {
+    const finishWithUsage = vi.fn();
+    const updateTelemetry = vi.fn();
+    const telemetry = {
+      eventsFor: () => events,
+      forget: vi.fn(),
+    };
+    const deps = {
+      features: { get: () => makeFeature(), savePhases: vi.fn(), setTasks: vi.fn() },
+      projects: { get: () => ({ id: 'p1', path: '/p', defaultBranch: 'main', enabledPhases: [] }) },
+      attention: { raise: vi.fn(), resolveFor: vi.fn(), listOpen: () => [] },
+      executions: { finishWithUsage, updateTelemetry, recordTranscriptEnd: vi.fn(), finish: vi.fn() },
+      sessions: { end: vi.fn() },
+      settings: {
+        getAutomation: () => ({ autoProgressUntil: 'off', autoVerify: false, autoMode: true }),
+        getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+      },
+      worktrees: {},
+      ptys: { remove: vi.fn() },
+      knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+      agentGate: { hasAgentsFor: () => false },
+      dataDir: '/tmp',
+      telemetry,
+    } as unknown as OrchestratorDeps;
+
+    const orch = new Orchestrator(deps);
+    const session = {
+      id: 'sess1',
+      featureId: 'f1',
+      projectId: 'p1',
+      cwd: '/p',
+      claudeSessionId: null,
+      scrollback: '',
+    } as unknown as LiveSession;
+    const running = {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      startedAt: 1_000,
+      promptText: 'prompt',
+    };
+    return { orch, session, running, finishWithUsage };
+  }
+
+  function apiEvent(over: Record<string, unknown> = {}) {
+    return {
+      requestId: 'req_1',
+      at: 2_000,
+      sddSessionId: 'sess1',
+      sddRunId: null,
+      claudeSessionId: 'uuid',
+      model: 'claude-opus-5',
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheCreationTokens: 40,
+      costMicros: 500,
+      origin: 'main',
+      ...over,
+    };
+  }
+
+  it('schreibt bei vorhandenen Meldungen die Herkunft telemetry — ohne Transkript-Messung', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([apiEvent()]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+
+    expect(finishWithUsage).toHaveBeenCalledTimes(1);
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.tokensSource).toBe('telemetry');
+    expect(usage.tokens).toBe(100);
+    expect(usage.costMicros).toBe(500);
+    expect(usage.model).toBe('claude-opus-5');
+    // Endgültigkeitsfenster ist gesetzt (FR-012).
+    expect(usage.telemetryFinalAt).toBeGreaterThan(Date.now());
+  });
+
+  it('zählt nur Meldungen im Zeitfenster des Laufs (US1 Szenario 1)', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([
+      apiEvent({ requestId: 'frueher', at: 500, outputTokens: 999_999 }), // vor dem Laufstart
+      apiEvent({ requestId: 'drin', at: 2_000 }),
+    ]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.outputTokens).toBe(20); // nur das Ereignis im Fenster
+  });
+
+  it('weist ohne Subagenten keinen Subagenten-Anteil aus (FR-010, kein Null-Platzhalter)', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([apiEvent({ origin: 'main' })]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.subagentTokens).toBeNull();
+  });
+
+  it('rechnet Subagenten mit und weist ihren Anteil getrennt aus (FR-009/FR-010)', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([
+      apiEvent({ requestId: 'haupt', origin: 'main', outputTokens: 100 }),
+      apiEvent({ requestId: 'sub', origin: 'subagent', outputTokens: 300 }),
+    ]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.outputTokens).toBe(400);
+    expect(usage.subagentTokens).toBe(380); // 10+300+30+40
+  });
+
+  it('fällt ohne Meldungen auf die bestehende Messung zurück (FR-015)', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.tokensSource).not.toBe('telemetry');
+    expect(['transcript', 'parsed', 'estimated']).toContain(usage.tokensSource);
+  });
+
+  it('verwirft Meldungen einer fremden Session — sie tragen eine andere Marke (FR-003)', () => {
+    const { orch, session, running, finishWithUsage } = withTelemetry([]);
+    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
+      session,
+      running,
+      0,
+    );
+    // eventsFor('sess1') liefert leer → Rückfall, kein fremder Verbrauch am Lauf.
+    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
+    expect(usage.tokensSource).not.toBe('telemetry');
+  });
+});

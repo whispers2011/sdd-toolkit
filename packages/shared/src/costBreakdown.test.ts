@@ -19,6 +19,11 @@ function exec(partial: Partial<ExecutionRecord>): ExecutionRecord {
     cacheReadTokens: null,
     cacheCreationTokens: null,
     tokensSource: null,
+    costMicros: null,
+    subagentTokens: null,
+    subagentCostMicros: null,
+    model: null,
+    telemetryFinalAt: null,
     transcriptOffsetStart: null,
     transcriptOffsetEnd: null,
     transcriptPath: null,
@@ -86,5 +91,44 @@ describe('aggregateBreakdown', () => {
     const fresh = b.byOptimization!.find((o) => o.contextStrategy === 'fresh');
     expect(full?.rollup.tokens).toBe(30000);
     expect(fresh?.rollup.tokens).toBe(18000);
+  });
+
+  it('weist die Telemetrie-Herkunft im Messanteil aus (FR-018)', () => {
+    const b = aggregateBreakdown([
+      exec({ tokensSource: 'telemetry' }),
+      exec({ tokensSource: 'telemetry' }),
+      exec({ tokensSource: 'transcript' }),
+      exec({ tokensSource: 'estimated' }),
+    ]);
+    expect(b.sourceMix.telemetry).toBeCloseTo(0.5, 10);
+    expect(b.sourceMix.transcript).toBeCloseTo(0.25, 10);
+    const sum = b.sourceMix.telemetry + b.sourceMix.transcript + b.sourceMix.parsed + b.sourceMix.estimated;
+    expect(sum).toBeCloseTo(1, 10);
+  });
+
+  it('summiert nur gemeldete Beträge und zählt die Läufe ohne Betrag (FR-024)', () => {
+    const b = aggregateBreakdown([
+      exec({ costMicros: 120_000 }),
+      exec({ costMicros: 80_000 }),
+      exec({ costMicros: null }),
+      exec({ costMicros: null }),
+    ]);
+    expect(b.total.costMicros).toBe(200_000);
+    expect(b.total.runsWithoutCost).toBe(2);
+  });
+
+  it('bildet aus fehlenden Beträgen keinen Ersatzwert (FR-023)', () => {
+    const b = aggregateBreakdown([exec({ costMicros: null, tokens: 50_000 })]);
+    expect(b.total.costMicros).toBe(0);
+    expect(b.total.runsWithoutCost).toBe(1);
+  });
+
+  it('summiert den Subagenten-Anteil (FR-010)', () => {
+    const b = aggregateBreakdown([
+      exec({ tokens: 1000, subagentTokens: 400 }),
+      exec({ tokens: 500, subagentTokens: null }),
+    ]);
+    expect(b.total.subagentTokens).toBe(400);
+    expect(b.total.tokens).toBe(1500);
   });
 });

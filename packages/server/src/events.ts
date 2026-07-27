@@ -53,6 +53,12 @@ export interface BusEvents {
     trigger: AgentTrigger;
     status: 'running' | 'pass' | 'fail';
   }) => void;
+  /**
+   * Verbrauch eines bereits abgeschlossenen Laufs wurde nachträglich verrechnet
+   * (verspätet eingetroffene Telemetrie, FR-011). Die Ansicht lädt die Läufe neu,
+   * damit sich die Zahl ohne Zutun des Nutzers korrigiert.
+   */
+  execution_updated: (payload: { executionId: string; featureId: string | null }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -80,4 +86,5 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'chat_updated',
   'review_comments_updated',
   'agent_gate',
+  'execution_updated',
 ];

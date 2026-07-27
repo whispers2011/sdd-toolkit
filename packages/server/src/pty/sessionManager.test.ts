@@ -25,7 +25,8 @@ function makeManager() {
     onClaudeSessionId: () => {},
     onSubmitFailed,
   };
-  const mgr = new PtySessionManager(join(tmpdir(), `sdd-test-${process.pid}`), callbacks);
+  // Port 0 = Telemetrie zeigt ins Leere; dieser Test prüft die Sendepipeline, nicht die Messung.
+  const mgr = new PtySessionManager(join(tmpdir(), `sdd-test-${process.pid}`), 0, callbacks);
   return { mgr, onSubmitFailed };
 }
 

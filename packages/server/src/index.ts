@@ -29,10 +29,16 @@ import { WorktreeOverviewService } from './services/worktreeOverviewService.js';
 import { ChangeGuard } from './services/changeGuard.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
+import { TelemetryStore } from './telemetry/telemetryStore.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const db = openDatabase(config.dataDir);
+
+  // Verbrauchsmeldungen der CLI (Feature "token-und-kostenmessung..."). Der Puffer
+  // steht vor allem anderen, damit jeder gespawnte Prozess seine Marke schon
+  // mitbekommt und nichts verloren geht.
+  const telemetry = new TelemetryStore();
 
   const projects = new ProjectRepo(db);
   const features = new FeatureRepo(db);
@@ -52,7 +58,7 @@ async function main(): Promise<void> {
   // PTY-Callbacks delegieren an den (danach konstruierten) Orchestrator bzw. ChatWorkService.
   let orchestrator: Orchestrator;
   let chatWork: ChatWorkService;
-  const ptys = new PtySessionManager(config.dataDir, {
+  const ptys = new PtySessionManager(config.dataDir, config.port, {
     onStatusChange: (s, effects) => orchestrator.handleStatusChange(s, effects),
     onExit: (s, code) => orchestrator.handleExit(s, code),
     onClaudeSessionId: (s, id) => sessions.setClaudeSessionId(s.id, id),
@@ -68,6 +74,7 @@ async function main(): Promise<void> {
     executions,
     attention,
     dataDir: config.dataDir,
+    port: config.port,
   });
 
   orchestrator = new Orchestrator({
@@ -82,6 +89,7 @@ async function main(): Promise<void> {
     knowledge: knowledgeService,
     agentGate,
     dataDir: config.dataDir,
+    telemetry,
   });
 
   const mergeQueue = new MergeQueueService({
@@ -95,12 +103,13 @@ async function main(): Promise<void> {
     ptys,
     agentGate,
     dataDir: config.dataDir,
+    port: config.port,
   });
   orchestrator.attachMergeQueue(mergeQueue);
 
   // Projekt-Chat (Ask-a-Question): Q&A-Turns, persistente Unterhaltung pro Projekt.
   const chatRepo = new ChatRepo(db);
-  const chat = new ChatService({ projects, chat: chatRepo, executions, dataDir: config.dataDir });
+  const chat = new ChatService({ projects, chat: chatRepo, executions, dataDir: config.dataDir, port: config.port });
 
   // Projekt-Chat als vollwertige Session: interaktive Claude-Session in isolierter Worktree
   // pro Projekt; kristallisiert sich ein Feature heraus, wird es über den Orchestrator angelegt.
@@ -186,8 +195,10 @@ async function main(): Promise<void> {
     worktreeOverview,
     worktrees,
     ptys,
+    telemetry,
     dataDir: config.dataDir,
     webDir: config.webDir,
+    port: config.port,
   });
 
   await app.listen({ port: config.port, host: config.host });

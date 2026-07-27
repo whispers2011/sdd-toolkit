@@ -166,6 +166,37 @@ Kernideen (aus der Analyse von WhisperM8 & speckit-assistant destilliert):
 Verifikations-Kommandos pro Projekt: `PATCH /api/projects/:id` mit
 `{"verifyCommands":[{"name":"test","command":"pnpm test"}]}` (UI folgt, P1).
 
+## Verbrauchsmessung
+
+Tokens und Kosten meldet die Claude-CLI selbst — das Toolkit rechnet sie nicht mehr aus einer
+Protokolldatei zurück.
+
+**Wie es läuft.** Jeder Claude-Prozess, den das Toolkit startet, bekommt die
+OpenTelemetry-Variablen und eine eigene Marke (`sdd.session.id` bzw. `sdd.run.id`) mit. Die CLI
+schickt daraufhin alle 5 s ihre Ereignisse an `POST /v1/logs` auf demselben Server. Ausgewertet
+wird ausschliesslich `claude_code.api_request`; es trägt Input-, Output-, Cache-Read- und
+Cache-Creation-Tokens, den Betrag, das Modell und die Herkunft (Hauptagent, Subagent,
+Hilfsanfrage). Zugeordnet wird über das Zeitfenster des Laufs — damit gehört zu einem Lauf
+genau das, was zwischen seinem Start und seinem Ende gemeldet wurde.
+
+Nichts davon muss konfiguriert werden, und die eigene OTel-Konfiguration des Nutzers bleibt
+unangetastet: Die Variablen landen nur in den Kindprozessen des Toolkits.
+
+**Woran man erkennt, ob es greift.** In den Projekt-Einstellungen unter „Verbrauchsmessung"
+stehen Zustand, Zählerstand und Empfangsadresse. In der Läufe-Ansicht trägt jeder Lauf seine
+Herkunft: **von der CLI gemeldet** > gemessen > geparst > geschätzt. Kommt keine Telemetrie an
+(ältere CLI, Empfang gestört), misst das Toolkit wie bisher aus dem Transkript und
+kennzeichnet den Lauf entsprechend — kein Lauf bleibt ohne Zahl.
+
+**Was erfasst wird.** Ausschliesslich Zähl- und Zuordnungsangaben. Prompt-Texte, Antworttexte
+und Werkzeug-Inhalte sind abgeschaltet und werden auch nicht ausgewertet; personenbezogene
+Attribute der CLI (E-Mail, Konto-, Organisations-ID) werden nicht gelesen. Alles bleibt auf
+dem Rechner — der Empfang ist an `127.0.0.1` gebunden, es geht nichts nach aussen.
+
+**Beträge.** Angezeigt wird nur, was die CLI gemeldet hat, gekennzeichnet als gemeldet. Es gibt
+keine Preistabelle im Toolkit; Läufe ohne gemeldeten Betrag zeigen keinen, und Summen weisen
+aus, wie viele Läufe darin keinen Betrag beitragen.
+
 ## Roadmap
 
 - **P1 (umgesetzt, 2026-07-22)**: Transkript-Fallback (ESC-Abbruch-Erkennung), Snapshots +

@@ -273,8 +273,21 @@ export interface ExecutionRecord {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
-  /** Herkunft des Verbrauchswerts. */
-  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  /**
+   * Herkunft des Verbrauchswerts, absteigend nach Verlässlichkeit:
+   * 'telemetry' (von der CLI selbst gemeldet) > 'transcript' > 'parsed' > 'estimated'.
+   */
+  tokensSource: 'telemetry' | 'transcript' | 'parsed' | 'estimated' | null;
+  /** Von der CLI gemeldeter Betrag in Mikro-USD; null = kein Betrag gemeldet (nie 0 als Ersatz). */
+  costMicros: number | null;
+  /** Tokens der Subagenten dieses Laufs; null = es liefen keine Subagenten. */
+  subagentTokens: number | null;
+  /** Betragsanteil der Subagenten in Mikro-USD; null wenn kein Betrag/keine Subagenten. */
+  subagentCostMicros: number | null;
+  /** Modell laut Telemetrie-Meldungen; null bei Transkript-/Schätz-Herkunft. */
+  model: string | null;
+  /** Ab diesem Zeitpunkt gilt der Lauf als endgültig gemessen; spätere Meldungen verfallen. */
+  telemetryFinalAt: number | null;
   /** Byte-Offset des Transkripts beim Phasenstart (Attribution der Usage). */
   transcriptOffsetStart: number | null;
   /** Byte-Offset des Transkripts beim Phasenabschluss (Ende des Lauf-Ausschnitts, nur kind='phase'). */

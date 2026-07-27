@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs';
 import { meter } from '@sdd/shared';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import { buildHeadlessArgv } from '../pty/commandBuilder.js';
+import { headlessTelemetry } from '../telemetry/headlessTelemetry.js';
 
 /**
  * Auto-Konfliktauflösung: Headless-Claude löst Rebase-Konflikte im Worktree.
@@ -19,6 +20,9 @@ export async function resolveConflicts(opts: {
   conflictFiles: string[];
   logDir: string;
   executionId: string;
+  /** Datenverzeichnis + Serverport für die Telemetrie-Messung; fehlen sie, misst der Lauf wie bisher. */
+  dataDir?: string;
+  port?: number;
   model?: string;
   timeoutMs?: number;
 }): Promise<{ exitCode: number; logPath: string; tokens: number }> {
@@ -45,8 +49,16 @@ export async function resolveConflicts(opts: {
     .filter(Boolean)
     .join('\n');
 
-  const argv = buildHeadlessArgv(prompt, opts.model !== undefined ? { model: opts.model } : {});
-  const env = await loginShellEnv();
+  // Konfliktauflösung ist ein eigener Lauf — Meldungen tragen direkt die executionId.
+  const tele =
+    opts.executionId !== undefined && opts.dataDir !== undefined && opts.port !== undefined
+      ? headlessTelemetry(opts.dataDir, opts.executionId, opts.port)
+      : null;
+  const argv = buildHeadlessArgv(prompt, {
+    ...(opts.model !== undefined ? { model: opts.model } : {}),
+    settingsPath: tele?.settingsPath ?? null,
+  });
+  const env = { ...(await loginShellEnv()), ...(tele?.env ?? {}) };
   const log = createWriteStream(logPath, { flags: 'a' });
   log.write(`=== Auto-Konfliktauflösung für ${opts.featureName} ===\nDateien: ${opts.conflictFiles.join(', ')}\n\n`);
 

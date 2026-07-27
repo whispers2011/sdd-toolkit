@@ -19,6 +19,17 @@ export function fmtTokens(n: number): string {
   return nf.format(n);
 }
 
+/**
+ * Von der CLI gemeldeter Betrag (Mikro-USD → USD). Wird ausschliesslich auf
+ * gemeldete Beträge angewendet — es gibt im Toolkit keine Preistabelle und
+ * damit auch keinen geschätzten Betrag (FR-022).
+ */
+export function fmtCost(micros: number): string {
+  const usd = micros / 1_000_000;
+  if (usd > 0 && usd < 0.01) return '<$0.01';
+  return `$${usd.toFixed(2)}`;
+}
+
 /** Horizontales Balkendiagramm: ein Balken pro Eintrag, skaliert aufs Maximum. */
 export function HBarChart({ items }: { items: { label: string; value: number; color: string }[] }) {
   const max = Math.max(1, ...items.map((i) => i.value));

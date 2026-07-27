@@ -215,6 +215,7 @@ export const api = {
   executions: (featureId?: string) =>
     request<ExecutionInfo[]>('GET', featureId ? `/api/executions?featureId=${featureId}` : '/api/executions'),
   runs: () => request<{ runs: RunSummary[] }>('GET', '/api/runs'),
+  telemetryStatus: () => request<TelemetryStatus>('GET', '/api/telemetry/status'),
   executionLog: (id: string) => request<{ log: string }>('GET', `/api/executions/${id}/log`),
   resolutionDiff: (id: string) =>
     request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
@@ -502,6 +503,18 @@ export interface DiffSummary {
   commits: { sha: string; date: number; subject: string }[];
 }
 
+/** Zustand der Telemetrie-Erfassung (FR-019). */
+export interface TelemetryStatus {
+  active: boolean;
+  /** Grund, wenn nicht in Betrieb; null = läuft. */
+  reason: 'route_unavailable' | 'no_events_yet' | null;
+  endpoint: string;
+  eventsReceived: number;
+  lastEventAt: number | null;
+  /** Eine bestehende OTel-Konfiguration wird für Toolkit-Sessions übersteuert. */
+  overridesUserConfig: boolean;
+}
+
 export interface ExecutionInfo {
   id: string;
   projectId: string;
@@ -517,6 +530,13 @@ export interface ExecutionInfo {
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
-  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  tokensSource: 'telemetry' | 'transcript' | 'parsed' | 'estimated' | null;
+  /** Von der CLI gemeldeter Betrag in Mikro-USD; null = kein Betrag (nie geschätzt). */
+  costMicros: number | null;
+  /** Tokens der Subagenten; null = es liefen keine (dann wird nichts angezeigt). */
+  subagentTokens: number | null;
+  subagentCostMicros: number | null;
+  model: string | null;
+  telemetryFinalAt: number | null;
   logPath: string | null;
 }

@@ -22,6 +22,11 @@ function exec(patch: Partial<ExecutionRecord>): ExecutionRecord {
     cacheReadTokens: 50,
     cacheCreationTokens: 20,
     tokensSource: 'transcript',
+    costMicros: null,
+    subagentTokens: null,
+    subagentCostMicros: null,
+    model: null,
+    telemetryFinalAt: null,
     transcriptOffsetStart: 0,
     transcriptOffsetEnd: null,
     transcriptPath: null,
@@ -166,5 +171,43 @@ describe('buildRunSummaries', () => {
     ]) {
       expect(payload.includes(key)).toBe(true);
     }
+  });
+
+  it('weist die Telemetrie-Herkunft im Messanteil aus (FR-018)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'plan', tokensSource: 'telemetry' }),
+        exec({ phase: 'implement', tokensSource: 'telemetry' }),
+        exec({ kind: 'verify', phase: null, tokensSource: 'estimated' }),
+        exec({ kind: 'review', phase: null, tokensSource: 'transcript' }),
+      ],
+    );
+    expect(runs[0]!.sourceMix.telemetry).toBeCloseTo(0.5, 10);
+    expect(runs[0]!.sourceMix.transcript).toBeCloseTo(0.25, 10);
+  });
+
+  it('Feature-Summe enthält die Subagenten-Anteile der Einzelläufe (FR-010, US2 Szenario 4)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'implement', tokens: 1000, subagentTokens: 600 }),
+        exec({ phase: 'plan', tokens: 400, subagentTokens: null }),
+      ],
+    );
+    expect(runs[0]!.total.tokens).toBe(1400);
+    expect(runs[0]!.total.subagentTokens).toBe(600);
+  });
+
+  it('summiert über die Läufe hinweg nur gemeldete Beträge (FR-024)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'plan', costMicros: 90_000 }),
+        exec({ phase: 'implement', costMicros: null }),
+      ],
+    );
+    expect(runs[0]!.total.costMicros).toBe(90_000);
+    expect(runs[0]!.total.runsWithoutCost).toBe(1);
   });
 });

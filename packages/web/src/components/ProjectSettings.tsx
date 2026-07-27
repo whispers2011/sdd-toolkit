@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   FEATURE_PHASES,
   LEVEL2_DEFAULTS,
@@ -9,13 +9,84 @@ import {
   type Project,
   type VerifyCommand,
 } from '@sdd/shared';
-import { api } from '../api.js';
+import { api, type TelemetryStatus } from '../api.js';
 import { useStore } from '../store.js';
 import { ConfirmDialog, Dialog, DialogActions } from './Sidebar.js';
 
 const COLORS = ['#71717a', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#3b82f6', '#a855f7', '#ec4899'];
 
 /** Projekt-Einstellungen (WP7): Phasen, Verify, Automation, Merge-Modus, Editor. */
+/**
+ * Zustand der Verbrauchsmessung (FR-019): Der Nutzer soll sehen können, welche
+ * Quelle gerade misst und warum — und ob das Toolkit dabei eine eigene
+ * OTel-Konfiguration übersteuert (research.md D5). Ohne diesen Hinweis wäre der
+ * Umstieg nicht überprüfbar; genau das war die Vorgeschichte des 62-Mio.-Fehlers.
+ */
+function TelemetryStatusPanel() {
+  const [status, setStatus] = useState<TelemetryStatus | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = () =>
+      void api
+        .telemetryStatus()
+        .then((s) => !cancelled && (setStatus(s), setFailed(false)))
+        .catch(() => !cancelled && setFailed(true));
+    load();
+    const t = setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, []);
+
+  if (failed) {
+    return (
+      <p className="text-[11px] text-amber-400">
+        Telemetrie-Erfassung nicht erreichbar — Läufe werden über das Transkript gemessen.
+      </p>
+    );
+  }
+  if (!status) return <p className="text-[11px] text-zinc-600">Lade …</p>;
+
+  const running = status.active && status.reason === null;
+  return (
+    <div className="flex flex-col gap-1 text-[11px]">
+      <div className="flex items-center gap-2">
+        <span className={`rounded px-1.5 py-0.5 ${running ? 'bg-teal-900 text-teal-200' : 'bg-zinc-800 text-zinc-400'}`}>
+          {running ? 'CLI meldet Verbrauch' : 'noch keine Meldungen'}
+        </span>
+        <span className="text-zinc-600">
+          {status.eventsReceived} Meldungen · Empfang {status.endpoint}
+        </span>
+      </div>
+      {status.reason === 'no_events_yet' && (
+        <p className="text-zinc-500">
+          Noch nichts eingetroffen. Normal kurz nach dem Start; bleibt es dabei, unterstützt die
+          installierte Claude-CLI die Telemetrie nicht — Läufe werden dann über das Transkript
+          gemessen und entsprechend gekennzeichnet.
+        </p>
+      )}
+      {status.reason === 'route_unavailable' && (
+        <p className="text-amber-400">
+          Empfangsroute nicht verfügbar — Läufe werden über das Transkript gemessen.
+        </p>
+      )}
+      {status.overridesUserConfig && (
+        <p className="text-amber-400">
+          Es besteht eine eigene OpenTelemetry-Konfiguration. Für Sessions, die das Toolkit
+          startet, wird sie übersteuert; selbst gestartete Sessions bleiben unberührt.
+        </p>
+      )}
+      <p className="text-zinc-600">
+        Erfasst werden nur Zähl- und Zuordnungsangaben, keine Prompt- oder Antworttexte. Die
+        Daten bleiben auf diesem Rechner.
+      </p>
+    </div>
+  );
+}
+
 export function ProjectSettings({ project, onClose }: { project: Project; onClose: () => void }) {
   const { dispatch } = useStore();
   const [name, setName] = useState(project.name);
@@ -176,6 +247,10 @@ export function ProjectSettings({ project, onClose }: { project: Project; onClos
               <option value="llm">Verdichtung: LLM</option>
             </select>
           </div>
+        </Field>
+
+        <Field label="Verbrauchsmessung">
+          <TelemetryStatusPanel />
         </Field>
 
         <Field label="Integration">

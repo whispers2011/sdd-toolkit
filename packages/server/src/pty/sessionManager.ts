@@ -15,6 +15,7 @@ import { existsSync } from 'node:fs';
 import { loginShellEnv } from './loginShellEnv.js';
 import { ensureSpawnHelperExecutable } from './ptyFix.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
+import { telemetryEnvFor } from '../telemetry/telemetryEnv.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
 import {
@@ -105,6 +106,8 @@ export class PtySessionManager {
 
   constructor(
     private dataDir: string,
+    /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen (127.0.0.1). */
+    private serverPort: number,
     private callbacks: SessionCallbacks,
   ) {
     this.snapshots = new SnapshotStore(dataDir);
@@ -128,10 +131,18 @@ export class PtySessionManager {
     }
     const env = await loginShellEnv();
 
+    // Verbrauchsmeldungen dieser Session tragen ihre Marke, damit jede Meldung
+    // eindeutig dieser Session gehört — unabhängig davon, ob die Claude-Session-ID
+    // beim Start schon bekannt ist. Genau das ersetzt die frühere Rekonstruktion
+    // der Startmarke aus Byte-Positionen (Feature "token-und-kostenmessung...").
+    const telemetryEnv = telemetryEnvFor({ sessionId: id }, this.serverPort, env);
+
     let hookSetup: HookSetup | null = null;
     let argv = opts.argv;
     if (opts.withHooks) {
-      hookSetup = writeHookSettings(this.dataDir, id);
+      // Der env-Block der Settings-Datei schlägt die Prozessumgebung (research.md D5) —
+      // ohne ihn könnte eine gegenläufige ~/.claude/settings.json die Messung abschalten.
+      hookSetup = writeHookSettings(this.dataDir, id, telemetryEnv);
       // --settings wird vom Aufrufer via Platzhalter erwartet:
       argv = argv.map((a) => (a === '__SETTINGS__' ? hookSetup!.settingsPath : a));
     }
@@ -143,7 +154,9 @@ export class PtySessionManager {
       cols: 120,
       rows: 32,
       cwd: opts.cwd,
-      env: { ...env, SDD_SESSION_ID: id },
+      // Zusätzlich zur Settings-Datei: kostet nichts und trägt, falls die Datei
+      // einmal fehlt (withHooks=false, z. B. Shell-Sessions).
+      env: { ...env, ...telemetryEnv, SDD_SESSION_ID: id },
     });
 
     const snapshotKey =

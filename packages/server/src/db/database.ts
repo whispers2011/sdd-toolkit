@@ -334,6 +334,18 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   `
   ALTER TABLE features ADD COLUMN review_rejected_at INTEGER;
   `,
+  // Feature "token-und-kostenmessung-auf-die-opentelemetry-daten-der-clau":
+  // Verbrauch und Betrag stammen von der CLI selbst (OTel-Ereignis claude_code.api_request)
+  // statt aus dem Transkript. Additiv/nullable — Bestandsläufe behalten ihre Transkript-Zahlen
+  // und bekommen keinen rückwirkend errechneten Betrag (FR-025).
+  // tokens_source ist bereits TEXT und nimmt den neuen Wert 'telemetry' ohne Schemaänderung auf.
+  `
+  ALTER TABLE executions ADD COLUMN cost_micros INTEGER;
+  ALTER TABLE executions ADD COLUMN subagent_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN subagent_cost_micros INTEGER;
+  ALTER TABLE executions ADD COLUMN model TEXT;
+  ALTER TABLE executions ADD COLUMN telemetry_final_at INTEGER;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

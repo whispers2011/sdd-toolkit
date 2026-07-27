@@ -99,3 +99,113 @@ describe('ExecutionRepo — cost_usd bleibt inert', () => {
     expect(JSON.stringify(record).includes('costUsd')).toBe(false);
   });
 });
+
+/**
+ * Feature "token-und-kostenmessung...": Verbrauch und Betrag stammen von der CLI.
+ * Die neuen Spalten sind additiv und nullable — Bestandsläufe bleiben unverändert (FR-025).
+ */
+describe('ExecutionRepo — Telemetrie-Felder', () => {
+  let db: DB;
+  let executions: ExecutionRepo;
+  let projectId: string;
+
+  beforeEach(() => {
+    db = openMemoryDatabase();
+    executions = new ExecutionRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo',
+      path: '/tmp/demo',
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: [],
+      verifyCommands: [],
+      automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+  });
+
+  afterEach(() => db.close());
+
+  const start = () =>
+    executions.start({ projectId, featureId: null, kind: 'phase', phase: 'implement', logPath: null });
+
+  it('schreibt und liest die gemeldeten Werte', () => {
+    const id = start();
+    executions.finishWithUsage(id, 0, {
+      tokens: 23_550,
+      inputTokens: 2,
+      outputTokens: 4,
+      cacheReadTokens: 15_273,
+      cacheCreationTokens: 8_271,
+      tokensSource: 'telemetry',
+      costMicros: 90_457,
+      subagentTokens: 5_000,
+      subagentCostMicros: 12_000,
+      model: 'claude-opus-5',
+      telemetryFinalAt: 1_785_150_442_000,
+    });
+
+    const r = executions.get(id)!;
+    expect(r.tokensSource).toBe('telemetry');
+    expect(r.costMicros).toBe(90_457);
+    expect(r.subagentTokens).toBe(5_000);
+    expect(r.subagentCostMicros).toBe(12_000);
+    expect(r.model).toBe('claude-opus-5');
+    expect(r.telemetryFinalAt).toBe(1_785_150_442_000);
+  });
+
+  it('lässt die neuen Felder NULL, wenn nichts gemeldet wurde — kein 0-Ersatz (FR-023)', () => {
+    const id = start();
+    executions.finishWithUsage(id, 0, { tokens: 100, tokensSource: 'transcript' });
+
+    const r = executions.get(id)!;
+    expect(r.costMicros).toBeNull();
+    expect(r.subagentTokens).toBeNull();
+    expect(r.model).toBeNull();
+    expect(r.telemetryFinalAt).toBeNull();
+  });
+
+  it('Bestandszeilen ohne die neuen Spalten werden mit NULL gelesen (FR-025)', () => {
+    db.prepare(
+      `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, finished_at,
+         exit_code, tokens, tokens_source, log_path)
+       VALUES ('alt2', ?, NULL, 'phase', 'plan', 'succeeded', 1000, 2000, 0, 4321, 'transcript', NULL)`,
+    ).run(projectId);
+
+    const r = executions.get('alt2')!;
+    expect(r.tokens).toBe(4321);
+    expect(r.tokensSource).toBe('transcript');
+    expect(r.costMicros).toBeNull();
+    expect(r.subagentTokens).toBeNull();
+  });
+
+  it('updateTelemetry trägt nach, ohne Status oder Abschlusszeit anzufassen (FR-011)', () => {
+    const id = start();
+    executions.finishWithUsage(id, 0, {
+      tokens: 100,
+      tokensSource: 'telemetry',
+      costMicros: 1_000,
+      telemetryFinalAt: 999,
+    });
+    const vorher = executions.get(id)!;
+
+    executions.updateTelemetry(id, {
+      tokens: 500,
+      inputTokens: 5,
+      tokensSource: 'telemetry',
+      costMicros: 4_000,
+      model: 'claude-opus-5',
+    });
+
+    const nachher = executions.get(id)!;
+    expect(nachher.tokens).toBe(500);
+    expect(nachher.costMicros).toBe(4_000);
+    expect(nachher.status).toBe(vorher.status);
+    expect(nachher.finishedAt).toBe(vorher.finishedAt);
+    expect(nachher.exitCode).toBe(vorher.exitCode);
+    // Das Endgültigkeitsfenster darf durch einen Nachtrag nicht wandern (FR-012).
+    expect(nachher.telemetryFinalAt).toBe(999);
+  });
+});

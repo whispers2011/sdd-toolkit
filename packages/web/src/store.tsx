@@ -57,6 +57,8 @@ export interface UiState {
   gateRunning: Record<string, boolean>;
   /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
   agentGateVersion: number;
+  /** Zähler: hochgesetzt, wenn ein Lauf nachträglich verrechnet wurde (Telemetrie-Nachtrag). */
+  executionsVersion: number;
   /**
    * Integrations-Bereitschaft je Feature (FR-027): 'pending' = Abruf läuft,
    * boolean = Ergebnis. Kein Eintrag oder 'pending' bedeutet für die Policy
@@ -84,6 +86,7 @@ export type Action =
   | { type: 'open_chat'; projectId: string }
   | { type: 'review_comments_updated'; featureId: string }
   | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } }
+  | { type: 'execution_updated' }
   | { type: 'readiness_requested'; featureId: string }
   | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } };
 
@@ -247,6 +250,11 @@ function reducer(state: UiState, action: Action): UiState {
         agentGateVersion: state.agentGateVersion + 1,
       };
     }
+    case 'execution_updated': {
+      // Verspätet eingetroffene Verbrauchsmeldungen haben einen Lauf korrigiert —
+      // die Läufe-Ansicht lädt neu, ohne dass der Nutzer etwas tun muss (FR-011).
+      return { ...state, executionsVersion: state.executionsVersion + 1 };
+    }
     case 'readiness_requested': {
       return {
         ...state,
@@ -406,6 +414,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     reviewCommentsVersion: {},
     gateRunning: {},
     agentGateVersion: 0,
+    executionsVersion: 0,
     integrationReadiness: {},
   });
   const wsRef = useRef<WebSocket | null>(null);
@@ -497,6 +506,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 type: 'agent_gate',
                 payload: msg.payload as Extract<Action, { type: 'agent_gate' }>['payload'],
               });
+              break;
+            case 'execution_updated':
+              dispatch({ type: 'execution_updated' });
               break;
             case 'notification': {
               const n = msg.payload as {

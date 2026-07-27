@@ -53,6 +53,9 @@ import { git } from '../git/git.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import { collectUnmergedChanges, hasUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
 import { ActionGuard } from '../services/actionGuard.js';
+import { registerOtlpRoute } from '../telemetry/otlpRoute.js';
+import { TelemetryStore } from '../telemetry/telemetryStore.js';
+import { detectForeignOtelConfig, telemetryEndpoint } from '../telemetry/telemetryEnv.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
 import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
 import {
@@ -91,7 +94,11 @@ export interface ApiDeps {
   worktreeOverview: WorktreeOverviewService;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
+  /** Puffer der Verbrauchsmeldungen (Feature "token-und-kostenmessung..."). */
+  telemetry: TelemetryStore;
   dataDir: string;
+  /** Port, unter dem der Server erreichbar ist — Ziel der Telemetrie-Meldungen. */
+  port: number;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
   webDir?: string | null;
 }
@@ -101,6 +108,10 @@ export async function buildServer(deps: ApiDeps) {
   await app.register(cors, { origin: true });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // OTLP-Empfänger der Claude-CLI (contracts/otlp-receiver.md). Gekapselt, mit
+  // eigenem nachsichtigen JSON-Parser — antwortet IMMER 200.
+  registerOtlpRoute(app, deps.telemetry);
 
   // Serverseitige Durchsetzung der Aktions-Policy (FR-024): dieselbe Festlegung,
   // die die Oberfläche rendert — kein Bedienweg kommt an ihr vorbei.
@@ -1262,6 +1273,23 @@ export async function buildServer(deps: ApiDeps) {
   app.get('/api/runs', () => ({
     runs: buildRunSummaries(deps.features.listAll(), deps.executions.listAll()),
   }));
+
+  /**
+   * Zustand der Telemetrie-Erfassung (FR-019): Läuft sie? Wenn nicht, warum nicht?
+   * Und übersteuert das Toolkit dabei eine bestehende Konfiguration des Nutzers (D5)?
+   * Der Nutzer soll das sehen können, statt zu raten, welche Quelle gerade misst.
+   */
+  app.get('/api/telemetry/status', () => {
+    const stats = deps.telemetry.stats();
+    return {
+      active: true,
+      reason: stats.eventsReceived === 0 ? ('no_events_yet' as const) : null,
+      endpoint: telemetryEndpoint(deps.port),
+      eventsReceived: stats.eventsReceived,
+      lastEventAt: stats.lastEventAt,
+      overridesUserConfig: detectForeignOtelConfig(process.env),
+    };
+  });
 
   /** Aggregierte Verbrauchssicht eines Features nach Phase/Art (P1, SC-003). */
   app.get<{ Params: { featureId: string }; Querystring: { groupByOptimization?: string } }>(

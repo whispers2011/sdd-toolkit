@@ -6,6 +6,8 @@ export * from './transcriptLog.js';
 export * from './costMeter.js';
 export * from './optimization.js';
 export * from './transcriptUsage.js';
+export * from './telemetryEvent.js';
+export * from './telemetryAttribution.js';
 export * from './costBreakdown.js';
 export * from './runSummary.js';
 export * from './contextCompressor.js';

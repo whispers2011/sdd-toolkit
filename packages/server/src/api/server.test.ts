@@ -16,6 +16,7 @@ import {
   SessionRepo,
   SettingsRepo,
 } from '../db/repos.js';
+import { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { buildServer, type ApiDeps } from './server.js';
 
 /**
@@ -94,6 +95,7 @@ const ALL_APPROVED = phasesWith({ specify: 'approved', plan: 'approved', impleme
 describe('Feature-Routen setzen die Aktions-Policy durch', () => {
   let app: FastifyInstance;
   let db: DB;
+  let telemetry: TelemetryStore;
   let features: FeatureRepo;
   let repo: string;
   let featureId: string;
@@ -148,6 +150,7 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
     featureId = mk('demo');
     otherId = mk('zweit');
 
+    telemetry = new TelemetryStore({ autoSweep: false });
     app = await buildServer({
       projects,
       features,
@@ -179,8 +182,10 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
         terminate: async () => {},
         sendPrompt: () => {},
       },
+      telemetry,
       dataDir: mkdtempSync(join(tmpdir(), 'sdd-api-data-')),
       webDir: null,
+      port: 4899,
     } as unknown as ApiDeps);
   });
 
@@ -398,5 +403,70 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
     const res = await post(`/api/features/${featureId}/phases/specify/approve`);
     expect(res.statusCode).toBe(200);
     expect(features.get(featureId)?.reviewRejectedAt).not.toBeNull();
+  });
+});
+
+/**
+ * Zustand der Verbrauchsmessung (FR-019). Der Nutzer muss ohne Rückfrage erkennen
+ * können, ob die Telemetrie greift — sonst wäre der Umstieg nicht überprüfbar.
+ */
+describe('GET /api/telemetry/status', () => {
+  let app: FastifyInstance;
+  let db: DB;
+  let telemetry: TelemetryStore;
+
+  beforeEach(async () => {
+    db = openMemoryDatabase();
+    telemetry = new TelemetryStore({ autoSweep: false });
+    app = await buildServer({
+      projects: new ProjectRepo(db),
+      features: new FeatureRepo(db),
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      telemetry,
+      dataDir: mkdtempSync(join(tmpdir(), 'sdd-telemetry-')),
+      webDir: null,
+      port: 4899,
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    telemetry.stop();
+    db.close();
+  });
+
+  it('meldet vor der ersten Meldung no_events_yet', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/telemetry/status' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as Record<string, unknown>;
+    expect(body.active).toBe(true);
+    expect(body.reason).toBe('no_events_yet');
+    expect(body.eventsReceived).toBe(0);
+    expect(body.endpoint).toBe('http://127.0.0.1:4899');
+  });
+
+  it('meldet nach eingetroffenen Meldungen den Zählerstand ohne Grund', async () => {
+    telemetry.ingest([
+      {
+        requestId: 'req_1',
+        at: 1_700_000_000_000,
+        sddSessionId: 'sess1',
+        sddRunId: null,
+        claudeSessionId: 'uuid',
+        model: 'claude-opus-5',
+        inputTokens: 1,
+        outputTokens: 2,
+        cacheReadTokens: 3,
+        cacheCreationTokens: 4,
+        costMicros: 100,
+        origin: 'main',
+      },
+    ]);
+    const body = (await app.inject({ method: 'GET', url: '/api/telemetry/status' })).json() as Record<string, unknown>;
+    expect(body.reason).toBeNull();
+    expect(body.eventsReceived).toBe(1);
+    expect(body.lastEventAt).toBe(1_700_000_000_000);
   });
 });

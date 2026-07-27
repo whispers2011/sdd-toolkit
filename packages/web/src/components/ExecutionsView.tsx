@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, type ExecutionInfo, type RunSummary } from '../api.js';
 import { useStore } from '../store.js';
-import { Donut, HBarChart, StackedBar, fmtTokens, type Segment } from './charts.js';
+import { Donut, HBarChart, StackedBar, fmtTokens, fmtCost, type Segment } from './charts.js';
 
 const KIND_LABELS: Record<ExecutionInfo['kind'], string> = {
   phase: 'Phase',
@@ -43,6 +43,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const SOURCE_LABELS: Record<NonNullable<ExecutionInfo['tokensSource']>, string> = {
+  telemetry: 'von der CLI gemeldet',
   transcript: 'gemessen',
   parsed: 'geparst',
   estimated: 'geschätzt',
@@ -50,12 +51,17 @@ const SOURCE_LABELS: Record<NonNullable<ExecutionInfo['tokensSource']>, string> 
 
 function SourceBadge({ source }: { source: ExecutionInfo['tokensSource'] }) {
   if (!source) return null;
+  // „von der CLI gemeldet" bekommt eine eigene, kräftigere Farbe als „gemessen":
+  // Die beiden dürfen nicht gleich aussehen, sonst ist am Lauf nicht ablesbar, ob
+  // seine Zahl gemeldet oder vom Toolkit erschlossen wurde (FR-017, SC-009).
   const cls =
-    source === 'transcript'
-      ? 'bg-emerald-950 text-emerald-400'
-      : source === 'parsed'
-        ? 'bg-sky-950 text-sky-400'
-        : 'bg-zinc-800 text-zinc-500';
+    source === 'telemetry'
+      ? 'bg-teal-900 font-medium text-teal-200 ring-1 ring-teal-700'
+      : source === 'transcript'
+        ? 'bg-emerald-950 text-emerald-400'
+        : source === 'parsed'
+          ? 'bg-sky-950 text-sky-400'
+          : 'bg-zinc-800 text-zinc-500';
   return <span className={`ml-1 rounded px-1 py-0.5 text-[10px] ${cls}`}>{SOURCE_LABELS[source]}</span>;
 }
 
@@ -89,7 +95,9 @@ export function ExecutionsView() {
     reload();
     const t = setInterval(reload, 5000); // laufende Läufe live halten
     return () => clearInterval(t);
-  }, []);
+    // executionsVersion: ein Telemetrie-Nachtrag hat einen Lauf korrigiert — sofort
+    // neu laden statt bis zum nächsten Intervall zu warten (FR-011, US1 Szenario 4).
+  }, [state.executionsVersion]);
 
   // Detail-Executions des aufgeklappten Laufs (+ Refresh solange er läuft).
   const expandedRun = runs.find((r) => r.featureId === expanded);
@@ -157,9 +165,17 @@ export function ExecutionsView() {
   // obwohl kaum etwas neu verarbeitet wurde. Getrennt ausgewiesen ist beides lesbar.
   const totalOutput = visible.reduce((s, r) => s + r.total.outputTokens, 0);
   const totalCacheRead = visible.reduce((s, r) => s + r.total.cacheReadTokens, 0);
+  // Gemessen = telemetry + transcript. Nur `transcript` zu zählen liesse die Anzeige
+  // beim Umstieg auf die CLI-Meldungen scheinbar auf 0 fallen, obwohl die Messung
+  // besser geworden ist (FR-018).
   const measured = visible.length
-    ? visible.reduce((s, r) => s + r.sourceMix.transcript, 0) / visible.length
+    ? visible.reduce((s, r) => s + r.sourceMix.telemetry + r.sourceMix.transcript, 0) / visible.length
     : 0;
+  const reported = visible.length
+    ? visible.reduce((s, r) => s + r.sourceMix.telemetry, 0) / visible.length
+    : 0;
+  const totalCost = visible.reduce((s, r) => s + r.total.costMicros, 0);
+  const runsWithoutCost = visible.reduce((s, r) => s + r.total.runsWithoutCost, 0);
 
   return (
     <div className="flex h-full">
@@ -169,6 +185,16 @@ export function ExecutionsView() {
           <span className="ml-auto">
             {visible.length} Läufe · <span className="text-emerald-400">{fmtTokens(totalOutput)} Output</span> ·{' '}
             {fmtTokens(totalCacheRead)} Cache-Read · {(measured * 100).toFixed(0)} % gemessen
+            {reported > 0 && <span className="text-teal-300"> ({(reported * 100).toFixed(0)} % gemeldet)</span>}
+            {totalCost > 0 && (
+              <>
+                {' · '}
+                <span className="text-teal-300">{fmtCost(totalCost)} gemeldet</span>
+                {runsWithoutCost > 0 && (
+                  <span className="text-zinc-600"> ({runsWithoutCost} ohne Betrag)</span>
+                )}
+              </>
+            )}
           </span>
         </div>
         <p className="mb-3 text-[10px] text-zinc-600">
@@ -236,8 +262,19 @@ export function RunCard({
     .map((c) => ({ label: CATEGORY_LABELS[c]!, value: run.byCategory[c].tokens, color: CATEGORY_COLORS[c]! }))
     .filter((s) => s.value > 0);
 
+  // Vorrangig die höchste erreichte Stufe zeigen: 'von der CLI gemeldet' schlägt
+  // 'gemessen' (FR-017). Ohne die telemetry-Zeile fiele ein voll gemeldeter Lauf
+  // durch und würde als 'geschätzt' etikettiert.
   const dominantSource =
-    run.sourceMix.transcript >= 0.5 ? 'transcript' : run.sourceMix.estimated > 0 ? 'estimated' : null;
+    run.sourceMix.telemetry >= 0.5
+      ? 'telemetry'
+      : run.sourceMix.transcript >= 0.5
+        ? 'transcript'
+        : run.sourceMix.telemetry > 0
+          ? 'telemetry'
+          : run.sourceMix.estimated > 0
+            ? 'estimated'
+            : null;
 
   return (
     <div className="rounded border border-zinc-800 bg-zinc-925">
@@ -263,6 +300,21 @@ export function RunCard({
             {fmtTokens(run.total.cacheReadTokens)} Cache-Read
             <SourceBadge source={dominantSource} />
           </span>
+          {/* Nur gemeldete Beträge — es gibt keine Preistabelle und damit keine Schätzung (FR-022/FR-023). */}
+          {run.total.costMicros > 0 && (
+            <span className="block text-[10px] text-teal-300">
+              {fmtCost(run.total.costMicros)}
+              {run.total.runsWithoutCost > 0 && (
+                <span className="text-zinc-600"> · {run.total.runsWithoutCost} ohne Betrag</span>
+              )}
+            </span>
+          )}
+          {/* Kein Subagenten-Anteil → gar keine Zeile, kein Null-Platzhalter (FR-010). */}
+          {run.total.subagentTokens > 0 && (
+            <span className="block text-[10px] text-violet-300">
+              {fmtTokens(run.total.subagentTokens)} Subagenten
+            </span>
+          )}
         </span>
       </button>
 
@@ -310,6 +362,8 @@ export function RunCard({
                     <th className="px-2 py-1 text-right">Dauer</th>
                     <th className="px-2 py-1 text-right">Output</th>
                     <th className="px-2 py-1 text-right">Cache-Read</th>
+                    <th className="px-2 py-1 text-right">Subagenten</th>
+                    <th className="px-2 py-1 text-right">Betrag</th>
                     <th className="px-2 py-1" />
                   </tr>
                 </thead>
@@ -334,6 +388,17 @@ export function RunCard({
                       <td className="px-2 py-1 text-right text-zinc-500">
                         {e.cacheReadTokens !== null ? fmtTokens(e.cacheReadTokens) : '—'}
                         <SourceBadge source={e.tokensSource} />
+                      </td>
+                      {/* null = keine Subagenten gelaufen → Strich, keine 0 (FR-010). */}
+                      <td className="px-2 py-1 text-right text-violet-300">
+                        {e.subagentTokens !== null ? fmtTokens(e.subagentTokens) : '—'}
+                      </td>
+                      {/* null = kein Betrag gemeldet → Strich, nie eine Ersatzschätzung (FR-023). */}
+                      <td
+                        className="px-2 py-1 text-right text-teal-300"
+                        title={e.costMicros !== null ? 'Von der Claude-CLI gemeldet' : undefined}
+                      >
+                        {e.costMicros !== null ? fmtCost(e.costMicros) : '—'}
                       </td>
                       <td className="px-2 py-1">
                         <button
