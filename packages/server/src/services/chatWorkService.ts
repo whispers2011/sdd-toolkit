@@ -3,9 +3,14 @@ import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
   displayStatus,
+  hasUsage,
   meter,
   parseSessionFeatures,
   resolveAutomation,
+  selectEventsForWindow,
+  summarizeEvents,
+  sumUsage,
+  usageTotalTokens,
   type ChatConversation,
   type ChatFeatureProposal,
   type ChatWorkRestartNeedsConfirm,
@@ -19,7 +24,8 @@ import type { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, 
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
-import { locateTranscript } from '../pty/transcriptWatcher.js';
+import { locateTranscript, readTranscriptDelta, transcriptSize } from '../pty/transcriptWatcher.js';
+import type { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { isCleanWorkingTree } from '../git/git.js';
 import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
@@ -48,6 +54,8 @@ export interface ChatWorkDeps {
   orchestrator: Orchestrator;
   dataDir: string;
   model?: string;
+  /** Meldungen der CLI — vorrangige Quelle für Verbrauch UND Kosten eines Turns. */
+  telemetry?: TelemetryStore;
 }
 
 /**
@@ -59,8 +67,12 @@ export interface ChatWorkDeps {
  */
 export class ChatWorkService {
   private notify = new NotificationThrottle();
-  /** Scrollback-Länge an der letzten Turn-Grenze — für Kosten-Metering pro Turn. */
+  /** Scrollback-Länge an der letzten Turn-Grenze — Rückfallebene des Metering. */
   private turnStart = new Map<string, number>(); // sessionId → scrollback-Offset
+  /** Beginn des laufenden Turns — grenzt die Meldungen der CLI auf genau diesen Turn ein. */
+  private turnStartedAt = new Map<string, number>(); // sessionId → ms
+  /** Transkript-Position an der letzten Turn-Grenze — grenzt das Delta auf diesen Turn ein. */
+  private turnTranscriptOffset = new Map<string, number>(); // sessionId → Byte-Offset
   /** Offener Feature-Vorschlag je Unterhaltung (im Speicher; überlebt Panel-Öffnen). */
   private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
   /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
@@ -350,12 +362,28 @@ export class ChatWorkService {
     }
   }
 
+  /**
+   * Verbrauch eines Chat-Turns messen — dieselbe Kaskade wie im Phasen-Pfad
+   * (Orchestrator.meterTurn): Meldungen der CLI vor Transkript vor Schätzung.
+   *
+   * Vorher schätzte diese Methode aus dem Terminal-Scrollback mit leerem
+   * `promptText` und schrieb weder Kosten noch Quelle. Gemessen wurde damit
+   * ausgerechnet die Größe, die kaum ins Gewicht fällt: In einem Chat vom
+   * 28.07.2026 standen 7,0 Mio. gelesene Cache-Tokens 45k Ausgabe-Tokens
+   * gegenüber — erfasst waren 94k Tokens und 0 $ statt real gut 5 $.
+   */
   private meterTurn(session: LiveSession): void {
-    const start = this.turnStart.get(session.id) ?? 0;
-    const outputText = session.scrollback.slice(start);
+    const scrollbackStart = this.turnStart.get(session.id) ?? 0;
+    const startedAt = this.turnStartedAt.get(session.id) ?? 0;
+    const outputText = session.scrollback.slice(scrollbackStart);
+    const finishedAt = Date.now();
+
     this.turnStart.set(session.id, session.scrollback.length);
-    if (!outputText.trim()) return;
-    const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: '', outputText });
+    this.turnStartedAt.set(session.id, finishedAt);
+
+    const usage = this.usageForTurn(session, startedAt, finishedAt, outputText);
+    if (!usage) return;
+
     const execId = this.deps.executions.start({
       projectId: session.projectId,
       featureId: null,
@@ -363,12 +391,61 @@ export class ChatWorkService {
       phase: null,
       logPath: null,
     });
-    this.deps.executions.finish(execId, 0, cost.totalTokens);
+    this.deps.executions.finishWithUsage(execId, 0, usage);
+  }
+
+  /** Meldungen → Transkript → Scrollback-Schätzung; `null`, wenn der Turn nichts hergab. */
+  private usageForTurn(session: LiveSession, startedAt: number, finishedAt: number, outputText: string) {
+    const store = this.deps.telemetry;
+    if (store) {
+      const events = selectEventsForWindow(store.eventsFor(session.id), { from: startedAt, to: finishedAt });
+      if (events.length > 0) {
+        const { total, model } = summarizeEvents(events);
+        return {
+          tokens: total.tokens,
+          inputTokens: total.inputTokens,
+          outputTokens: total.outputTokens,
+          cacheReadTokens: total.cacheReadTokens,
+          cacheCreationTokens: total.cacheCreationTokens,
+          tokensSource: 'telemetry' as const,
+          costMicros: total.costMicros,
+          model,
+        };
+      }
+    }
+
+    if (session.claudeSessionId) {
+      const path = locateTranscript(session.cwd, session.claudeSessionId);
+      if (path) {
+        const offset = this.turnTranscriptOffset.get(session.id) ?? 0;
+        const usage = sumUsage(readTranscriptDelta(path, offset));
+        this.turnTranscriptOffset.set(session.id, transcriptSize(path));
+        if (hasUsage(usage)) {
+          return {
+            tokens: usageTotalTokens(usage),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            cacheCreationTokens: usage.cacheCreationTokens,
+            tokensSource: 'transcript' as const,
+          };
+        }
+      }
+    }
+
+    if (!outputText.trim()) return null;
+    const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: '', outputText });
+    return {
+      tokens: cost.totalTokens,
+      tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
+    };
   }
 
   handleExit(session: LiveSession, exitCode: number): void {
     this.deps.sessions.end(session.id);
     this.turnStart.delete(session.id);
+    this.turnStartedAt.delete(session.id);
+    this.turnTranscriptOffset.delete(session.id);
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
     this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
     bus.emitEvent('attention_resolved', session.id);

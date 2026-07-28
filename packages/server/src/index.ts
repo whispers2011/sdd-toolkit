@@ -131,6 +131,7 @@ async function main(): Promise<void> {
     ptys,
     orchestrator,
     dataDir: config.dataDir,
+    telemetry,
   });
   orchestrator.attachChatWork(chatWork);
 

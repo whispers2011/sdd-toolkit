@@ -372,3 +372,88 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
     expect(svc.workPaused(c)).toBe(false);
   });
 });
+
+/**
+ * Metering eines Chat-Turns. Vorher wurde aus dem Terminal-Scrollback geschätzt —
+ * also ausgerechnet die Größe, die kaum kostet: In einem Chat vom 28.07.2026 standen
+ * 7,0 Mio. gelesene Cache-Tokens 45k Ausgabe-Tokens gegenüber, erfasst waren 94k
+ * Tokens und 0 $ statt real gut 5 $. Vorrang haben jetzt die Meldungen der CLI.
+ */
+describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let executions: ExecutionRepo;
+  let svc: ChatWorkService;
+
+  const telemetryEvent = (sessionId: string) => ({
+    sessionId,
+    timestamp: Date.now(),
+    origin: 'main' as const,
+    model: 'claude-opus-5',
+    tokens: 7_175_597,
+    inputTokens: 135,
+    outputTokens: 45_096,
+    cacheReadTokens: 7_016_059,
+    cacheCreationTokens: 114_307,
+    costMicros: 5_350_524,
+  });
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-meter-'));
+    db = openMemoryDatabase();
+    executions = new ExecutionRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const build = (telemetry?: unknown) =>
+    new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions, settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager,
+      ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
+      orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator, dataDir,
+      ...(telemetry ? { telemetry: telemetry as never } : {}),
+    });
+
+  const session = (): LiveSession =>
+    ({
+      id: 's1',
+      projectId,
+      cwd: '/tmp/demo',
+      scrollback: 'Antwort des Agenten.\n',
+      machine: { state: { kind: 'turn_done' } },
+    }) as unknown as LiveSession;
+
+  it('rechnet über die Meldungen der CLI ab — inklusive Kosten und Cache-Tokens', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [telemetryEvent(live.id)] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('telemetry');
+    expect(run.costMicros).toBe(5_350_524);
+    expect(run.cacheReadTokens).toBe(7_016_059);
+    expect(run.tokens).toBe(7_175_597);
+  });
+
+  it('fällt ohne Meldungen und ohne Transkript auf die Scrollback-Schätzung zurück', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('estimated');
+    expect(run.tokens).toBeGreaterThan(0);
+  });
+});
