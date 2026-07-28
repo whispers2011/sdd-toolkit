@@ -211,6 +211,13 @@ export class PtySessionManager {
 
     pty.onData((data) => {
       session.scrollback = (session.scrollback + data).slice(-SCROLLBACK_LIMIT);
+      // Ausgabe ist der verlässlichste Lebensbeweis: Sie kommt auch dann, wenn der
+      // Zustandsautomat die Session nicht mehr als `working` führt. Nach
+      // WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+      // zurück — ein Sicherheitsnetz für die ANZEIGE. Der Leerlauf-Reaper las das als
+      // „arbeitet nicht" und beendete Sessions mitten im Denken oder in einem langen
+      // Build. Solange Ausgabe fließt, lebt die Session.
+      session.lastUsedAt = Date.now();
       for (const sub of session.subscribers) {
         if (sub.focused) {
           sub.send(data);

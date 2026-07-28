@@ -550,3 +550,65 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
     expect(spawns).toBe(2);
   });
 });
+
+/**
+ * Regression: Eine Session, die noch arbeitet, darf nie abgeräumt werden — auch dann
+ * nicht, wenn der Zustandsautomat sie nicht mehr als `working` führt. Nach
+ * WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+ * zurück (Sicherheitsnetz für die Anzeige). Ein Agent, der länger nachdenkt oder auf
+ * einen langen Build wartet, wurde dadurch mitten in der Arbeit beendet.
+ */
+describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let terminated: string[];
+  let sessions: LiveSession[];
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-stall-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    terminated = [];
+    sessions = [];
+
+    const ptys = {
+      list: () => sessions,
+      terminate: async (id: string) => { terminated.push(id); },
+      remove: () => {},
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager, ptys,
+      orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('verschont eine Session, die Ausgabe liefert, obwohl der Automat sie als ready führt', () => {
+    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    sessions = [
+      {
+        id: 'denkt-nach', kind: 'chat_work', exited: false, projectId, conversationId: 'c1',
+        machine: { state: { kind: 'ready' } }, // stall_timeout hat working bereits zurückgesetzt
+        lastActiveAt: 0,
+        lastUsedAt: now - 5_000, // ...aber vor 5 Sekunden kam noch Ausgabe
+        subscribers: new Set(),
+      } as unknown as LiveSession,
+    ];
+
+    svc.reapIdleSessions(now);
+
+    expect(terminated).toEqual([]);
+  });
+});
