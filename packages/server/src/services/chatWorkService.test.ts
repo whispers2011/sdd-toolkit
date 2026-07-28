@@ -243,6 +243,8 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       conversationId: 'c1',
       machine: { state: { kind: 'ready' } },
       lastActiveAt: 0,
+      lastUsedAt: 0,
+      subscribers: new Set(),
       ...over,
     }) as unknown as LiveSession;
 
@@ -303,8 +305,33 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
     expect(terminated).toEqual([]);
   });
 
+  /**
+   * Der Fall, der den Chat regelmäßig abbrechen ließ: Der Agent hat vor langer Zeit
+   * geantwortet (`lastActiveAt` alt), der Nutzer liest und tippt gerade (`lastUsedAt`
+   * frisch). Am alten Maß gemessen war das „seit Ewigkeiten inaktiv".
+   */
+  it('verschont eine Session, der sich der Nutzer gerade zuwendet', () => {
+    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    sessions = [mkSession({ id: 'lesend', lastActiveAt: 0, lastUsedAt: now - 1000 })];
+    svc.reapIdleSessions(now);
+    expect(terminated).toEqual([]);
+  });
+
+  it('verschont eine Session mit offenem Panel, egal wie lange sie still ist', () => {
+    sessions = [mkSession({ id: 'beobachtet', lastUsedAt: 0, subscribers: new Set([{}]) as LiveSession['subscribers'] })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 100);
+    expect(terminated).toEqual([]);
+  });
+
+  it('beendet eine Session, die niemand mehr offen hat und der sich niemand zuwendet', () => {
+    sessions = [mkSession({ id: 'vergessen', lastUsedAt: 0, subscribers: new Set() })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    expect(terminated).toEqual(['vergessen']);
+  });
+
   it('lässt eine noch frische Session in Ruhe', () => {
-    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000 })];
+    // dispatch() setzt beide Marken gemeinsam, wenn der Agent zu arbeiten beginnt.
+    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000, lastUsedAt: 1_000 })];
     svc.reapIdleSessions(1_000 + CHAT_IDLE_TIMEOUT_MS - 1);
     expect(terminated).toEqual([]);
   });
@@ -370,5 +397,218 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
     const c = conv();
     sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
     expect(svc.workPaused(c)).toBe(false);
+  });
+});
+
+/**
+ * Metering eines Chat-Turns. Vorher wurde aus dem Terminal-Scrollback geschätzt —
+ * also ausgerechnet die Größe, die kaum kostet: In einem Chat vom 28.07.2026 standen
+ * 7,0 Mio. gelesene Cache-Tokens 45k Ausgabe-Tokens gegenüber, erfasst waren 94k
+ * Tokens und 0 $ statt real gut 5 $. Vorrang haben jetzt die Meldungen der CLI.
+ */
+describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let executions: ExecutionRepo;
+  let svc: ChatWorkService;
+
+  const telemetryEvent = (sessionId: string) => ({
+    sessionId,
+    timestamp: Date.now(),
+    origin: 'main' as const,
+    model: 'claude-opus-5',
+    tokens: 7_175_597,
+    inputTokens: 135,
+    outputTokens: 45_096,
+    cacheReadTokens: 7_016_059,
+    cacheCreationTokens: 114_307,
+    costMicros: 5_350_524,
+  });
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-meter-'));
+    db = openMemoryDatabase();
+    executions = new ExecutionRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const build = (telemetry?: unknown) =>
+    new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions, settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager,
+      ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
+      orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator, dataDir,
+      ...(telemetry ? { telemetry: telemetry as never } : {}),
+    });
+
+  const session = (): LiveSession =>
+    ({
+      id: 's1',
+      projectId,
+      cwd: '/tmp/demo',
+      scrollback: 'Antwort des Agenten.\n',
+      machine: { state: { kind: 'turn_done' } },
+    }) as unknown as LiveSession;
+
+  it('rechnet über die Meldungen der CLI ab — inklusive Kosten und Cache-Tokens', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [telemetryEvent(live.id)] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('telemetry');
+    expect(run.costMicros).toBe(5_350_524);
+    expect(run.cacheReadTokens).toBe(7_016_059);
+    expect(run.tokens).toBe(7_175_597);
+  });
+
+  it('fällt ohne Meldungen und ohne Transkript auf die Scrollback-Schätzung zurück', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('estimated');
+    expect(run.tokens).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Doppelstart-Schutz. Zwischen „läuft schon eine Session?" und dem Spawn liegt ein
+ * `await` auf die Worktree-Anlage — zwei gleichzeitige Aufrufe lasen beide „keine"
+ * und spawnten beide eine. Am 28.07.2026 fünfmal beobachtet, zuletzt mit zwei
+ * arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+ */
+describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let spawns: number;
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-ensure-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    spawns = 0;
+
+    const worktrees = {
+      // Verzögert wie die echte Worktree-Anlage — genau hier klaffte das Zeitfenster.
+      create: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return join(dataDir, 'wt');
+      },
+      pathFor: () => join(dataDir, 'wt'),
+    } as unknown as WorktreeManager;
+
+    const ptys = {
+      forConversation: () => undefined, // nie eine laufende Session sehen: der Race-Fall
+      spawn: async () => {
+        spawns++;
+        return { id: `s${spawns}`, pty: { pid: 1000 + spawns } } as unknown as LiveSession;
+      },
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('drei gleichzeitige ensure() erzeugen genau eine Session', async () => {
+    const results = await Promise.all([svc.ensure(projectId), svc.ensure(projectId), svc.ensure(projectId)]);
+
+    expect(spawns).toBe(1);
+    expect(new Set(results.map((r) => r.sessionId)).size).toBe(1);
+  });
+
+  it('nach Abschluss ist der Schutz wieder frei (kein dauerhaft blockiertes Projekt)', async () => {
+    await svc.ensure(projectId);
+    await svc.ensure(projectId);
+    // Zweiter Aufruf läuft neu, weil der erste abgeschlossen ist — Koaleszenz gilt nur währenddessen.
+    expect(spawns).toBe(2);
+  });
+});
+
+/**
+ * Regression: Eine Session, die noch arbeitet, darf nie abgeräumt werden — auch dann
+ * nicht, wenn der Zustandsautomat sie nicht mehr als `working` führt. Nach
+ * WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+ * zurück (Sicherheitsnetz für die Anzeige). Ein Agent, der länger nachdenkt oder auf
+ * einen langen Build wartet, wurde dadurch mitten in der Arbeit beendet.
+ */
+describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let terminated: string[];
+  let sessions: LiveSession[];
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-stall-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    terminated = [];
+    sessions = [];
+
+    const ptys = {
+      list: () => sessions,
+      terminate: async (id: string) => { terminated.push(id); },
+      remove: () => {},
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager, ptys,
+      orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('verschont eine Session, die Ausgabe liefert, obwohl der Automat sie als ready führt', () => {
+    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    sessions = [
+      {
+        id: 'denkt-nach', kind: 'chat_work', exited: false, projectId, conversationId: 'c1',
+        machine: { state: { kind: 'ready' } }, // stall_timeout hat working bereits zurückgesetzt
+        lastActiveAt: 0,
+        lastUsedAt: now - 5_000, // ...aber vor 5 Sekunden kam noch Ausgabe
+        subscribers: new Set(),
+      } as unknown as LiveSession,
+    ];
+
+    svc.reapIdleSessions(now);
+
+    expect(terminated).toEqual([]);
   });
 });

@@ -1,5 +1,5 @@
 import { join, resolve, sep } from 'node:path';
-import { mkdirSync, existsSync, readdirSync, realpathSync, rmdirSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync, realpathSync, rmdirSync, cpSync } from 'node:fs';
 import { git, gitOk, isCleanWorkingTree, isGitRepo, localBranchExists } from './git.js';
 import { readWorktreeInventory } from './worktreeInventory.js';
 
@@ -28,6 +28,33 @@ export function projectDirName(project: WorktreeProject): string {
     .slice(0, 40)
     .replace(/-+$/g, '');
   return slug ? `${slug}-${project.id}` : project.id;
+}
+
+/**
+ * Agenten-Konfiguration, die ein Projekt bewusst NICHT eincheckt (`.claude/` steht
+ * in vielen Repos in der .gitignore). `git worktree add` checkt nur getrackte Dateien
+ * aus — dort fehlen dann die projektlokalen Skills, und ein Phasenstart schickt einen
+ * Slash-Command, den es im Worktree gar nicht gibt: die Session endet nach Sekunden,
+ * ohne den Prompt je anzunehmen (Jobmappe, 28.07.2026, drei Fehlstarts in Folge).
+ */
+const AGENT_CONFIG_PATHS = ['.claude', 'CLAUDE.md', 'AGENTS.md'] as const;
+
+/**
+ * Ungetrackte Agenten-Konfiguration aus dem Hauptrepo in den frischen Worktree
+ * spiegeln. Nur was dort fehlt — getrackte Dateien gewinnen immer, denn die hat
+ * `worktree add` gerade in der Branch-Version ausgecheckt.
+ */
+function mirrorAgentConfig(projectPath: string, dest: string): void {
+  for (const rel of AGENT_CONFIG_PATHS) {
+    const src = join(projectPath, rel);
+    const target = join(dest, rel);
+    if (!existsSync(src) || existsSync(target)) continue;
+    try {
+      cpSync(src, target, { recursive: true, dereference: true });
+    } catch {
+      // Eine nicht kopierbare Konfiguration darf das Anlegen des Worktrees nicht scheitern lassen.
+    }
+  }
 }
 
 /** Aufgelöster Pfad; fällt auf resolve() zurück, wenn er (noch) nicht existiert. */
@@ -159,7 +186,10 @@ export class WorktreeManager {
     // Bereits ein gültiger Worktree am Ziel? → idempotent zurück; kaputte Hülle entfernen.
     if (existsSync(dest)) {
       const health = await this.ensureValid(opts.projectPath, dest);
-      if (health === 'ok' || health === 'repaired') return dest;
+      if (health === 'ok' || health === 'repaired') {
+        mirrorAgentConfig(opts.projectPath, dest);
+        return dest;
+      }
       await this.remove(opts.projectPath, dest, { force: true }).catch(() => {});
     }
 
@@ -169,7 +199,10 @@ export class WorktreeManager {
       return w && existsSync(w.path) ? w.path : null;
     };
     const existing = await worktreeForBranch();
-    if (existing) return existing;
+    if (existing) {
+      mirrorAgentConfig(opts.projectPath, existing);
+      return existing;
+    }
 
     const branchExists = await localBranchExists(opts.projectPath, opts.branch);
     const addArgs = branchExists
@@ -177,17 +210,26 @@ export class WorktreeManager {
       : ['worktree', 'add', dest, '-b', opts.branch, opts.defaultBranch];
 
     const res = await git(opts.projectPath, addArgs);
-    if (res.code === 0) return dest;
+    if (res.code === 0) {
+      mirrorAgentConfig(opts.projectPath, dest);
+      return dest;
+    }
 
     // Rest-Race: Branch/Worktree wurde zwischen Prüfung und add doch angelegt.
     const msg = `${res.stderr}\n${res.stdout}`;
     if (/already exists|already checked out|already used by worktree/i.test(msg)) {
       await git(opts.projectPath, ['worktree', 'prune']).catch(() => {});
       const now = await worktreeForBranch();
-      if (now) return now;
+      if (now) {
+        mirrorAgentConfig(opts.projectPath, now);
+        return now;
+      }
       // Branch existiert jetzt, aber ohne Worktree → auf bestehenden Branch aufsetzen.
       const retry = await git(opts.projectPath, ['worktree', 'add', dest, opts.branch]);
-      if (retry.code === 0) return dest;
+      if (retry.code === 0) {
+        mirrorAgentConfig(opts.projectPath, dest);
+        return dest;
+      }
       throw new Error(
         `git worktree add fehlgeschlagen: ${retry.stderr.trim() || retry.stdout.trim() || msg.trim()}`,
       );

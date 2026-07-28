@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
+import { formatBytes, type Feature, type FeatureArtifactStep, type FeatureDocument, type FeaturePhase } from '@sdd/shared';
 import { api, type ExecutionInfo, type RunSummary } from '../api.js';
+import { useStore } from '../store.js';
 import { RunCard } from './ExecutionsView.js';
 import { FeatureResultDialog } from './FeatureResultDialog.js';
 
@@ -11,9 +12,11 @@ import { FeatureResultDialog } from './FeatureResultDialog.js';
  * keine neue Session mehr.
  */
 export function FeatureDashboard({ feature }: { feature: Feature }) {
+  const { dispatch } = useStore();
   const [run, setRun] = useState<RunSummary | null>(null);
   const [detail, setDetail] = useState<ExecutionInfo[]>([]);
   const [steps, setSteps] = useState<FeatureArtifactStep[]>([]);
+  const [documents, setDocuments] = useState<FeatureDocument[]>([]);
   const [expanded, setExpanded] = useState(true);
   const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
   const [logFor, setLogFor] = useState<string | null>(null);
@@ -26,6 +29,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
       .catch(() => {});
     void api.executions(feature.id).then(setDetail).catch(() => {});
     void api.featureArtifacts(feature.id).then(setSteps).catch(() => {});
+    void api.featureDocuments(feature.id).then(setDocuments).catch(() => {});
   }, [feature.id]);
 
   useEffect(() => {
@@ -68,6 +72,30 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
             </div>
           )}
         </section>
+
+        {/* Ausgangsmaterial des Features — auch nach dem Merge nachvollziehbar (SC-007). */}
+        {documents.length > 0 && (
+          <section>
+            <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">Dokumente</h2>
+            <div className="flex flex-wrap gap-2">
+              {documents.map((doc) => (
+                <button
+                  key={doc.storedName}
+                  onClick={() =>
+                    void api
+                      .openFeatureDocument(feature.id, doc.storedName)
+                      .catch((e: Error) => dispatch({ type: 'error', message: e.message }))
+                  }
+                  title={`${doc.relPath} — mit der Systemanwendung öffnen`}
+                  className="rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-left text-sm text-zinc-200 hover:bg-zinc-800"
+                >
+                  📎 {doc.name}
+                  <span className="ml-2 text-xs text-zinc-500">{formatBytes(doc.bytes)}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section>
           <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">

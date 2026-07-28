@@ -62,6 +62,13 @@ export interface LiveSession {
   readyTimer: NodeJS.Timeout | null;
   /** Letzter Aktivitätszeitpunkt: gesetzt beim Start, aktualisiert bei working/awaiting_input. */
   lastActiveAt: number;
+  /**
+   * Letzte Nutzung: wie `lastActiveAt`, zusätzlich aber bei jeder Zuwendung durch den
+   * Nutzer (Tastatureingabe, abgeschickter Prompt, geöffnetes Panel). Der Leerlauf-Reaper
+   * misst hieran — `lastActiveAt` allein beschreibt nur, wann der Agent zuletzt gearbeitet
+   * hat, und würde eine Session abräumen, während davor jemand liest und nachdenkt.
+   */
+  lastUsedAt: number;
 }
 
 /**
@@ -198,11 +205,19 @@ export class PtySessionManager {
       submitTimer: null,
       readyTimer: null,
       lastActiveAt: Date.now(),
+      lastUsedAt: Date.now(),
     };
     this.sessions.set(id, session);
 
     pty.onData((data) => {
       session.scrollback = (session.scrollback + data).slice(-SCROLLBACK_LIMIT);
+      // Ausgabe ist der verlässlichste Lebensbeweis: Sie kommt auch dann, wenn der
+      // Zustandsautomat die Session nicht mehr als `working` führt. Nach
+      // WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+      // zurück — ein Sicherheitsnetz für die ANZEIGE. Der Leerlauf-Reaper las das als
+      // „arbeitet nicht" und beendete Sessions mitten im Denken oder in einem langen
+      // Build. Solange Ausgabe fließt, lebt die Session.
+      session.lastUsedAt = Date.now();
       for (const sub of session.subscribers) {
         if (sub.focused) {
           sub.send(data);
@@ -300,6 +315,7 @@ export class PtySessionManager {
     // „Zuletzt aktiv" = begann zu arbeiten oder stellte eine Rückfrage (Grid-Sortierung).
     if (machine.state.kind === 'working' || machine.state.kind === 'awaiting_input') {
       session.lastActiveAt = Date.now();
+      session.lastUsedAt = session.lastActiveAt;
     }
     if (before !== machine.state || effects.length > 0) {
       this.callbacks.onStatusChange(session, effects);
@@ -338,6 +354,7 @@ export class PtySessionManager {
     if (s.scrollback) onData(s.scrollback);
     const sub: Subscriber = { send: onData, focused: true, buffer: '', timer: null };
     s.subscribers.add(sub);
+    s.lastUsedAt = Date.now(); // Panel geöffnet — jemand wendet sich der Session zu
     return {
       unsubscribe: () => {
         if (sub.timer) clearTimeout(sub.timer);
@@ -363,7 +380,10 @@ export class PtySessionManager {
   }
 
   write(id: string, data: string): void {
-    this.sessions.get(id)?.pty.write(data);
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.lastUsedAt = Date.now(); // Tastatureingabe im Panel zählt als Zuwendung
+    s.pty.write(data);
   }
 
   /**
@@ -375,6 +395,7 @@ export class PtySessionManager {
   sendPrompt(id: string, text: string): void {
     const s = this.sessions.get(id);
     if (!s || s.exited) return;
+    s.lastUsedAt = Date.now();
     s.pendingPrompts.push(text);
     this.pump(s);
   }

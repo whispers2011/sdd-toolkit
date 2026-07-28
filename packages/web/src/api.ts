@@ -20,6 +20,8 @@ import type {
   FeatureArtifact,
   FeatureArtifactStep,
   FeatureCostBreakdown,
+  FeatureDocument,
+  FeatureDocumentsResult,
   FeaturePhase,
   SaveFeatureArtifactRequest,
   SaveFeatureArtifactResult,
@@ -174,6 +176,33 @@ export const api = {
   removeProject: (id: string) => request<unknown>('DELETE', `/api/projects/${id}`),
   createFeature: (projectId: string, name: string, description?: string) =>
     request<Feature>('POST', `/api/projects/${projectId}/features`, { name, description }),
+  /**
+   * Feature mit Dokumenten anlegen (US1). `request()` kann kein multipart —
+   * daher direkter `fetch` wie bei `pasteImage`. Die Reihenfolge im FormData ist
+   * verbindlich: `name`, `description`, dann die Dateien (contracts).
+   */
+  createFeatureWithDocuments: async (
+    projectId: string,
+    name: string,
+    description: string | undefined,
+    files: File[],
+  ): Promise<FeatureDocumentsResult> => {
+    const form = new FormData();
+    form.append('name', name);
+    form.append('description', description ?? '');
+    for (const file of files) form.append('files', file, file.name);
+    const res = await fetch(`/api/projects/${projectId}/features/with-documents`, {
+      method: 'POST',
+      body: form,
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw new Error((data.message as string) ?? `POST → ${res.status}`);
+    return data as unknown as FeatureDocumentsResult;
+  },
+  featureDocuments: (featureId: string) =>
+    request<FeatureDocument[]>('GET', `/api/features/${featureId}/documents`),
+  openFeatureDocument: (featureId: string, storedName: string) =>
+    request<{ ok: true }>('POST', `/api/features/${featureId}/documents/open`, { storedName }),
   startPhase: (featureId: string, phase: FeaturePhase, prompt?: string) =>
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/start`, { prompt }),
   approvePhase: (featureId: string, phase: FeaturePhase) =>
