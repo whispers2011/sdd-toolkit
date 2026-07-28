@@ -457,3 +457,69 @@ describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
     expect(run.tokens).toBeGreaterThan(0);
   });
 });
+
+/**
+ * Doppelstart-Schutz. Zwischen „läuft schon eine Session?" und dem Spawn liegt ein
+ * `await` auf die Worktree-Anlage — zwei gleichzeitige Aufrufe lasen beide „keine"
+ * und spawnten beide eine. Am 28.07.2026 fünfmal beobachtet, zuletzt mit zwei
+ * arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+ */
+describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let spawns: number;
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-ensure-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    spawns = 0;
+
+    const worktrees = {
+      // Verzögert wie die echte Worktree-Anlage — genau hier klaffte das Zeitfenster.
+      create: async () => {
+        await new Promise((r) => setTimeout(r, 10));
+        return join(dataDir, 'wt');
+      },
+      pathFor: () => join(dataDir, 'wt'),
+    } as unknown as WorktreeManager;
+
+    const ptys = {
+      forConversation: () => undefined, // nie eine laufende Session sehen: der Race-Fall
+      spawn: async () => {
+        spawns++;
+        return { id: `s${spawns}`, pty: { pid: 1000 + spawns } } as unknown as LiveSession;
+      },
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('drei gleichzeitige ensure() erzeugen genau eine Session', async () => {
+    const results = await Promise.all([svc.ensure(projectId), svc.ensure(projectId), svc.ensure(projectId)]);
+
+    expect(spawns).toBe(1);
+    expect(new Set(results.map((r) => r.sessionId)).size).toBe(1);
+  });
+
+  it('nach Abschluss ist der Schutz wieder frei (kein dauerhaft blockiertes Projekt)', async () => {
+    await svc.ensure(projectId);
+    await svc.ensure(projectId);
+    // Zweiter Aufruf läuft neu, weil der erste abgeschlossen ist — Koaleszenz gilt nur währenddessen.
+    expect(spawns).toBe(2);
+  });
+});

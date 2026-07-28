@@ -79,6 +79,8 @@ export class ChatWorkService {
   private lastMarker = new Map<string, string>();
   /** Laufender Neustart je Projekt — koalesziert schnelle Doppelklicks (FR-008). */
   private restarting = new Map<string, Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm>>();
+  /** Laufendes ensure() je Projekt — verhindert zwei Sessions auf derselben Unterhaltung. */
+  private ensuring = new Map<string, Promise<{ sessionId: string }>>();
   /** Sessions, die für einen Neustart absichtlich beendet werden — kein Fehler-Alarm beim Exit. */
   private terminating = new Set<string>();
 
@@ -88,8 +90,23 @@ export class ChatWorkService {
 
   // ---------- Session-Lifecycle ----------
 
-  /** Session sicherstellen (idempotent): Worktree anlegen + interaktive Claude-Session spawnen. */
-  async ensure(projectId: string): Promise<{ sessionId: string }> {
+  /**
+   * Session sicherstellen (idempotent): Worktree anlegen + interaktive Claude-Session spawnen.
+   *
+   * Koalesziert wie `restart()`, denn zwischen der Prüfung „läuft schon eine?" und dem Spawn
+   * liegt ein `await` auf die Worktree-Anlage. Zwei gleichzeitige Aufrufe — Panel-Öffnen und
+   * reconnectender Client — lasen beide „keine Session" und spawnten beide eine: am 28.07.2026
+   * fünfmal beobachtet, zuletzt mit zwei arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+   */
+  ensure(projectId: string): Promise<{ sessionId: string }> {
+    const inflight = this.ensuring.get(projectId);
+    if (inflight) return inflight;
+    const run = this.ensureUnlocked(projectId).finally(() => this.ensuring.delete(projectId));
+    this.ensuring.set(projectId, run);
+    return run;
+  }
+
+  private async ensureUnlocked(projectId: string): Promise<{ sessionId: string }> {
     const project = this.mustProject(projectId);
     const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
 
