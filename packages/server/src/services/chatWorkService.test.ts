@@ -243,6 +243,8 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       conversationId: 'c1',
       machine: { state: { kind: 'ready' } },
       lastActiveAt: 0,
+      lastUsedAt: 0,
+      subscribers: new Set(),
       ...over,
     }) as unknown as LiveSession;
 
@@ -303,8 +305,33 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
     expect(terminated).toEqual([]);
   });
 
+  /**
+   * Der Fall, der den Chat regelmäßig abbrechen ließ: Der Agent hat vor langer Zeit
+   * geantwortet (`lastActiveAt` alt), der Nutzer liest und tippt gerade (`lastUsedAt`
+   * frisch). Am alten Maß gemessen war das „seit Ewigkeiten inaktiv".
+   */
+  it('verschont eine Session, der sich der Nutzer gerade zuwendet', () => {
+    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    sessions = [mkSession({ id: 'lesend', lastActiveAt: 0, lastUsedAt: now - 1000 })];
+    svc.reapIdleSessions(now);
+    expect(terminated).toEqual([]);
+  });
+
+  it('verschont eine Session mit offenem Panel, egal wie lange sie still ist', () => {
+    sessions = [mkSession({ id: 'beobachtet', lastUsedAt: 0, subscribers: new Set([{}]) as LiveSession['subscribers'] })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 100);
+    expect(terminated).toEqual([]);
+  });
+
+  it('beendet eine Session, die niemand mehr offen hat und der sich niemand zuwendet', () => {
+    sessions = [mkSession({ id: 'vergessen', lastUsedAt: 0, subscribers: new Set() })];
+    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    expect(terminated).toEqual(['vergessen']);
+  });
+
   it('lässt eine noch frische Session in Ruhe', () => {
-    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000 })];
+    // dispatch() setzt beide Marken gemeinsam, wenn der Agent zu arbeiten beginnt.
+    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000, lastUsedAt: 1_000 })];
     svc.reapIdleSessions(1_000 + CHAT_IDLE_TIMEOUT_MS - 1);
     expect(terminated).toEqual([]);
   });

@@ -481,17 +481,22 @@ export class ChatWorkService {
   }
 
   /**
-   * Leerlauf-Reaper: beendet Projekt-Chat-Sessions, die seit `maxIdleMs` nicht mehr
-   * gearbeitet haben (weder `working` noch zwischenzeitlich aktiv). Eine gerade
-   * arbeitende Session wird nie abgewürgt. Der Exit läuft über den regulären Pfad
-   * (`handleExit`); dank `terminating` gibt es dabei keinen Fehler-Alarm.
+   * Leerlauf-Reaper: beendet Projekt-Chat-Sessions, denen seit `maxIdleMs` niemand mehr
+   * zugewandt war. Eine gerade arbeitende Session wird nie abgewürgt, ebenso wenig eine,
+   * deren Panel offen ist. Der Exit läuft über den regulären Pfad (`handleExit`); dank
+   * `terminating` gibt es dabei keinen Fehler-Alarm.
+   *
+   * Gemessen wird an `lastUsedAt`, nicht an `lastActiveAt`: Letzteres sagt nur, wann der
+   * Agent zuletzt gearbeitet hat, und wurde für die Grid-Sortierung gebaut. Wer die Antwort
+   * las und fünf Minuten nachdachte, fand die Session beendet vor und musste sie fortsetzen.
    */
   reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_IDLE_TIMEOUT_MS): void {
     for (const s of this.deps.ptys.list()) {
       try {
         if (s.kind !== 'chat_work' || s.exited) continue;
         if (displayStatus(s.machine.state) === 'working') continue; // aktiver Turn → laufen lassen
-        if (now - s.lastActiveAt < maxIdleMs) continue;
+        if (s.subscribers.size > 0) continue; // jemand schaut zu → nicht abräumen
+        if (now - s.lastUsedAt < maxIdleMs) continue;
         this.terminating.add(s.id); // erwarteter Exit → kein „braucht dich"-Alarm
         // Fehler beim Beenden dürfen weder die Schleife abbrechen noch als
         // unbehandelte Rejection den Serverprozess reißen.
