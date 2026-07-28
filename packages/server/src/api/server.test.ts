@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -17,8 +17,12 @@ import {
   SettingsRepo,
 } from '../db/repos.js';
 import { TelemetryStore } from '../telemetry/telemetryStore.js';
+import { FeatureDocumentsService } from '../services/featureDocuments.js';
 import { buildAllowedOrigins } from './originGuard.js';
 import { buildServer, type ApiDeps } from './server.js';
+
+/** Fehlermeldung aus einer Antwort ziehen (Fehlerkörper: `{ message }`). */
+const message = (res: { payload: string }) => (JSON.parse(res.payload) as { message?: string }).message;
 
 /**
  * Regressions-Tripwire (FR-005/FR-007/FR-010): stellt sicher, dass echte
@@ -481,5 +485,390 @@ describe('GET /api/telemetry/status', () => {
     expect(body.reason).toBeNull();
     expect(body.eventsReceived).toBe(1);
     expect(body.lastEventAt).toBe(1_700_000_000_000);
+  });
+});
+
+// ---------- Feature-Dokumente (US1/US3, contracts/feature-documents-api.md) ----------
+
+/** multipart-Body von Hand — die Reihenfolge der Teile ist Teil des Contracts. */
+function multipartBody(
+  fields: Array<{ name: string; value?: string; filename?: string; content?: string | Buffer; contentType?: string }>,
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = '----sddtestboundary1234';
+  const chunks: Buffer[] = [];
+  for (const f of fields) {
+    chunks.push(Buffer.from(`--${boundary}\r\n`));
+    if (f.filename !== undefined) {
+      chunks.push(
+        Buffer.from(
+          `Content-Disposition: form-data; name="${f.name}"; filename="${f.filename}"\r\n` +
+            `Content-Type: ${f.contentType ?? 'application/octet-stream'}\r\n\r\n`,
+        ),
+      );
+      chunks.push(typeof f.content === 'string' ? Buffer.from(f.content) : (f.content ?? Buffer.alloc(0)));
+    } else {
+      chunks.push(Buffer.from(`Content-Disposition: form-data; name="${f.name}"\r\n\r\n`));
+      chunks.push(Buffer.from(f.value ?? ''));
+    }
+    chunks.push(Buffer.from('\r\n'));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return {
+    payload: Buffer.concat(chunks),
+    headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+  };
+}
+
+describe('Feature-Dokumente: Routen', () => {
+  let app: FastifyInstance;
+  let db: DB;
+  let repo: string;
+  let projects: ProjectRepo;
+  let features: FeatureRepo;
+  let projectId: string;
+  let started: Array<{ featureId: string; phase: string; prompt?: string }>;
+  let opened: string[];
+
+  const docsDirOf = (name: string) => join(repo, 'specs', name, 'docs');
+
+  beforeEach(async () => {
+    repo = makeRepo(false);
+    db = openMemoryDatabase();
+    projects = new ProjectRepo(db);
+    features = new FeatureRepo(db);
+    started = [];
+    opened = [];
+
+    projectId = projects.create({
+      name: 'Demo',
+      path: repo,
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: ENABLED,
+      verifyCommands: [],
+      automation: {},
+      optimization: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+
+    app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
+      projects,
+      features,
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      queue: new QueueRepo(db),
+      settings: new SettingsRepo(db),
+      reviewComments: new ReviewCommentRepo(db),
+      featureDocuments: new FeatureDocumentsService({ projects, features }),
+      orchestrator: {
+        // Nachbau von Orchestrator.createFeature: gleicher Fehler bei Namenskollision.
+        createFeature: async (pid: string, name: string) => {
+          if (features.getByName(pid, name)) throw new Error(`Feature '${name}' existiert bereits`);
+          return features.create({
+            projectId: pid,
+            name,
+            branch: `feature/${name}`,
+            worktreePath: repo,
+            phases: initialPhases(ENABLED),
+            integration: 'none',
+            integrationTarget: null,
+            automation: {},
+            optimization: {},
+            tasksDone: 0,
+            tasksTotal: 0,
+          });
+        },
+        startPhaseRun: async (featureId: string, phase: string, prompt?: string) => {
+          started.push({ featureId, phase, prompt });
+          return { gateRunning: false };
+        },
+        isGateRunning: () => false,
+        approve: () => {},
+        discard: () => {},
+        reconcileOpenAttention: () => {},
+      },
+      ptys: { forFeature: () => undefined, terminate: async () => {}, sendPrompt: () => {} },
+      telemetry: new TelemetryStore({ autoSweep: false }),
+      dataDir: mkdtempSync(join(tmpdir(), 'sdd-docs-api-')),
+      webDir: null,
+      port: 4899,
+      openDocument: (path: string) => opened.push(path),
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  const upload = (
+    pid: string,
+    fields: Parameters<typeof multipartBody>[0],
+  ) => {
+    const { payload, headers } = multipartBody(fields);
+    return app.inject({ method: 'POST', url: `/api/projects/${pid}/features/with-documents`, payload, headers });
+  };
+
+  // ---------- POST /api/projects/:id/features/with-documents ----------
+
+  it('legt Feature an, hinterlegt die Dokumente und startet den Specify-Lauf', async () => {
+    const res = await upload(projectId, [
+      { name: 'name', value: 'kundenimport' },
+      { name: 'description', value: 'Kundendaten übernehmen' },
+      { name: 'files', filename: 'anforderung.md', content: '# Kundennummer', contentType: 'text/markdown' },
+      { name: 'files', filename: 'schema.sql', content: 'CREATE TABLE kunde();' },
+    ]);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { feature: { id: string; name: string }; documents: unknown[]; rejected: unknown[] };
+    expect(body.feature.name).toBe('kundenimport');
+    expect(body.rejected).toEqual([]);
+    expect(body.documents).toEqual([
+      expect.objectContaining({
+        name: 'anforderung.md',
+        storedName: 'anforderung.md',
+        relPath: 'specs/kundenimport/docs/anforderung.md',
+        mimeType: 'text/markdown',
+      }),
+      expect.objectContaining({ name: 'schema.sql', relPath: 'specs/kundenimport/docs/schema.sql' }),
+    ]);
+    expect(readFileSync(join(docsDirOf('kundenimport'), 'anforderung.md'), 'utf8')).toBe('# Kundennummer');
+    // Der Specify-Lauf startet serverseitig, NACH den Dokumenten (R4).
+    expect(started).toEqual([
+      { featureId: body.feature.id, phase: 'specify', prompt: 'Kundendaten übernehmen' },
+    ]);
+  });
+
+  it('startet den Specify-Lauf auch ohne Beschreibung (FR-010)', async () => {
+    const res = await upload(projectId, [
+      { name: 'name', value: 'ohne-text' },
+      { name: 'description', value: '' },
+      { name: 'files', filename: 'a.txt', content: 'inhalt' },
+    ]);
+
+    expect(res.statusCode).toBe(200);
+    expect(started).toEqual([{ featureId: expect.any(String), phase: 'specify', prompt: undefined }]);
+  });
+
+  it('meldet abgelehnte Dokumente, legt das Feature aber trotzdem an (FR-014)', async () => {
+    const res = await upload(projectId, [
+      { name: 'name', value: 'grenztest' },
+      { name: 'files', filename: 'gut.txt', content: 'da' },
+      { name: 'files', filename: 'leer.txt', content: '' },
+    ]);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { documents: Array<{ name: string }>; rejected: Array<{ name: string; reason: string }> };
+    expect(body.documents.map((d) => d.name)).toEqual(['gut.txt']);
+    expect(body.rejected).toEqual([{ name: 'leer.txt', reason: 'leer.txt: leere Datei (0 Byte)' }]);
+  });
+
+  it('weist einen leeren Feature-Namen ab (400)', async () => {
+    const res = await upload(projectId, [
+      { name: 'name', value: '   ' },
+      { name: 'files', filename: 'a.txt', content: 'x' },
+    ]);
+
+    expect(res.statusCode).toBe(400);
+    expect(message(res)).toBe('Feature-Name fehlt');
+  });
+
+  it('weist eine Datei vor dem Namen ab (400) — die Reihenfolge trägt FR-015', async () => {
+    const res = await upload(projectId, [
+      { name: 'files', filename: 'a.txt', content: 'x' },
+      { name: 'name', value: 'zu-spaet' },
+    ]);
+
+    expect(res.statusCode).toBe(400);
+    expect(message(res)).toBe('name muss vor den Dateien gesendet werden');
+    expect(features.getByName(projectId, 'zu-spaet')).toBeNull();
+  });
+
+  it('weist ein Formular ohne Datei ab (400)', async () => {
+    const res = await upload(projectId, [{ name: 'name', value: 'ohne-datei' }]);
+
+    expect(res.statusCode).toBe(400);
+    expect(message(res)).toBe('Kein Dokument im Formular');
+    expect(features.getByName(projectId, 'ohne-datei')).toBeNull();
+  });
+
+  it('weist ein unbekanntes Projekt ab (404)', async () => {
+    const res = await upload('gibt-es-nicht', [
+      { name: 'name', value: 'egal' },
+      { name: 'files', filename: 'a.txt', content: 'x' },
+    ]);
+
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Projekt nicht gefunden');
+  });
+
+  // FR-015: scheitert das Anlegen, darf keine Datei und kein docs/-Ordner entstehen.
+  it('schreibt nichts, wenn das Feature nicht angelegt werden kann (FR-015)', async () => {
+    await upload(projectId, [
+      { name: 'name', value: 'kundenimport' },
+      { name: 'files', filename: 'erste.txt', content: 'erste Fassung' },
+    ]);
+    const vorher = readFileSync(join(docsDirOf('kundenimport'), 'documents.json'), 'utf8');
+
+    const res = await upload(projectId, [
+      { name: 'name', value: 'kundenimport' },
+      { name: 'files', filename: 'zweite.txt', content: 'darf nicht landen' },
+    ]);
+
+    expect(res.statusCode).toBe(400);
+    expect(message(res)).toBe("Feature 'kundenimport' existiert bereits");
+    expect(existsSync(join(docsDirOf('kundenimport'), 'zweite.txt'))).toBe(false);
+    expect(readFileSync(join(docsDirOf('kundenimport'), 'documents.json'), 'utf8')).toBe(vorher);
+  });
+
+  // Entspricht der curl-Gegenprobe aus quickstart.md („Pfad-Härtung"): der
+  // Dateiname kommt aus dem multipart-Body und darf nie ein Pfad werden (FR-005).
+  it('hält einen Dateinamen mit Pfadanteilen im docs-Ordner fest (FR-005)', async () => {
+    const res = await upload(projectId, [
+      { name: 'name', value: 'pfadtest' },
+      { name: 'description', value: '' },
+      { name: 'files', filename: '../../../../tmp/entkommen.txt', content: 'boese' },
+    ]);
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { documents: Array<{ storedName: string; relPath: string }> };
+    expect(body.documents).toHaveLength(1);
+    expect(body.documents[0]!.storedName).not.toContain('/');
+    expect(body.documents[0]!.relPath.startsWith('specs/pfadtest/docs/')).toBe(true);
+    expect(existsSync('/tmp/entkommen.txt')).toBe(false);
+    expect(existsSync(join(docsDirOf('pfadtest'), body.documents[0]!.storedName))).toBe(true);
+  });
+
+  // ---------- GET /api/features/:id/documents ----------
+
+  it('liefert die hinterlegten Dokumente eines Features', async () => {
+    const angelegt = await upload(projectId, [
+      { name: 'name', value: 'liste' },
+      { name: 'files', filename: 'a.txt', content: 'A' },
+      { name: 'files', filename: 'b.txt', content: 'BB' },
+    ]);
+    const featureId = (angelegt.json() as { feature: { id: string } }).feature.id;
+
+    const res = await app.inject({ method: 'GET', url: `/api/features/${featureId}/documents` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([
+      expect.objectContaining({ name: 'a.txt', relPath: 'specs/liste/docs/a.txt', bytes: 1 }),
+      expect.objectContaining({ name: 'b.txt', relPath: 'specs/liste/docs/b.txt', bytes: 2 }),
+    ]);
+  });
+
+  it('liefert ohne hinterlegte Dokumente ein leeres Array statt eines Fehlers', async () => {
+    const featureId = features.create({
+      projectId,
+      name: 'ohne-docs',
+      branch: 'feature/ohne-docs',
+      worktreePath: repo,
+      phases: initialPhases(ENABLED),
+      integration: 'none',
+      integrationTarget: null,
+      automation: {},
+      optimization: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    }).id;
+
+    const res = await app.inject({ method: 'GET', url: `/api/features/${featureId}/documents` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([]);
+  });
+
+  it('weist ein unbekanntes Feature ab (404)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/features/gibt-es-nicht/documents' });
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Feature nicht gefunden');
+  });
+
+  // ---------- POST /api/features/:id/documents/open ----------
+
+  it('öffnet ein gelistetes Dokument mit dem Systemöffner', async () => {
+    const angelegt = await upload(projectId, [
+      { name: 'name', value: 'oeffnen' },
+      { name: 'files', filename: 'bericht.pdf', content: '%PDF' },
+    ]);
+    const featureId = (angelegt.json() as { feature: { id: string } }).feature.id;
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/features/${featureId}/documents/open`,
+      payload: { storedName: 'bericht.pdf' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(opened).toEqual([join(docsDirOf('oeffnen'), 'bericht.pdf')]);
+  });
+
+  it('weist einen nicht im Manifest gelisteten Namen ab (404) — nie als Pfad übernommen (FR-005)', async () => {
+    const angelegt = await upload(projectId, [
+      { name: 'name', value: 'haerte' },
+      { name: 'files', filename: 'bericht.pdf', content: '%PDF' },
+    ]);
+    const featureId = (angelegt.json() as { feature: { id: string } }).feature.id;
+
+    for (const storedName of ['documents.json', '../../../etc/passwd', '/etc/passwd', 'gibt-es-nicht.pdf']) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/api/features/${featureId}/documents/open`,
+        payload: { storedName },
+      });
+      expect(res.statusCode, storedName).toBe(404);
+      expect(message(res)).toBe('Dokument nicht gefunden');
+    }
+    expect(opened).toEqual([]); // nichts geöffnet
+  });
+
+  it('meldet ein zwischenzeitlich gelöschtes Dokument als nicht mehr vorhanden (404)', async () => {
+    const angelegt = await upload(projectId, [
+      { name: 'name', value: 'geloescht' },
+      { name: 'files', filename: 'weg.txt', content: 'x' },
+    ]);
+    const featureId = (angelegt.json() as { feature: { id: string } }).feature.id;
+    rmSync(join(docsDirOf('geloescht'), 'weg.txt'));
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/features/${featureId}/documents/open`,
+      payload: { storedName: 'weg.txt' },
+    });
+
+    // Der Manifest-Eintrag ohne Datei wird schon beim Lesen ausgelassen (FR-016).
+    expect(res.statusCode).toBe(404);
+    expect(opened).toEqual([]);
+  });
+
+  it('legt bei fehlgeschlagenem Anlegen keinen docs-Ordner an (FR-015)', async () => {
+    features.create({
+      projectId,
+      name: 'schon-da',
+      branch: 'feature/schon-da',
+      worktreePath: repo,
+      phases: initialPhases(ENABLED),
+      integration: 'none',
+      integrationTarget: null,
+      automation: {},
+      optimization: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    });
+
+    const res = await upload(projectId, [
+      { name: 'name', value: 'schon-da' },
+      { name: 'files', filename: 'a.txt', content: 'x' },
+    ]);
+
+    expect(res.statusCode).toBe(400);
+    expect(existsSync(docsDirOf('schon-da'))).toBe(false);
   });
 });

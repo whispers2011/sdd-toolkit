@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -81,5 +81,36 @@ describe('WorktreeManager.create() — race-fest & idempotent', () => {
     rmSync(dest, { recursive: true, force: true });
     const again = await worktrees.create(opts('ghost', 'feature/ghost'));
     expect(existsSync(again)).toBe(true);
+  });
+
+  /**
+   * Ungetrackte Agenten-Konfiguration muss mitkommen: steht `.claude/` in der
+   * .gitignore, checkt `worktree add` sie nicht aus — der Phasenstart schickt dann
+   * einen Slash-Command, den es im Worktree nicht gibt (Jobmappe, 28.07.2026).
+   */
+  it('spiegelt ungetracktes .claude/ und CLAUDE.md in den neuen Worktree', async () => {
+    mkdirSync(join(repo, '.claude', 'skills', 'speckit-specify'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'skills', 'speckit-specify', 'SKILL.md'), '# specify');
+    writeFileSync(join(repo, 'CLAUDE.md'), '# Projektregeln');
+    writeFileSync(join(repo, '.gitignore'), '.claude/\nCLAUDE.md\n');
+    sh(repo, ['add', '.gitignore']);
+    sh(repo, ['commit', '-m', 'ignore agent config']);
+
+    const dest = await worktrees.create(opts('mirror', 'feature/mirror'));
+
+    expect(existsSync(join(dest, '.claude', 'skills', 'speckit-specify', 'SKILL.md'))).toBe(true);
+    expect(existsSync(join(dest, 'CLAUDE.md'))).toBe(true);
+  });
+
+  it('überschreibt getrackte Agenten-Konfiguration im Worktree nicht', async () => {
+    mkdirSync(join(repo, '.claude'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'marker.txt'), 'hauptrepo');
+    sh(repo, ['add', '.claude/marker.txt']);
+    sh(repo, ['commit', '-m', 'track agent config']);
+
+    const dest = await worktrees.create(opts('tracked', 'feature/tracked'));
+
+    // Die ausgecheckte Branch-Version gewinnt — gespiegelt wird nur, was fehlt.
+    expect(readFileSync(join(dest, '.claude', 'marker.txt'), 'utf8')).toBe('hauptrepo');
   });
 });

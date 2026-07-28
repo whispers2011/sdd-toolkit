@@ -11,6 +11,7 @@ import {
   type TicketField,
 } from '@sdd/shared';
 import type { AtlassianMcpClient } from './atlassianMcpClient.js';
+import { sanitizeFilename, uniqueFilename } from './safeFilename.js';
 import { slugify } from './orchestrator.js';
 import type { FeatureRepo } from '../db/repos.js';
 import { bus } from '../events.js';
@@ -188,7 +189,7 @@ export class JiraImportService {
       const fetchAttachment = this.deps.fetchAttachment ?? defaultFetchAttachment;
       const usedNames = new Set<string>();
       for (const attachment of ticket.attachments) {
-        const filename = uniqueFilename(sanitizeFilename(attachment.filename), usedNames);
+        const filename = uniqueFilename(sanitizeFilename(attachment.filename, 'anhang'), usedNames);
         // Erst die tokenfähige api.atlassian.com-Route, dann die Original-URL (FR-018).
         const urls = [
           ...(attachment.id
@@ -305,21 +306,6 @@ function buildTicketFields(
   if (linked.length > 0) result.push({ name: 'Verknüpfte Tickets', value: linked.join('; ') });
   if (remoteLinks.length > 0) result.push({ name: 'Externe Links', value: remoteLinks.join('; ') });
   return result;
-}
-
-function sanitizeFilename(filename: string): string {
-  const clean = filename.replaceAll('/', '_').replaceAll('\\', '_').replace(/^\.+/, '_').trim();
-  return clean || 'anhang';
-}
-
-function uniqueFilename(filename: string, used: Set<string>): string {
-  let candidate = filename;
-  for (let i = 2; used.has(candidate); i++) {
-    const dot = filename.lastIndexOf('.');
-    candidate = dot > 0 ? `${filename.slice(0, dot)}-${i}${filename.slice(dot)}` : `${filename}-${i}`;
-  }
-  used.add(candidate);
-  return candidate;
 }
 
 async function defaultFetchAttachment(url: string, token: string | null): Promise<Buffer | null> {

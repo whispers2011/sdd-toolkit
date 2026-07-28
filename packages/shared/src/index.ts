@@ -17,6 +17,7 @@ export * from './chatStream.js';
 export * from './chatProposal.js';
 export * from './chatMode.js';
 export * from './featureArtifacts.js';
+export * from './featureDocuments.js';
 export * from './gridAutoSelect.js';
 export * from './diffParse.js';
 export * from './branchSuggest.js';

@@ -13,6 +13,7 @@ import { loginShellEnv } from '../pty/loginShellEnv.js';
 import type { AgentDefinition, ApproveMergeRequest, FeaturePhase } from '@sdd/shared';
 import {
   FEATURE_PHASES,
+  MAX_DOCUMENT_BYTES,
   aggregateBreakdown,
   buildRunSummaries,
   compileReviewPrompt,
@@ -65,6 +66,7 @@ import {
   readFeatureArtifact,
   writeFeatureArtifact,
 } from '../services/featureArtifacts.js';
+import type { FeatureDocumentsService, IncomingDocument } from '../services/featureDocuments.js';
 import { bus, BUS_EVENT_NAMES } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 import { registerReviewRoutes } from './reviewRoutes.js';
@@ -92,6 +94,7 @@ export interface ApiDeps {
   jira: AtlassianMcpClient;
   jiraBrowse: JiraBrowseService;
   jiraImport: JiraImportService;
+  featureDocuments: FeatureDocumentsService;
   worktreeOverview: WorktreeOverviewService;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
@@ -104,6 +107,8 @@ export interface ApiDeps {
   webDir?: string | null;
   /** Browser-Origins, die HTTP-API und WebSockets nutzen dürfen (api/originGuard.ts). */
   allowedOrigins: readonly string[];
+  /** Systemöffner für Dokumente; ohne Angabe `open <pfad>` (Injektion für Tests). */
+  openDocument?: (path: string) => void;
 }
 
 export async function buildServer(deps: ApiDeps) {
@@ -520,6 +525,119 @@ export async function buildServer(deps: ApiDeps) {
     '/api/projects/:id/features',
     async (req) => {
       return deps.orchestrator.createFeature(req.params.id, req.body.name, req.body.description);
+    },
+  );
+
+  /**
+   * Feature anlegen und Dokumente mitgeben (US1, multipart). Die Reihenfolge im
+   * Formular ist der Schutz aus FR-015: `name` kommt vor den Dateien, das Feature
+   * entsteht VOR dem ersten Byte auf Disk. Scheitert das Anlegen, wurde nichts
+   * geschrieben. Erst nach den Dokumenten startet der Specify-Lauf (R4).
+   */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/features/with-documents', async (req) => {
+    const project = deps.projects.get(req.params.id);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+
+    // `throwFileSizeLimit: false` (Default ist true!): eine zu große Datei kommt als
+    // `file.truncated` an und wird einzeln verworfen, statt den ganzen Request
+    // abzubrechen (R6). Die Option liest die Laufzeit von `parts()`, ihr Typ führt
+    // sie nicht — deshalb über eine Variable statt als Objekt-Literal.
+    const partOptions = { limits: { fileSize: MAX_DOCUMENT_BYTES }, throwFileSizeLimit: false };
+    // Eigener Iterator statt `for await`: ein `break` würde den Strom schließen
+    // und die Dateien nach dem Feldteil unerreichbar machen.
+    const parts = req.parts(partOptions);
+    let name = '';
+    let description = '';
+    let sawName = false;
+    let firstFile: Awaited<ReturnType<typeof parts.next>>['value'] | null = null;
+
+    for (;;) {
+      const { value, done } = await parts.next();
+      if (done) break;
+      if (value.type === 'file') {
+        firstFile = value;
+        break;
+      }
+      if (value.fieldname === 'name') {
+        sawName = true;
+        name = String(value.value ?? '');
+      } else if (value.fieldname === 'description') {
+        description = String(value.value ?? '');
+      }
+    }
+
+    if (firstFile && !sawName) {
+      firstFile.file.resume();
+      throw httpError(400, 'name muss vor den Dateien gesendet werden');
+    }
+    if (!name.trim()) {
+      firstFile?.file.resume();
+      throw httpError(400, 'Feature-Name fehlt');
+    }
+    if (!firstFile) throw httpError(400, 'Kein Dokument im Formular');
+
+    let feature;
+    try {
+      // Ohne description — der Specify-Lauf startet erst nach den Dokumenten.
+      feature = await deps.orchestrator.createFeature(project.id, name.trim());
+    } catch (err) {
+      firstFile.file.resume();
+      const message = (err as Error).message;
+      if (message.includes('existiert bereits')) throw httpError(400, message);
+      throw err;
+    }
+
+    const pending = firstFile;
+    async function* documentParts(): AsyncGenerator<IncomingDocument> {
+      yield { filename: pending.filename, mimeType: pending.mimetype, stream: pending.file };
+      for (;;) {
+        const { value, done } = await parts.next();
+        if (done) return;
+        if (value.type === 'file') {
+          yield { filename: value.filename, mimeType: value.mimetype, stream: value.file };
+        }
+      }
+    }
+
+    const { documents, rejected } = await deps.featureDocuments.writeDocuments(feature, documentParts());
+    // Auch ohne Beschreibung starten (FR-010) — die Dokumente tragen den Lauf.
+    await deps.orchestrator.startPhaseRun(feature.id, 'specify', description.trim() || undefined);
+
+    return { feature: deps.features.get(feature.id) ?? feature, documents, rejected };
+  });
+
+  /** Hinterlegte Dokumente eines Features (US3, FR-016) — leere Liste ist kein Fehler. */
+  app.get<{ Params: { id: string } }>('/api/features/:id/documents', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    if (!deps.projects.get(feature.projectId)) throw httpError(404, 'Projekt nicht gefunden');
+    return deps.featureDocuments.listDocuments(feature.id);
+  });
+
+  /**
+   * Dokument mit der Systemanwendung öffnen (FR-016, R8). `storedName` wird gegen
+   * das Manifest geprüft und nie als Pfad übernommen (FR-005); geöffnet wird mit
+   * dem Systemöffner, nicht mit `editorCmd` — Dokumente sind beliebige Dateiarten.
+   */
+  app.post<{ Params: { id: string }; Body: { storedName?: string } }>(
+    '/api/features/:id/documents/open',
+    async (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      if (!deps.projects.get(feature.projectId)) throw httpError(404, 'Projekt nicht gefunden');
+      const storedName = req.body?.storedName;
+      if (!storedName) throw httpError(400, 'storedName fehlt');
+
+      const path = deps.featureDocuments.documentPath(feature.id, storedName);
+      if (!path) throw httpError(404, 'Dokument nicht gefunden');
+      if (!existsSync(path)) throw httpError(404, 'Datei nicht mehr vorhanden');
+
+      if (deps.openDocument) deps.openDocument(path);
+      else {
+        const env = await loginShellEnv();
+        exec(`open ${shellQuotePath(path)}`, { env }, () => {});
+      }
+      return { ok: true };
     },
   );
 

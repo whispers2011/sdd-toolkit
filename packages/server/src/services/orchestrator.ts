@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import {
   approvePhase,
+  buildDocumentsPreamble,
   discardPhase,
   finishPhase,
   initialPhases,
@@ -28,6 +29,7 @@ import {
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { KnowledgeService } from './knowledgeService.js';
+import type { FeatureDocumentsService } from './featureDocuments.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import {
@@ -61,6 +63,7 @@ export interface OrchestratorDeps {
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   knowledge: KnowledgeService;
+  featureDocuments: FeatureDocumentsService;
   agentGate: AgentGateService;
   dataDir: string;
   /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
@@ -462,7 +465,14 @@ export class Orchestrator {
     const prevPreamble = this.lastPreamble.get(feature.id);
     const injectPreamble =
       plan.preamble.trim().length > 0 && (plan.reset !== null || plan.preamble !== prevPreamble);
-    const prompt = injectPreamble ? base + plan.preamble + templateHint(phase) : base + templateHint(phase);
+    // Dokument-Verweis BEWUSST ohne Dedupe: er gehört zum Auftrag selbst und muss
+    // in jedem Schritt stehen, auch direkt nach /compact oder /clear (FR-007/FR-008,
+    // SC-003). Ohne Dokumente ist er leer — dann ist der Prompt zeichengleich mit
+    // dem bisherigen (FR-017, SC-006).
+    const docsBlock = this.documentsPreambleFor(feature, phase);
+    const prompt = injectPreamble
+      ? base + docsBlock + plan.preamble + templateHint(phase)
+      : base + docsBlock + templateHint(phase);
     if (injectPreamble) this.lastPreamble.set(feature.id, plan.preamble);
 
     this.runningPhases.set(feature.id, {
@@ -568,6 +578,21 @@ export class Orchestrator {
    * einen kompakten Pointer für die Prompt zurückgeben. Best-effort — Wissen darf
    * eine Phase nie blockieren.
    */
+  /**
+   * Verweis auf die hinterlegten Dokumente (Namen + Fundorte, nie Inhalte).
+   * Frisch aus dem Manifest gelesen, damit er Neustart, Kontext-Reset und das
+   * Entfernen einer Datei überlebt. Best-effort wie die Wissens-Präambel: ein
+   * defektes Manifest darf keinen Phasenstart blockieren.
+   */
+  private documentsPreambleFor(feature: Feature, phase: FeaturePhase): string {
+    try {
+      return buildDocumentsPreamble(phase, this.deps.featureDocuments.listDocuments(feature.id));
+    } catch (err) {
+      console.warn('[documents] Verweis übersprungen:', (err as Error).message);
+      return '';
+    }
+  }
+
   private knowledgePreambleFor(featureId: string): string {
     try {
       const feature = this.deps.features.get(featureId);
