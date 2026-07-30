@@ -10,6 +10,7 @@ export * from './telemetryEvent.js';
 export * from './telemetryAttribution.js';
 export * from './costBreakdown.js';
 export * from './runSummary.js';
+export * from './integrationMessages.js';
 export * from './contextCompressor.js';
 export * from './linkResolver.js';
 export * from './knowledge.js';
