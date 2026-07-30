@@ -62,16 +62,21 @@ function kurzform(snapshot: ResourceSnapshot, parallel: boolean): string {
 /**
  * Ausformulierter Hinweis. Er nennt die konkreten Werte, nicht die Stufe: „notice"
  * sagt dem Nutzer nichts, „813 MB frei" sagt ihm, ob er noch ein Feature starten kann.
+ *
+ * Bleibt nichts Konkretes zu sagen, ist die Antwort `null` und nicht der leere Text:
+ * ein leerer Hinweis wäre eine Warnung ohne Inhalt. Mit den hier gesetzten Schwellen
+ * kommt das nicht vor (unter der Warn- liegt immer auch die Hinweisschwelle) — wohl
+ * aber, sobald jemand `DISK_WARN_BYTES` über `DISK_NOTICE_BYTES` hebt.
  */
 function hinweis(
   snapshot: ResourceSnapshot,
   lage: { platteMahnt: boolean; swapMahnt: boolean; parallel: boolean },
-): string {
+): string | null {
   const teile: string[] = [];
   if (lage.parallel) teile.push(`${snapshot.activeFeatures} Features parallel`);
   if (lage.swapMahnt && snapshot.swapUsedRatio !== null) teile.push(`Swap ${formatRatio(snapshot.swapUsedRatio)}`);
   if (lage.platteMahnt && snapshot.diskFreeBytes !== null) teile.push(`${formatBytes(snapshot.diskFreeBytes)} frei`);
-  return teile.join(', ');
+  return teile.length > 0 ? teile.join(', ') : null;
 }
 
 /** Ab GB mit einer Nachkommastelle, darunter ganzzahlig in MB (C3). */

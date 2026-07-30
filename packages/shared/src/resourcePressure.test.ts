@@ -124,4 +124,10 @@ describe('evaluatePressure — Hinweistext (US3-4, FR-020)', () => {
     expect(v.level).toBe('warn');
     expect(v.notice).toBe('1.4 GB frei');
   });
+
+  it('nennt jede zutreffende Lage, aber nur die zutreffenden', () => {
+    // Swap unter der Schwelle → er taucht im Hinweis NICHT auf, obwohl Druck herrscht.
+    const v = evaluatePressure(snapshot({ diskFreeBytes: 5 * GB, swapUsedRatio: 0.3, activeFeatures: 2 }));
+    expect(v.notice).toBe('2 Features parallel, 5.0 GB frei');
+  });
 });
