@@ -65,8 +65,8 @@ oder Schrift auf diese Skalen gesetzt wird — sonst folgt der Hellmodus nicht (
 
 **⚠️ CRITICAL**: Kein Story-Task darf vor Abschluss dieser Phase Farben auf teal/violet setzen.
 
-- [ ] T004 In `packages/web/src/index.css` im Block `:root[data-theme='light']` die zwei Skalen **teal** und **violet** mit je 11 Stufen nach dem bestehenden Inversionsschema ergänzen (50↔950 … 400↔600, 500 unverändert); Hex-Werte wörtlich aus contracts/ui-contract.md C2. Die Mechanik selbst (Selektor, Position **ausserhalb** jedes `@layer`, `color-scheme`) bleibt unverändert, `--color-zinc-925` bleibt der einzige Sonderwert
-- [ ] T005 Ergänzung in `packages/web/src/index.css` prüfen: `grep -o 'color-teal-[0-9]*\|color-violet-[0-9]*' packages/web/src/index.css | wc -l` ergibt **22**; keine weitere Skala aufgenommen (kein `purple`, kein `indigo`); danach misst `teal-200` auf `teal-900` 7.52 (dark) / 6.73 (light) → FR-019 ohne Ersatzmittel erfüllt
+- [X] T004 In `packages/web/src/index.css` im Block `:root[data-theme='light']` die zwei Skalen **teal** und **violet** mit je 11 Stufen nach dem bestehenden Inversionsschema ergänzen (50↔950 … 400↔600, 500 unverändert); Hex-Werte wörtlich aus contracts/ui-contract.md C2. Die Mechanik selbst (Selektor, Position **ausserhalb** jedes `@layer`, `color-scheme`) bleibt unverändert, `--color-zinc-925` bleibt der einzige Sonderwert
+- [X] T005 Ergänzung in `packages/web/src/index.css` prüfen: `grep -o 'color-teal-[0-9]*\|color-violet-[0-9]*' packages/web/src/index.css | wc -l` ergibt **22**; keine weitere Skala aufgenommen (kein `purple`, kein `indigo`); danach misst `teal-200` auf `teal-900` 7.52 (dark) / 6.73 (light) → FR-019 ohne Ersatzmittel erfüllt
 
 **Checkpoint**: Alle sieben Skalen invertieren — Story-Arbeit kann beginnen
 
