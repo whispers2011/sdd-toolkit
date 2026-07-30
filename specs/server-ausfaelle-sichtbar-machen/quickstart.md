@@ -141,14 +141,27 @@ tail -5 "$SDD_DATA_DIR/operations.jsonl"
 
 ### B8 — Schreibfehler bleiben folgenlos (US2-6, FR-017)
 
+Geprüft werden muss der Fehlschlag **dieses Features**, nicht der der Datenbank. Ein
+`chmod a-w "$SDD_DATA_DIR"` taugt dafür nicht: dann scheitert schon `openDatabase()` mit
+`SQLITE_READONLY_DIRECTORY` (`index.ts:42`) — noch bevor eine Zeile dieses Features läuft. Das ist
+eine bestehende Eigenschaft des Toolkits und sagt über die Betriebsspuren nichts aus.
+
+Deshalb bleibt die Datenbank schreibbar, und nur die beiden Zieldateien werden unbeschreibbar
+gemacht — als Verzeichnis angelegt schlagen `appendFileSync` und `renameSync` mit `EISDIR` fehl:
+
 ```sh
-chmod a-w "$SDD_DATA_DIR"      # Verzeichnis schreibgeschützt
-# Instanz starten, arbeiten, geordnet beenden
-chmod u+w "$SDD_DATA_DIR"
+mv "$SDD_DATA_DIR/operations.jsonl" /tmp/ops.bak; mv "$SDD_DATA_DIR/heartbeat.json" /tmp/hb.bak
+mkdir -p "$SDD_DATA_DIR/operations.jsonl" "$SDD_DATA_DIR/heartbeat.json"
+# Instanz starten, > 30 s laufen lassen (ein Takt muss fehlschlagen), geordnet beenden
+rmdir "$SDD_DATA_DIR/operations.jsonl" "$SDD_DATA_DIR/heartbeat.json"
+mv /tmp/ops.bak "$SDD_DATA_DIR/operations.jsonl"; mv /tmp/hb.bak "$SDD_DATA_DIR/heartbeat.json"
 ```
 
-**Erwartet**: Der Server startet, läuft und beendet sich normal. Keine Fehlermeldung, die den
-Betrieb stoppt. Nur die Protokolldatei bleibt unverändert.
+**Erwartet**: Der Server startet, antwortet auf `/api/system/status` und `/api/attention` mit `200`,
+übersteht mindestens einen fehlgeschlagenen Takt und beendet sich normal. Keine Ausnahme auf der
+Konsole, keine Fehlermeldung, die den Betrieb stoppt.
+
+Den schreibgeschützten **Ordner** decken die Unit-Tests ab (C2.5, FR-011) — dort ohne Datenbank.
 
 ---
 
@@ -170,8 +183,12 @@ curl -s "http://127.0.0.1:4899/api/system/status" | python3 -m json.tool
 
 ### C2 — Warnschwelle
 
-Schwelle testweise anheben (in `packages/shared/src/resourcePressure.ts`, etwa
-`DISK_WARN_BYTES` über den tatsächlich freien Platz setzen) und neu laden.
+Schwellen testweise anheben (in `packages/shared/src/resourcePressure.ts`) und neu laden. **Beide**
+anheben, und `DISK_WARN_BYTES` unter `DISK_NOTICE_BYTES` lassen — bei 169 GB freiem Platz etwa
+`DISK_NOTICE_BYTES = 300 * 1024 ** 3` und `DISK_WARN_BYTES = 200 * 1024 ** 3`. Nur `DISK_WARN_BYTES`
+allein anzuheben kehrt die Schwellen um; dann ist die Stufe `warn`, aber keine der Lagen mahnt und
+der Hinweis ist folgerichtig `null` (siehe `hinweis()`). Das ist kein Fehler, taugt aber nicht als
+Vorführung.
 
 **Erwartet** (US3-2, FR-020, SC-007): Die Anzeige ist deutlich als Warnung gekennzeichnet und nennt
 den verbleibenden Platz. Bei gleichzeitig arbeitenden Features erscheint der zusammengesetzte
@@ -223,14 +240,34 @@ lsof -ti:4820 >/dev/null && echo "Toolkit läuft weiter — gut"
 
 ## Abdeckungsübersicht
 
-| Success Criterion | Geprüft in |
-|---|---|
-| SC-001 Meldung binnen einer Minute nach Neustart | B3 |
-| SC-002 Beginn höchstens 90 s daneben | B3 |
-| SC-003 geordnetes Herunterfahren meldet nie | B4, B6 |
-| SC-004 Ausfall allein aus Betriebsdaten rekonstruierbar | B3, B7, C4 |
-| SC-005 je Abgang ein Eintrag, stiller Abgang nachgetragen | B2–B6 |
-| SC-006 Kennzahlen ohne Terminal, ≤ 60 s alt | C1 |
-| SC-007 Warnung vor dem Start eines weiteren Features | C2 |
-| SC-008 keine spürbare Zusatzlast | D |
-| SC-009 automatisierte Tests der Lückenerkennung | A |
+Rechte Spalte: Befund der Abnahme vom 30.07.2026 (Instanz auf 4897/4896, Node 22).
+
+| Success Criterion | Geprüft in | Befund |
+|---|---|---|
+| SC-001 Meldung binnen einer Minute nach Neustart | B3 | je betroffenem Projekt eine Meldung, ~13 s nach dem Start |
+| SC-002 Beginn höchstens 90 s daneben | B3 | gemeldeter Beginn 24 s vor dem tatsächlichen `kill -9` |
+| SC-003 geordnetes Herunterfahren meldet nie | B4, B6 | 124 s Pause nach `SIGINT` → kein Ausfall |
+| SC-004 Ausfall allein aus Betriebsdaten rekonstruierbar | B3, B7, C4 | `operations.jsonl` ohne Server lesbar, `lastOutage` in der API |
+| SC-005 je Abgang ein Eintrag, stiller Abgang nachgetragen | B2–B6 | genau ein Abgang je Instanz; `silent:true` nur für die `kill -9`-Instanz |
+| SC-006 Kennzahlen ohne Terminal, ≤ 60 s alt | C1 | Kopfleiste lesbar, `collectedAt` 0,1 s alt |
+| SC-007 Warnung vor dem Start eines weiteren Features | C2 | Kopfleisten-Feld rot mit ⚠, Hinweis nennt den Restplatz |
+| SC-008 keine spürbare Zusatzlast | D | 0,0 % Prozessorlast über 60 s; Startverzögerung 47 ms |
+| SC-009 automatisierte Tests der Lückenerkennung | A | 440 Tests `@sdd/shared`, 597 `@sdd/server`, grün |
+
+Die sechs Fälle aus FR-026 sind alle **namentlich** unter den Testfällen:
+
+| # | Fall | Testfall |
+|---|---|---|
+| 1 | Ausfall mit betroffenen Läufen | `outage.test.ts` — „C1.5 / FR-026 …" |
+| 2 | gewollter Abgang auch nach Tagen | `outage.test.ts` — „C1.2 / FR-026 …" |
+| 3 | Erststart ohne Lebenszeichen | `outage.test.ts` — „C1.1 / FR-026 …" |
+| 4 | Ausfall ohne betroffene Läufe | `outageMonitor.test.ts` — „FR-026 … KEINE Meldung (C4.2)" |
+| 5 | Uhr springt rückwärts | `outage.test.ts` — „C1.4 / FR-026 …" |
+| 6 | wiederholter Start nach gemeldetem Ausfall | `outageMonitor.test.ts` — „FR-026 … keine zweite Meldung (C4.4)" |
+
+Die Startreihenfolge hält `outageMonitor.test.ts` doppelt fest: einmal als Zusicherung und einmal
+als Gegenprobe („vertauschte Reihenfolge zählt null betroffene Läufe").
+
+**Keine Lücke offen.** Für die Abnahme wurden laufende Läufe direkt in der Testdatenbank angelegt
+(zwei Projekte, drei Features, ein Chat-Lauf ohne Feature), weil der Meldepfad sonst nur mit echten
+Agent-Läufen erreichbar wäre.

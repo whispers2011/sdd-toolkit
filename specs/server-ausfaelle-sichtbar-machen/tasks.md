@@ -112,7 +112,7 @@ quickstart.md B4–B8.
 - [X] T022 [US2] Fatal-Guard in `packages/server/src/index.ts` (Zeile 244–249) um `operationsLog.append({ kind:'uncaught', error })` erweitern, Fehlerbeschreibung auf 2000 Zeichen gekürzt; der Guard beendet den Server weiterhin **nicht** und der Eintrag ist kein Abgang — das Once-Flag bleibt unberührt (C2.3, FR-013)
 - [X] T023 [US2] `silent`-Unterscheidung in `packages/server/src/services/outageMonitor.ts` schärfen: existiert zum letzten `startup` ein `shutdown`- oder `exit`-Eintrag, wird `silent: false` festgehalten, sonst `silent: true` mit nachgetragenem stillem Abgang (C2.4, FR-014)
 - [X] T024 [US2] Tests in `packages/server/src/services/outageMonitor.test.ts` und `packages/server/src/services/operationsLog.test.ts` ergänzen: `shutdown` mit Signal und `uptimeMs`, `uncaught` mit gekürzter Beschreibung, `exit` mit Rückgabewert, `silent: false` bei vorhandenem Abgangseintrag, `silent: true` ohne, sowie Zuordnung von `startup` und Abgang je `instanceId` in zeitlicher Reihenfolge (US2-5, FR-015)
-- [ ] T025 [US2] Abnahme nach quickstart.md B4–B8 auf der eigenen Testinstanz: geordnetes Herunterfahren (`clean: true`, kein Ausfall beim Neustart), `SIGTERM`-Eintrag, je Instanz genau ein Abgangseintrag, Protokoll ohne laufenden Server über `tail -5` lesbar, schreibgeschütztes Datenverzeichnis (`chmod a-w`) beeinträchtigt Start, Betrieb und Abgang nicht
+- [X] T025 [US2] Abnahme nach quickstart.md B4–B8 auf der eigenen Testinstanz: geordnetes Herunterfahren (`clean: true`, kein Ausfall beim Neustart), `SIGTERM`-Eintrag, je Instanz genau ein Abgangseintrag, Protokoll ohne laufenden Server über `tail -5` lesbar, fehlschlagende Betriebsspuren beeinträchtigen Start, Betrieb und Abgang nicht
 
 **Checkpoint**: US1 und US2 funktionieren unabhängig. SC-004 und SC-005 sind erfüllt.
 
@@ -144,7 +144,7 @@ wird `DISK_WARN_BYTES` testweise angehoben. Ablauf in quickstart.md Teil C.
 - [X] T034 [P] [US3] `systemStatus: () => request<SystemStatus>('GET', '/api/system/status')` in `packages/web/src/api.ts` (Objekt `api`, ab Zeile 171) ergänzen; `SystemStatus` aus `@sdd/shared` importieren statt den Typ zu duplizieren
 - [X] T035 [US3] `packages/web/src/components/SystemStatus.tsx` anlegen: kompakte Kurzform als Icon-Schaltfläche, bei `warn`/`notice` eingefärbt, Aufklapp-Feld mit Einzelwerten, Erhebungszeitpunkt und letztem registriertem Ausfall (Zeitfenster und Dauer, auch wenn folgenlos); Polling alle 20 s nach dem Vorbild `WorktreeOverview.tsx:104` (D17, US3-6, C3.3)
 - [X] T036 [US3] `SystemStatus` in die Kopfleiste von `packages/web/src/App.tsx` einsetzen — in den rechten Block neben `ThemeToggle` und `AutomationDial` (Zeile 105–124), damit die Warnung sichtbar ist, bevor ein weiteres Feature gestartet wird (SC-007)
-- [ ] T037 [US3] Abnahme nach quickstart.md Teil C: Sichtbarkeit in der Kopfleiste und `curl` auf `/api/system/status`, Warnschwelle testweise anheben und **zurücksetzen**, nicht ermittelbare Swap-Kennzahl erscheint als `–`, letzter Ausfall bleibt nach dem Erledigen der Meldung ablesbar
+- [X] T037 [US3] Abnahme nach quickstart.md Teil C: Sichtbarkeit in der Kopfleiste und `curl` auf `/api/system/status`, Warnschwelle testweise anheben und **zurücksetzen**, nicht ermittelbare Swap-Kennzahl erscheint als `–`, letzter Ausfall bleibt nach dem Erledigen der Meldung ablesbar
 
 **Checkpoint**: Alle drei Stories funktionieren unabhängig. SC-006 und SC-007 sind erfüllt.
 
@@ -152,10 +152,33 @@ wird `DISK_WARN_BYTES` testweise angehoben. Ablauf in quickstart.md Teil C.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T038 `pnpm typecheck` und `pnpm -r test` im Repo-Stamm grün — die `AttentionKind`-Erweiterung erzwingt Folgestellen, die der Typecheck findet (data-model.md „Folgeänderungen")
-- [ ] T039 Lastmessung nach quickstart.md Teil D: Prozessorlast der Testinstanz im Leerlauf über 60 s im Mittel unter 1 %, Startverzögerung höchstens 200 ms — gemessen am Abstand zwischen dem `startup`-Eintrag in `operations.jsonl` und der Konsolenzeile „sdd-toolkit Server läuft auf …" (SC-008)
-- [ ] T040 Abdeckung gegenprüfen: jede Zeile der Tabelle „Abdeckungsübersicht" in quickstart.md und jeder der sechs FR-026-Fälle ist einem tatsächlich existierenden Testfall oder Abnahmeschritt zugeordnet; Lücken als Aufgabe nachtragen statt abhaken
-- [ ] T041 Abnahme-Instanz abräumen: `lsof -ti:4899 | xargs kill`, `rm -rf "$SDD_DATA_DIR"`, danach prüfen, dass die reguläre Toolkit-Instanz auf 4820/4830 unberührt weiterläuft (`lsof -ti:4820`) — **kein** `pkill`/`killall` mit generischem Muster (CLAUDE.md, quickstart.md Warnblock)
+- [X] T038 `pnpm typecheck` und `pnpm -r test` im Repo-Stamm grün — die `AttentionKind`-Erweiterung erzwingt Folgestellen, die der Typecheck findet (data-model.md „Folgeänderungen")
+- [X] T039 Lastmessung nach quickstart.md Teil D: Prozessorlast der Testinstanz im Leerlauf über 60 s im Mittel unter 1 %, Startverzögerung höchstens 200 ms — gemessen am Abstand zwischen dem `startup`-Eintrag in `operations.jsonl` und der Konsolenzeile „sdd-toolkit Server läuft auf …" (SC-008)
+- [X] T040 Abdeckung gegenprüfen: jede Zeile der Tabelle „Abdeckungsübersicht" in quickstart.md und jeder der sechs FR-026-Fälle ist einem tatsächlich existierenden Testfall oder Abnahmeschritt zugeordnet; Lücken als Aufgabe nachtragen statt abhaken
+- [X] T041 Abnahme-Instanz abräumen: Server und Vite gezielt über die **eigenen** Ports beenden, `rm -rf "$SDD_DATA_DIR"`, danach prüfen, dass die reguläre Toolkit-Instanz auf 4820/4830 unberührt weiterläuft (`lsof -ti:4820`) — **kein** `pkill`/`killall` mit generischem Muster (CLAUDE.md, quickstart.md Warnblock)
+
+### Befunde der Abnahme (30.07.2026, 22:56–23:20)
+
+Die Abnahme lief auf **4897/4896**, nicht auf den in quickstart.md genannten 4899/4898: Port 4899
+war von der Testinstanz eines **parallel laufenden Feature-Worktrees**
+(`plausibilitaetspruefung`, eigenes Datenverzeichnis) belegt. Sie wurde nicht angetastet — genau der
+Kollisionsfall, vor dem die CLAUDE.md warnt. Vor jeder Abnahme deshalb erst freie Ports suchen.
+
+Zwei Schritte in quickstart.md waren so nicht durchführbar und sind korrigiert:
+
+- **B8** verlangte `chmod a-w "$SDD_DATA_DIR"`. Dabei scheitert schon `openDatabase()` mit
+  `SQLITE_READONLY_DIRECTORY` (`index.ts:42`) — vor der ersten Zeile dieses Features. Der Schritt
+  prüft jetzt den Fehlschlag der **Betriebsspuren** bei schreibbarer Datenbank; der
+  schreibgeschützte Ordner bleibt Sache der Unit-Tests (C2.5, FR-011).
+- **C2** verlangte, nur `DISK_WARN_BYTES` anzuheben. Dann ist die Stufe `warn`, aber keine Lage
+  mahnt und der Hinweis ist `null` — die Vorführung zeigt nichts. Der Schritt hebt jetzt beide
+  Schwellen an und wahrt `warn < notice`. Der Entartungsfall selbst ist in `hinweis()` als
+  ausdrückliches `null` festgehalten (Commit c47409c) und getestet.
+
+Ausserdem: `better_sqlite3.node` wurde während der Abnahme von aussen gegen
+`NODE_MODULE_VERSION 127` neu gebaut, während die Shell auf Node 20 (ABI 115) lief. Die
+Abnahme-Instanz läuft seither unter Node 22 — passend zu `engines: >=22`. `lsof -ti:<port>` liefert
+bei laufendem Vite-Proxy **mehrere** PIDs; zum Beenden `-sTCP:LISTEN` ergänzen.
 
 ---
 
