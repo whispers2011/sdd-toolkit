@@ -92,6 +92,7 @@ dem Loop vertraut („Trust in the loop" ist laut Adoption-Modell der Engpass).
 ## Modul 9: Notifications
 
 - [P0] Web Notifications + Sound: Agent fertig / wartet auf Input / Gate FAIL / Konflikt eskaliert; Throttle je Session+Art (WhisperM8-Muster); Klick fokussiert Feature
+- [P0] **Signaltöne einzeln zuordnen** („Individuelle Einstellungen"): 20 Auslöser (10 Aufmerksamkeitsereignisse, 2 Ablaufereignisse, Phasenwechsel allgemein + 7 Phasen) × 22 Töne, gesprochene Ansage oder Stille; Vorhören ohne Speichern; Grundlautstärke und ein Hauptschalter. Nutzerweit und geräteübergreifend — der frühere gerätelokale Schalter im Automation-Dial ist dadurch ersetzt
 - [P2] Optional Push auf Mobile (z. B. ntfy.sh-Adapter)
 
 ## Modul 10: Persistenz & Robustheit (Fix der speckit-assistant-Schwächen)

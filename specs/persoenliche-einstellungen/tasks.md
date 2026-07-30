@@ -173,11 +173,11 @@ verbundenem Jira öffnen (quickstart V13). Braucht weder US1 noch US2.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T050 `pnpm -r typecheck` grün — insbesondere `Record<ThemeId, ConsolePalette>` und die `SoundTriggerId`-Template-Literale
-- [ ] T051 `pnpm test` (= `pnpm -r test`) grün über alle vier Pakete; die Abdeckungstabelle in [quickstart.md](./quickstart.md) („Automatisierte Prüfungen") Zeile für Zeile abgleichen
+- [X] T050 `pnpm -r typecheck` grün — insbesondere `Record<ThemeId, ConsolePalette>` und die `SoundTriggerId`-Template-Literale
+- [X] T051 `pnpm test` (= `pnpm -r test`) grün über alle vier Pakete; die Abdeckungstabelle in [quickstart.md](./quickstart.md) („Automatisierte Prüfungen") Zeile für Zeile abgleichen
 - [X] T052 Gegenprobe zu **SC-007**: eine Zeile im `high-contrast`-Block in `packages/web/src/index.css` auskommentieren, `pnpm --filter @sdd/web test` laufen lassen — die Meldung muss `high-contrast` und den fehlenden Schlüsselnamen nennen; danach zurücknehmen
-- [ ] T053 [P] Restspuren suchen und beseitigen: `grep -rn "sdd-sound\|soundEnabled\|playCompletionSound\|ThemeMode\|toggleTheme" packages/` darf ausser der einmaligen Migration in `personalSettings.ts` keinen Treffer mehr liefern (FR-011)
-- [ ] T054 [P] `docs/funktionsumfang.md:94` nachziehen: der gerätelokale Sound-Schalter ist durch den nutzerweiten Einstellungsbereich ersetzt
+- [X] T053 [P] Restspuren suchen und beseitigen: `grep -rn "sdd-sound\|soundEnabled\|playCompletionSound\|ThemeMode\|toggleTheme" packages/` darf ausser der einmaligen Migration in `personalSettings.ts` keinen Treffer mehr liefern (FR-011)
+- [X] T054 [P] `docs/funktionsumfang.md:94` nachziehen: der gerätelokale Sound-Schalter ist durch den nutzerweiten Einstellungsbereich ersetzt
 - [ ] T055 Hörbare Szenarien V1–V9 aus [quickstart.md](./quickstart.md) auf eigener Instanz durchführen (`SDD_PORT=4899 SDD_WEB_PORT=4898 SDD_DATA_DIR="$HOME/.sdd-toolkit-test-persoenlich" pnpm dev`) — deckt SC-001…SC-006 ab
 - [ ] T056 Sichtbare und Randfall-Szenarien V10–V16 aus [quickstart.md](./quickstart.md) durchführen — deckt SC-008…SC-012 sowie die Edge Cases „Einstellungen nicht lesbar" und „Audio-Sperre" ab
 - [ ] T057 Eigene Instanz **ausschliesslich** über die eigenen Ports abräumen: `lsof -ti:4899 | xargs kill` und `lsof -ti:4898 | xargs kill` — **niemals** `pkill -f vite` / `pkill -f tsx` (`CLAUDE.md`: die eigene Session ist ein Kindprozess des laufenden Toolkits)
