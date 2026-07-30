@@ -1,16 +1,42 @@
 import type { ITheme } from '@xterm/xterm';
-import type { ThemeMode } from './theme.js';
+import type { ThemeId } from './theme.js';
 
 /**
- * Vollständige xterm-Paletten je Modus (Contract C5). Zuvor setzte TerminalPane
- * nur background/foreground/cursor und xterm fiel auf seine Default-ANSI-Palette
- * zurück — deren „black"/dim kollidierte mit dem dunklen Hintergrund und machte
- * Claudes Rückfragen unlesbar (FR-005). Kernregel hier: KEINE ANSI-Farbe
- * (insb. black/brightBlack im Dark-, white/brightWhite im Light-Modus) darf mit
- * `background` kollidieren.
+ * Vollständige xterm-Paletten je Design (Contract C5/U2). Zuvor setzte
+ * TerminalPane nur background/foreground/cursor und xterm fiel auf seine
+ * Default-ANSI-Palette zurück — deren „black"/dim kollidierte mit dem dunklen
+ * Hintergrund und machte Claudes Rückfragen unlesbar. Kernregel hier: KEINE
+ * Vordergrund-, ANSI- oder Akzentfarbe darf mit `background` derselben Palette
+ * zusammenfallen (FR-028, U2.3) — festgenagelt in themeContract.test.ts.
+ *
+ * Die Konsole hängt an einem eigenen Farbeintrag, nicht an den CSS-Variablen
+ * (E5): xterm rendert auf Canvas und liest kein CSS.
  */
+export interface ConsolePalette {
+  background: string;
+  foreground: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+}
 
-const dark: ITheme = {
+const dark: ConsolePalette = {
   background: '#09090b',
   foreground: '#d4d4d8',
   cursor: '#a1a1aa',
@@ -35,7 +61,7 @@ const dark: ITheme = {
   brightWhite: '#f4f4f5',
 };
 
-const light: ITheme = {
+const light: ConsolePalette = {
   background: '#fafafa',
   foreground: '#27272a',
   cursor: '#3f3f46',
@@ -61,6 +87,45 @@ const light: ITheme = {
   brightWhite: '#18181b',
 };
 
-export function terminalTheme(mode: ThemeMode): ITheme {
-  return mode === 'light' ? light : dark;
+/**
+ * Hoher Kontrast: schwarzer Grund, reinweisse Schrift, kräftigere ANSI-Farben.
+ * „black" bleibt bewusst ein deutlich sichtbares Grau — sonst verschwände
+ * dim-Text vollständig auf dem schwarzen Grund.
+ */
+const highContrast: ConsolePalette = {
+  background: '#000000',
+  foreground: '#ffffff',
+  cursor: '#ffffff',
+  cursorAccent: '#000000',
+  selectionBackground: 'rgba(255,255,255,0.35)',
+  black: '#6e6e78',
+  red: '#ff6b6b',
+  green: '#3bff9e',
+  yellow: '#ffc319',
+  blue: '#45c4ff',
+  magenta: '#e79bff',
+  cyan: '#3ce7f5',
+  white: '#e4e4e7',
+  brightBlack: '#9a9aa4',
+  brightRed: '#ff9d9d',
+  brightGreen: '#8dffc4',
+  brightYellow: '#ffe066',
+  brightBlue: '#93dbff',
+  brightMagenta: '#f2c4ff',
+  brightCyan: '#8ff4fb',
+  brightWhite: '#ffffff',
+};
+
+/**
+ * `Record<ThemeId, …>` statt einer Funktion mit Fallback: ein fehlendes Design
+ * ist damit ein Übersetzungsfehler, kein stiller Laufzeitrückfall (U2.1).
+ */
+export const CONSOLE_PALETTES: Record<ThemeId, ConsolePalette> = {
+  dark,
+  light,
+  'high-contrast': highContrast,
+};
+
+export function terminalTheme(id: ThemeId): ITheme {
+  return CONSOLE_PALETTES[id];
 }

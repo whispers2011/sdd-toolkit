@@ -77,7 +77,9 @@ function Wysiwyg({ value, readOnly, onChange }: Props) {
   // hellem Grund). Im Dark-Mode fehlte die Umschaltung → dunkle Schrift auf dunklem
   // Modal-Grund. `dark-theme` aktiviert die Dark-Palette der Bibliothek; im Light-Mode
   // bleibt der helle Default. Beides ist damit lesbar.
-  const dark = useTheme() === 'dark';
+  // Bewusst „alles ausser light" statt „=== dark": sonst stünde der Editor im
+  // Kontrast-Design hell auf dunklem UI (FR-022, SC-008).
+  const dark = useTheme() !== 'light';
   return (
     <MDXEditor
       {...(dark ? { className: 'dark-theme' } : {})}

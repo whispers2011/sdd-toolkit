@@ -241,6 +241,16 @@ export function MoonIcon(props: IconProps) {
   );
 }
 
+/** „Dunkel, hoher Kontrast" aktiv — halb gefüllter Kreis als Kontrast-Motiv. */
+export function ContrastIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+    </Base>
+  );
+}
+
 /** Plan-Ergebnis (plan.md + Begleitartefakte) — Blueprint/Karte. */
 export function PlanResultIcon(props: IconProps) {
   return (
