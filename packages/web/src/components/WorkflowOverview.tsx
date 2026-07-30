@@ -6,6 +6,7 @@ import {
   INTEGRATION_STAGE_META,
   PHASE_META,
   isOptionalPhase,
+  lifecycleStage,
   orderedEnabledPhases,
   resolveAutomation,
   shouldAutoProgress,
@@ -19,6 +20,7 @@ import type {
   FeaturePhase,
   IntegrationStep,
   KnowledgeIndexItem,
+  LifecycleStageId,
 } from '@sdd/shared';
 import { api, type FeatureKnowledgeResponse, type KnowledgeResponse } from '../api.js';
 import { useStore } from '../store.js';
@@ -472,6 +474,7 @@ function PromptCard({ firstPhase }: { firstPhase: FeaturePhase | null }) {
           <code className="text-zinc-300">/speckit-{firstPhase}</code>) angehängt und startet ihn.
         </p>
       )}
+      <LifecycleSteps stage="worktree_create" />
     </div>
   );
 }
@@ -534,6 +537,9 @@ function PhaseCard({
         <KnowledgeIcon className="shrink-0" /> Projektwissen injiziert
       </div>
 
+      <LifecycleSteps stage="phase_start" />
+      <LifecycleSteps stage="phase_end" />
+
       <AgentZone
         title={AGENT_TRIGGER_META.before_phase.label}
         hint="Läuft VOR dem Start; blockierender FAIL verhindert den Phasenstart."
@@ -548,6 +554,76 @@ function PhaseCard({
         onEdit={onEditAgent}
         onAdd={() => onAddAgent({ kind: 'after_phase', phase })}
       />
+    </div>
+  );
+}
+
+/**
+ * Aufklappbare Schrittliste einer Lebenszyklus-Stufe: „Was das Toolkit hier tut".
+ *
+ * Beschreibt die FEST VERDRAHTETE Arbeit des Toolkits an diesem Knoten, im
+ * Unterschied zum übrigen Knoten-Inhalt, der die aktuelle Konfiguration zeigt.
+ * Quelle ist der statisch importierte Katalog aus @sdd/shared — keine
+ * Serveranfrage, kein Ladezustand, kein Leerzustand (eine Stufe ohne Schritte
+ * ist ein Testfehler, kein UI-Fall). Zustand ist bewusst flüchtig und lokal:
+ * jede Instanz schaltet unabhängig, Startzustand zugeklappt (FR-014).
+ */
+function LifecycleSteps({ stage }: { stage: LifecycleStageId }) {
+  const [open, setOpen] = useState(false);
+  const { title, when, steps, notDoneHere } = lifecycleStage(stage);
+
+  return (
+    <div className="mt-2 border-t border-zinc-800 pt-2">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        title={`${title}: die fest verdrahteten Schritte des Toolkits an dieser Stelle`}
+        className="flex w-full items-center gap-1.5 text-left text-[11px] text-zinc-400 hover:text-zinc-200"
+      >
+        <ChevronDownIcon className={`shrink-0 ${open ? 'rotate-180' : ''}`} />
+        <span>Was das Toolkit hier tut ({steps.length})</span>
+      </button>
+
+      {open && (
+        <div className="mt-1.5">
+          <p className="text-[11px] leading-relaxed text-zinc-500">{when}</p>
+          <ol className="mt-1.5 space-y-2">
+            {steps.map((step, i) => (
+              <li key={step.id} className="flex gap-2">
+                <span className="shrink-0 text-[11px] tabular-nums text-zinc-600">{i + 1}.</span>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium text-zinc-200">{step.name}</div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-400">{step.description}</p>
+                  <p className="mt-0.5 text-[10px] leading-snug text-zinc-500">
+                    <span className="text-zinc-600">Wann:</span> {step.trigger}
+                  </p>
+                  <p className="mt-0.5 break-words font-mono text-[10px] leading-snug text-zinc-600">
+                    {step.location.file} · {step.location.symbol}
+                  </p>
+                  {step.condition && (
+                    <p className="mt-0.5 text-[10px] leading-snug text-zinc-500">
+                      <span className="text-zinc-600">Nur wenn:</span> {step.condition}
+                    </p>
+                  )}
+                  {step.orderNote && (
+                    <p
+                      className="mt-1 rounded border border-amber-900/50 bg-amber-950/30 px-2 py-1 text-[10px] leading-snug text-amber-300"
+                      title="Zwingende Reihenfolge — die Umkehrung hat die genannte Folge"
+                    >
+                      <span className="font-medium">Reihenfolge:</span> {step.orderNote}
+                    </p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+          {notDoneHere && (
+            <p className="mt-2 border-t border-zinc-800 pt-1.5 text-[10px] leading-snug text-zinc-500">
+              <span className="text-zinc-400">Nicht Aufgabe des Toolkits:</span> {notDoneHere}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -792,6 +868,8 @@ function IntegrationBlock({
         {feature && feature.integration !== 'none' && <StageBadge stage={feature.integration} />}
       </div>
 
+      <LifecycleSteps stage="integration" />
+
       <div className="mt-3 flex flex-col">
         {INTEGRATION_STEPS.map((step, i) => (
           <div key={step.id} className="flex flex-col">
@@ -876,6 +954,10 @@ function IntegrationStepPill({
         )}
       </div>
       <p className="mt-1 text-[10px] leading-snug text-zinc-500">{step.detail}</p>
+
+      {/* Die Merge-Arbeit passiert hier (rebase, Konfliktauflösung, Re-Verify, Merge) —
+          nicht am terminalen Schritt 'merged', der nur das Ergebnis ist. */}
+      {step.id === 'merge_queue' && <LifecycleSteps stage="merge" />}
 
       {step.id === 'verify' && (
         <p className="mt-1 text-[10px] text-zinc-600">
