@@ -871,6 +871,37 @@ export class AttentionRepo {
       >[]
     ).map(toAttention);
   }
+
+  /**
+   * Gab es diese Art für dieses Projekt jemals — offen ODER aufgelöst?
+   *
+   * Für projektbezogene Meldungen, die höchstens einmal je Episode erscheinen
+   * dürfen. Die Dedup in `raise()` reicht dafür nicht: sie sieht nur offene
+   * Zeilen, ein abgehakter Eintrag entstünde beim nächsten Anlass erneut.
+   */
+  hasEver(f: { kind: AttentionKind; projectId: string }): boolean {
+    const r = this.db
+      .prepare('SELECT 1 AS x FROM attention WHERE kind=? AND project_id=? LIMIT 1')
+      .get(f.kind, f.projectId) as { x: number } | undefined;
+    return r !== undefined;
+  }
+
+  /**
+   * Alle Zeilen dieser Art des Projekts löschen (nicht auflösen) und die IDs der
+   * zuvor OFFENEN liefern — für `attention_resolved`.
+   *
+   * Löschen statt Auflösen, weil `hasEver()` sonst weiter wahr bliebe: nach dem
+   * Wegfall des Anlasses muss ein späteres Wiederauftreten wieder melden dürfen.
+   */
+  forget(f: { kind: AttentionKind; projectId: string }): string[] {
+    const offen = (
+      this.db
+        .prepare('SELECT id FROM attention WHERE kind=? AND project_id=? AND resolved_at IS NULL')
+        .all(f.kind, f.projectId) as { id: string }[]
+    ).map((r) => r.id);
+    this.db.prepare('DELETE FROM attention WHERE kind=? AND project_id=?').run(f.kind, f.projectId);
+    return offen;
+  }
 }
 
 function toAttention(r: Record<string, unknown>): AttentionItem {

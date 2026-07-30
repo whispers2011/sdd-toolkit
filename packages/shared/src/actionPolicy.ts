@@ -93,6 +93,9 @@ export type StageClass = 'idle' | 'active' | 'decision' | 'terminal';
 export const STAGE_CLASS: Record<IntegrationStage, StageClass> = {
   none: 'idle',
   verifying: 'active',
+  // Durchgangszustand an derselben Position wie `verifying`: die Integrationsstrecke
+  // arbeitet weiter. 'decision' würde das Feature anhalten, was FR-010 ausschließt.
+  verification_unconfigured: 'active',
   verify_failed: 'decision',
   review_gate: 'active',
   gate_failed: 'decision',

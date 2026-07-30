@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { ACTION_REASON, alreadyIntegratingReason, isValidBranchName } from '@sdd/shared';
+import { ACTION_REASON, alreadyIntegratingReason, isValidBranchName, reviewDueMessage } from '@sdd/shared';
 import type {
   ApproveMergeRequest,
   Feature,
@@ -20,6 +20,7 @@ import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
 import type { LifecycleStepService } from './lifecycleStepService.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
+import { raiseVerificationGap } from './verificationGap.js';
 import { bus, emitAttentionResolved } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
@@ -244,7 +245,11 @@ export class MergeQueueService {
       return { started: false, reason: arbeitet, retryable: true };
     }
 
-    this.setStage(feature, 'verifying');
+    // Die Stufe wird VOR dem Festschreiben gesetzt, damit kein Zeitfenster
+    // existiert, in dem eine Oberfläche „Verifikation läuft" zeigt, obwohl keine
+    // konfiguriert ist (FR-002). Die leere Kommandoliste ist kein Erfolg — sie
+    // bekommt ihren eigenen, persistierten Zustand (FR-001a).
+    this.setStage(feature, project.verifyCommands.length > 0 ? 'verifying' : 'verification_unconfigured');
     try {
       // Festschreiben MUSS vor reconcile() laufen. Solange die Arbeit uncommittet
       // ist, hat der Branch keinen eigenen Commit und ist damit trivial Vorfahre
@@ -258,7 +263,8 @@ export class MergeQueueService {
       if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
 
       // Stufe „Verifikation": Schritte vor der Arbeit; ein blockierender Fehlschlag
-      // lässt das Feature in `verifying` stehen — keine Verifikation, kein Gate.
+      // lässt das Feature in der oben gesetzten Stufe stehen (`verifying` bzw.
+      // `verification_unconfigured`) — keine Verifikation, kein Gate.
       if (!(await this.runStageSteps(feature, project, 'before_stage', 'verify'))) {
         return { started: true };
       }
@@ -283,6 +289,16 @@ export class MergeQueueService {
           this.escalate(feature, 'verify_failed', `Verifikation fehlgeschlagen: ${outcome.results.at(-1)?.name}`);
           return { started: true };
         }
+      } else {
+        // Punkt der Verifikation ohne Verifikation: die Lücke wird einmal je Projekt
+        // benannt (FR-004/FR-005). Hier — nach commitWorktree() und nach
+        // reconcile() === 'proceed' — statt beim Setzen der Stufe, damit ein an einer
+        // Vorprüfung gescheiterter Versuch nichts meldet.
+        //
+        // Bewusst nicht über escalate(): der Eintrag gehört dem Projekt, nicht dem
+        // Feature, und ist keine Eskalation — er blockiert und verzögert nichts (FR-010).
+        const gap = raiseVerificationGap({ attention: this.deps.attention, project });
+        if (gap) bus.emitEvent('attention_raised', gap);
       }
 
       // Nach grüner Verifikation.
@@ -324,7 +340,14 @@ export class MergeQueueService {
           return { started: true };
         }
         this.setStage(feature, 'awaiting_human_review');
-        this.escalate(feature, 'review_due', `${feature.name}: verifiziert — bereit für dein Review & Merge`);
+        // Der Text kommt aus dem geteilten Modul: er darf keine Verifikation
+        // behaupten, die nicht stattgefunden hat (FR-003), und trägt den
+        // Aufgabenstand an die Entscheidungsstelle (FR-012).
+        this.escalate(
+          feature,
+          'review_due',
+          reviewDueMessage(feature, { verificationConfigured: project.verifyCommands.length > 0 }),
+        );
       }
     } catch (err) {
       this.setStage(feature, 'verify_failed');

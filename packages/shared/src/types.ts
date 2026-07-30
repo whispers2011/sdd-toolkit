@@ -32,6 +32,8 @@ export interface PhaseState {
 export type IntegrationStage =
   | 'none'
   | 'verifying'
+  /** Projekt ohne verifyCommands: steht ANSTELLE von 'verifying', damit die Lücke im Rückblick erkennbar bleibt (FR-001a). */
+  | 'verification_unconfigured'
   | 'verify_failed'
   | 'review_gate'
   | 'gate_failed'
@@ -226,6 +228,8 @@ export type AttentionKind =
   | 'gate_failed'
   | 'merge_conflict_escalated'
   | 'review_due'
+  /** Projektbezogen (featureId === null): das Projekt hat keine Verifikation konfiguriert (FR-004). */
+  | 'verification_unconfigured'
   | 'agent_errored'
   | 'run_interrupted'
   | 'phase_gate_failed'
@@ -659,7 +663,8 @@ export interface ReviewOverviewItem {
   deletions: number;
   audits: { passed: number; failed: number; total: number };
   openComments: number;
-  verify: { status: 'passed' | 'failed' | 'none'; executionId?: string };
+  /** 'none' = konfiguriert, aber kein Lauf; 'unconfigured' = nichts konfiguriert (FR-009). */
+  verify: { status: 'passed' | 'failed' | 'none' | 'unconfigured'; executionId?: string };
   /** Der Worktree hat uncommittete Änderungen (Arbeitsbaum ≠ HEAD). */
   hasUncommitted: boolean;
 }

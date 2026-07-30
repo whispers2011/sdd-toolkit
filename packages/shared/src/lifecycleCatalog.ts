@@ -398,7 +398,7 @@ export const LIFECYCLE_CATALOG: Record<LifecycleCatalogStageId, LifecycleStage> 
           symbol: 'runVerification',
         },
         condition:
-          'nur wenn im Projekt Verify-Kommandos konfiguriert sind; ein Fehlschlag eskaliert als „Verifikation fehlgeschlagen"',
+          'nur wenn im Projekt Verify-Kommandos konfiguriert sind; ein Fehlschlag eskaliert als „Verifikation fehlgeschlagen". Ohne konfigurierte Kommandos wird nichts geprüft: das Feature läuft durch die Stufe „keine Verifikation konfiguriert" weiter — nichts wird gesperrt — und einmal je Projekt entsteht ein Aufmerksamkeits-Eintrag, der die Lücke benennt.',
       },
       {
         id: 'review-gate-agents',
@@ -556,6 +556,7 @@ export const PHASE_LIFECYCLE_STAGES = {
 export const INTEGRATION_STAGE_ORIGIN = {
   none: null,
   verifying: 'integration',
+  verification_unconfigured: 'integration',
   verify_failed: 'integration',
   review_gate: 'integration',
   gate_failed: 'integration',

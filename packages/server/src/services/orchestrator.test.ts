@@ -64,6 +64,14 @@ function setup(
     phases = p;
   });
   const raise = vi.fn((a: { kind: string }) => ({ id: 'a1', ...a }));
+  const projekt = {
+    id: 'p1',
+    name: 'proj',
+    path: opts.projectPath ?? '/p',
+    defaultBranch: 'main',
+    enabledPhases: ['specify', 'plan'],
+    verifyCommands: [],
+  };
   const finish = vi.fn();
   const runTrigger = opts.gate?.runTrigger ?? vi.fn();
   const stepsRunTrigger =
@@ -85,18 +93,19 @@ function setup(
       setWorktree: vi.fn(),
     },
     projects: {
-      get: () =>
-        opts.projectExists === false
-          ? undefined
-          : {
-              id: 'p1',
-              name: 'proj',
-              path: opts.projectPath ?? '/p',
-              defaultBranch: 'main',
-              enabledPhases: ['specify', 'plan'],
-            },
+      get: () => (opts.projectExists === false ? undefined : projekt),
+      // reconcileOpenAttention() liest die Projektliste, um die Verifikationslücke
+      // aufzulösen, sobald ein Kommando konfiguriert ist.
+      list: () => (opts.projectExists === false ? [] : [projekt]),
     },
-    attention: { raise, resolveFor: vi.fn(() => []), listOpen: () => [], resolve: vi.fn(() => true) },
+    attention: {
+      raise,
+      resolveFor: vi.fn(() => []),
+      listOpen: () => [],
+      resolve: vi.fn(() => true),
+      // `forget` löst die Verifikationslücke im Reconcile-Durchlauf auf (FR-007).
+      forget: () => [],
+    },
     executions: {
       finish,
       reapOrphans: () => 0,

@@ -96,6 +96,32 @@ describe('isAttentionValid — Merge-Arten gegen feature.integration', () => {
   });
 });
 
+describe('isAttentionValid — verification_unconfigured (projektbezogen)', () => {
+  // Die Gültigkeit kommt aus der Projektkonfiguration, nicht aus Session- oder
+  // Stufenzustand: der Reconciler darf den Eintrag nie von sich aus auflösen.
+  // Aufgelöst wird er ausschließlich von `resolveVerificationGaps` (FR-007).
+  it('ist ohne featureId gültig (nicht konservativ stale wie die Merge-Arten)', () => {
+    expect(isAttentionValid(item('verification_unconfigured'), snap([]))).toBe(true);
+  });
+
+  it('bleibt gültig, egal welche Stufen die Features des Projekts haben', () => {
+    for (const stage of ['none', 'verification_unconfigured', 'merged'] as IntegrationStage[]) {
+      expect(isAttentionValid(item('verification_unconfigured'), snap([], [['f1', stage]]))).toBe(true);
+    }
+  });
+
+  it('bleibt gültig, während eine Session arbeitet', () => {
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+    expect(isAttentionValid(item('verification_unconfigured'), snap([working]))).toBe(true);
+  });
+
+  it('übersteht Laufzeit-Reconcile und Neustart', () => {
+    const open = [item('verification_unconfigured')];
+    expect(findStaleRuntime(open, snap([], [['f1', 'merged']]))).toEqual([]);
+    expect(findStaleOnBoot(open, new Map([['f1', 'merged' as IntegrationStage]]))).toEqual([]);
+  });
+});
+
 describe('findStaleRuntime', () => {
   it('gibt nur ungültige Items zurück und lässt gültige unberührt (INV-3)', () => {
     const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };

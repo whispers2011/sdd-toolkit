@@ -110,11 +110,17 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
       const verifyExec = deps.executions
         .list(feature.id)
         .find((e) => e.kind === 'verify' && e.status !== 'running');
+      // Reihenfolge: ein stattgefundener Lauf schlägt die Konfiguration. Ein Projekt,
+      // dessen Kommandos nach einem grünen Lauf entfernt wurden, zeigt weiterhin den
+      // Lauf — er hat stattgefunden. Umgekehrt behauptet 'unconfigured' nichts über
+      // Läufe, und 'none' bleibt „konfiguriert, aber nichts gelaufen" (FR-009).
       const verify: ReviewOverviewItem['verify'] = verifyExec
         ? verifyExec.status === 'succeeded'
           ? { status: 'passed', executionId: verifyExec.id }
           : { status: 'failed', executionId: verifyExec.id }
-        : { status: 'none' };
+        : project.verifyCommands.length === 0
+          ? { status: 'unconfigured' }
+          : { status: 'none' };
 
       items.push({
         feature,

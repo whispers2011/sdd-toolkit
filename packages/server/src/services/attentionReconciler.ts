@@ -24,6 +24,10 @@ export const STAGE_FOR_KIND: Partial<Record<AttentionKind, IntegrationStage>> = 
   verify_failed: 'verify_failed',
   gate_failed: 'gate_failed',
   merge_conflict_escalated: 'conflict_escalated',
+  // Absichtlich KEIN Eintrag für 'verification_unconfigured': die Art ist
+  // projektbezogen (featureId === null). Eine Stufen-Kopplung würde den Eintrag bei
+  // jedem Stufenwechsel jedes Features auflösen und beim nächsten Feature erneut
+  // entstehen lassen — genau die Dauerlast, die FR-006 ausschließt.
 };
 
 function findSession(item: AttentionItem, snap: ReconcileSnapshot): LiveSessionState | undefined {
@@ -74,6 +78,14 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       // erfolgreicher Wiederanlauf desselben Auslösers sie auflöst — oder der Mensch
       // sie in der Inbox erledigt. Bewusst NICHT im Zweig der „Prozess"-Meldungen
       // und bewusst ohne Eintrag in STAGE_FOR_KIND (sonst räumt jeder setStage() sie ab).
+      return true;
+    case 'verification_unconfigured':
+      // Gültigkeit kommt aus der Projektkonfiguration, nicht aus Session- oder
+      // Stufenzustand: solange das Projekt keine Verifikationskommandos hat, gibt es
+      // etwas zu tun. Aufgelöst wird der Eintrag ausschließlich von
+      // `resolveVerificationGaps()`, sobald ein Kommando konfiguriert ist (FR-007) —
+      // oder von Hand. Ein eigener `case` statt des `default`-Zweigs, damit die
+      // Entscheidung hier steht und nicht aus einem Fallback zu lesen ist.
       return true;
     case 'review_due':
     case 'verify_failed':

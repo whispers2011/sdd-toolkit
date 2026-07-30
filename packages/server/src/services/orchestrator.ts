@@ -56,6 +56,7 @@ import {
   findStaleRuntime,
   type ReconcileSnapshot,
 } from './attentionReconciler.js';
+import { resolveVerificationGaps } from './verificationGap.js';
 
 export interface EnsureSessionOptions {
   /**
@@ -1452,6 +1453,13 @@ export class Orchestrator {
     const snap = this.buildReconcileSnapshot();
     for (const stale of findStaleRuntime(this.deps.attention.listOpen(), snap)) {
       if (this.deps.attention.resolve(stale.id)) emitAttentionResolved([stale.id]);
+    }
+    // Die projektbezogene Verifikationslücke hängt an der Projektkonfiguration, nicht
+    // am Snapshot — sie wird hier aufgelöst, sobald ein Kommando konfiguriert ist
+    // (FR-007). Im Reconcile-Durchlauf und nicht im PATCH-Handler, damit es auch nach
+    // einem Neustart und bei Änderungen außerhalb der Route wirkt.
+    for (const id of resolveVerificationGaps({ attention: this.deps.attention, projects: this.deps.projects })) {
+      bus.emitEvent('attention_resolved', id);
     }
   }
 

@@ -231,6 +231,9 @@ export const INTEGRATION_TONE_CLASS: Record<IntegrationTone, string> = {
 export const INTEGRATION_STAGE_META: Record<IntegrationStage, { label: string; tone: IntegrationTone }> = {
   none: { label: 'nicht in Integration', tone: 'idle' },
   verifying: { label: 'Verifikation läuft', tone: 'progress' },
+  // Amber statt Sky: es läuft nichts, und nur ein Mensch kann die Konfiguration
+  // nachholen. Rot wäre falsch — die Lücke eskaliert nichts (FR-010).
+  verification_unconfigured: { label: 'keine Verifikation konfiguriert', tone: 'human' },
   verify_failed: { label: 'Verifikation fehlgeschlagen', tone: 'escalation' },
   review_gate: { label: 'Review-Gate läuft', tone: 'progress' },
   gate_failed: { label: 'Review-Gate FAIL', tone: 'escalation' },

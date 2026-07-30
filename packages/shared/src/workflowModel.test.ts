@@ -61,6 +61,17 @@ describe('workflowModel deckt die Domäne vollständig ab', () => {
     expect(INTEGRATION_STAGE_META.none.tone).toBe('idle');
   });
 
+  it('benennt die fehlende Verifikation, ohne eine zu behaupten (INV-2, SC-001)', () => {
+    const meta = INTEGRATION_STAGE_META.verification_unconfigured;
+    expect(meta.label).toBe('keine Verifikation konfiguriert');
+    // Ton „human": die Konfiguration fehlt und nur ein Mensch kann sie nachholen.
+    // Nicht 'escalation' (FR-010 schließt jede Eskalation aus) und nicht 'progress'
+    // (es läuft nichts).
+    expect(meta.tone).toBe('human');
+    expect(meta.label).not.toContain('verifiziert');
+    expect(meta.label).not.toContain('Verifikation läuft');
+  });
+
   it('Integrations-Schritte referenzieren nur gültige Flags und Stages', () => {
     for (const step of INTEGRATION_STEPS) {
       for (const flag of [step.requires, step.humanUnless, step.autoBy]) {
