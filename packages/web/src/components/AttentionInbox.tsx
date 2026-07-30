@@ -23,6 +23,7 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   phase_false_start: { label: 'Fehlstart', icon: '🧨', tone: 'text-amber-400' },
   project_without_runs: { label: 'Projekt ohne Lauf', icon: '🕸', tone: 'text-zinc-400' },
   metering_conflict: { label: 'Messung widersprüchlich', icon: '⚖️', tone: 'text-red-400' },
+  server_outage: { label: 'Server-Ausfall', icon: '🕳', tone: 'text-red-400' },
 };
 
 const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700';
@@ -81,6 +82,34 @@ function NextAction({
   );
 }
 
+/**
+ * Meldungstext eines Server-Ausfalls. Anders als die übrigen Arten steckt hier alles
+ * Wissenswerte im Text selbst — Beginn, Ende, Dauer und die betroffenen Features (D18).
+ * Zugeklappt bleibt die Zeile so schmal wie jede andere; aufgeklappt ist sie vollständig
+ * lesbar, ohne dass es dafür einen eigenen Detail-Endpunkt braucht (C4.8).
+ */
+function OutageMessage({
+  message,
+  open,
+  onToggle,
+}: {
+  message: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      title={open ? 'Zuklappen' : 'Ganzen Meldungstext zeigen'}
+      className="flex w-full items-start gap-1.5 text-left text-sm text-zinc-300 hover:text-zinc-100"
+    >
+      <span className="shrink-0 text-xs text-zinc-500">{open ? '▾' : '▸'}</span>
+      <span className={open ? 'break-words' : 'min-w-0 truncate'}>{message}</span>
+    </button>
+  );
+}
+
 /** Berichtspfad aus einer approval_required-Meldung (`… [Bericht: specs/…md]`). */
 function reportPathOf(message: string): string | null {
   return message.match(/\[Bericht:\s*([^\]]+)\]/)?.[1]?.trim() ?? null;
@@ -91,6 +120,15 @@ export function AttentionInbox() {
   const { state, dispatch } = useStore();
   const runAction = useAction();
   const [portalFeature, setPortalFeature] = useState<string | null>(null);
+  // Aufgeklappte Ausfallmeldungen: der Text trägt Fenster, Dauer und betroffene Features
+  // (D18) — abgeschnitten wäre er nutzlos, dauerhaft mehrzeilig sprengte die Liste.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   if (!state.app) return null;
 
   // Kontext-Trennung: Inbox respektiert den Projekt-Scope (genau 1 Projekt).
@@ -130,7 +168,15 @@ export function AttentionInbox() {
                   {new Date(item.createdAt).toLocaleTimeString('de-CH')}
                 </span>
               </div>
-              <p className="truncate text-sm text-zinc-300">{item.message}</p>
+              {item.kind === 'server_outage' ? (
+                <OutageMessage
+                  message={item.message}
+                  open={expanded.has(item.id)}
+                  onToggle={() => toggleExpanded(item.id)}
+                />
+              ) : (
+                <p className="truncate text-sm text-zinc-300">{item.message}</p>
+              )}
             </div>
             {item.kind === 'approval_required' && item.featureId && reportPathOf(item.message) && (
               <button

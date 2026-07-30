@@ -30,9 +30,13 @@ import { MergeQueueService } from './services/mergeQueueService.js';
 import { OnboardingService } from './services/onboardingService.js';
 import { WorktreeOverviewService } from './services/worktreeOverviewService.js';
 import { ChangeGuard } from './services/changeGuard.js';
+import { HeartbeatStore } from './services/heartbeatStore.js';
+import { OperationsLog } from './services/operationsLog.js';
+import { OutageMonitor } from './services/outageMonitor.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
 import { TelemetryStore } from './telemetry/telemetryStore.js';
+import { nanoid } from 'nanoid';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -55,6 +59,30 @@ async function main(): Promise<void> {
   const reviewComments = new ReviewCommentRepo(db);
   const knowledge = new KnowledgeRepo(db);
   const worktrees = new WorktreeManager(config.dataDir);
+
+  // Betriebsspuren (Feature „server-ausfaelle-sichtbar-machen"): Lebenszeichen und
+  // Betriebsprotokoll neben der Datenbank. Der Ausfall vom 30.07.2026 stand in keinem
+  // einzigen Betriebsdatensatz — ab hier hinterlässt jeder Lauf eine Spur.
+  //
+  // Die Reihenfolge ist verbindlich: `detectOnBoot()` liest die betroffenen Läufe,
+  // SOLANGE sie als `running` geführt werden. Der Start-Reaper weiter unten
+  // (`orchestrator.reapOnBoot()`) setzt sie auf `orphaned` und zerstört damit genau die
+  // Information, die die Ausfallmeldung braucht (research.md D3, contracts/attention-item.md).
+  const instanceId = nanoid(10);
+  const startedAt = Date.now();
+  const operationsLog = new OperationsLog(config.dataDir);
+  const heartbeatStore = new HeartbeatStore(config.dataDir);
+  const outageMonitor = new OutageMonitor({
+    executions,
+    attention,
+    features,
+    operationsLog,
+    heartbeatStore,
+    instanceId,
+    startedAt,
+  });
+  outageMonitor.detectOnBoot();
+  outageMonitor.startHeartbeat();
 
   const knowledgeService = new KnowledgeService({ knowledge, projects, features });
 
@@ -158,6 +186,7 @@ async function main(): Promise<void> {
   const jiraImport = new JiraImportService({ jira, features, orchestrator });
 
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
+  // NIEMALS vor `outageMonitor.detectOnBoot()` ziehen — siehe Kommentar dort.
   orchestrator.reapOnBoot();
   // Reihenfolge ist verbindlich: erst der Reaper, dann die erste Beurteilung. Sonst
   // sähe die Prüfung running-Leichen ohne finished_at (kein Befund, aber die Absicht
@@ -254,6 +283,9 @@ async function main(): Promise<void> {
     chatWork.killAll();
     await Promise.allSettled(ptys.list().map((s) => ptys.terminate(s.id)));
     await app.close();
+    // Takt anhalten und den geordneten Abgang im Lebenszeichen vermerken — danach ist
+    // eine Lücke beliebiger Länge kein Ausfall mehr (FR-002).
+    outageMonitor.stop();
     db.close();
     process.exit(0);
   };

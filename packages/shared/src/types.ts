@@ -235,7 +235,9 @@ export type AttentionKind =
   | 'run_unpriced' // A: Tokens gezählt, kein Betrag
   | 'phase_false_start' // B: Phase lief nie an
   | 'project_without_runs' // C: Features, aber nie ein Phasenlauf
-  | 'metering_conflict'; // D: Nachkorrektur verworfen, weil sie die Messung senkt
+  | 'metering_conflict' // D: Nachkorrektur verworfen, weil sie die Messung senkt
+  /** Der Server war unerwartet weg; die Meldung nennt Fenster, Dauer und betroffene Läufe (FR-007). */
+  | 'server_outage';
 
 export interface AttentionItem {
   id: string;

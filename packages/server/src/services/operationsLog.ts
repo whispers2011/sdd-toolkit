@@ -8,6 +8,22 @@ export const ROTATE_AT_BYTES = 1024 * 1024;
 /** So viele Zeilen bleiben nach dem Kürzen stehen — bei 2–4 Einträgen je Lauf sind das Monate. */
 export const KEEP_LINES = 1000;
 
+/** Obergrenze der Fehlerbeschreibung eines `uncaught`-Eintrags. */
+export const MAX_ERROR_CHARS = 2000;
+
+/**
+ * Fehlerbeschreibung für einen `uncaught`-Eintrag: Message samt Stack, auf
+ * {@link MAX_ERROR_CHARS} Zeichen gekürzt. Ein einzelner Fehler in einer Schleife darf
+ * das Protokoll nicht zumüllen — deshalb die harte Grenze mit sichtbarer Kürzungsmarke.
+ *
+ * Nimmt `unknown`, weil auch `unhandledRejection` mit allem daherkommen kann, nicht nur
+ * mit einem `Error`.
+ */
+export function describeError(err: unknown): string {
+  const text = err instanceof Error ? (err.stack ?? `${err.name}: ${err.message}`) : String(err);
+  return text.length <= MAX_ERROR_CHARS ? text : `${text.slice(0, MAX_ERROR_CHARS - 1)}…`;
+}
+
 /**
  * Betriebsprotokoll `$SDD_DATA_DIR/operations.jsonl` (Contract C2): eine JSON-Zeile
  * je Start, Abgang und nachgetragenem Ausfall.

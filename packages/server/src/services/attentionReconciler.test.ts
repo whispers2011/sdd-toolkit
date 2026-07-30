@@ -133,6 +133,19 @@ describe('findStaleOnBoot', () => {
     expect(findStaleOnBoot(open, stages).map((i) => i.id)).toEqual(['verify_failed-drop']);
   });
 
+  it('server_outage löst sich NIE automatisch — weder zur Laufzeit noch beim Boot (C4.6, C4.7)', () => {
+    // Ein Ausfall ist ein Ereignis der Vergangenheit; es gibt keinen aktiven Zustand, an dem
+    // er sich prüfen liesse. Der Boot-Fall ist der kritische: dort wird die Meldung gerade
+    // angelegt und dürfte im selben Lauf nicht wieder verschwinden.
+    const open = [item('server_outage', { id: 'ausfall', featureId: null })];
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+
+    expect(findStaleRuntime(open, snap([working], [['f1', 'merged']]))).toEqual([]);
+    expect(findStaleOnBoot(open, new Map())).toEqual([]);
+    expect(findStaleOnBoot(open, new Map([['f1', 'merged' as IntegrationStage]]))).toEqual([]);
+    expect(isAttentionValid(open[0]!, snap())).toBe(true);
+  });
+
   it('approval_required löst sich NUR explizit: bleibt über Boot, Stage-Wechsel UND laufende Arbeit', () => {
     // Freigabebedarf ist eine stehende menschliche Entscheidung — da gibt es weiterhin etwas zu
     // tun. Weder Boot noch Integration-Stage-Wechsel noch eine wieder arbeitende Session lösen ihn;

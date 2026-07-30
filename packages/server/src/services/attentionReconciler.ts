@@ -43,6 +43,12 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
   switch (item.kind) {
     case 'permission_request':
       return true;
+    case 'server_outage':
+      // Ein Ausfall ist ein Ereignis der Vergangenheit — es gibt keinen „aktiven Zustand",
+      // an dem er sich prüfen liesse. Nur der Mensch erledigt ihn. Der `default: true`
+      // unten würde das heute zufällig richtig machen; der explizite Fall hält es richtig,
+      // wenn jemand später den Default umdreht (D14).
+      return true;
     case 'awaiting_input': {
       const s = findSession(item, snap);
       return !!s && s.status === 'awaiting_input';
@@ -106,6 +112,9 @@ export function findStaleOnBoot(
   const snap: ReconcileSnapshot = { sessions: [], featureStages };
   return open.filter((i) => {
     if (i.kind === 'permission_request') return false;
+    // Ein Ausfall wird gerade BEIM Boot gemeldet — er darf im selben Boot nicht wieder
+    // aufgelöst werden und auch nicht in den pauschalen Stale-Zweig unten geraten (C4.7).
+    if (i.kind === 'server_outage') return false;
     if (i.kind === 'awaiting_input' || i.kind === 'agent_errored') return true;
     return !isAttentionValid(i, snap);
   });

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OperationsEntry } from '@sdd/shared';
-import { KEEP_LINES, OperationsLog, ROTATE_AT_BYTES } from './operationsLog.js';
+import { KEEP_LINES, MAX_ERROR_CHARS, OperationsLog, ROTATE_AT_BYTES, describeError } from './operationsLog.js';
 
 function entry(over: Partial<OperationsEntry> = {}): OperationsEntry {
   return { ts: 1_000, instanceId: 'inst-a', kind: 'startup', ...over };
@@ -123,6 +123,73 @@ describe('OperationsLog', () => {
 
     it('gibt bei fehlender Datei eine leere Liste zurück (Erststart)', () => {
       expect(new OperationsLog(dir).tail(10)).toEqual([]);
+    });
+  });
+
+  describe('Anlässe des Abgangs (US2)', () => {
+    it('hält shutdown mit Signal und Laufzeit fest (US2-1, US2-2)', () => {
+      const log = new OperationsLog(dir);
+      log.appendFarewell({
+        ts: 5_000,
+        instanceId: 'inst-a',
+        kind: 'shutdown',
+        signal: 'SIGTERM',
+        uptimeMs: 4_000,
+      });
+      expect(log.tail(1)[0]).toEqual({
+        ts: 5_000,
+        instanceId: 'inst-a',
+        kind: 'shutdown',
+        signal: 'SIGTERM',
+        uptimeMs: 4_000,
+      });
+    });
+
+    it('hält exit mit Rückgabewert und Laufzeit fest', () => {
+      const log = new OperationsLog(dir);
+      log.appendFarewell({ ts: 5_000, instanceId: 'inst-a', kind: 'exit', exitCode: 1, uptimeMs: 4_000 });
+      expect(log.tail(1)[0]).toMatchObject({ kind: 'exit', exitCode: 1, uptimeMs: 4_000 });
+    });
+
+    it('ordnet startup und Abgang je instanceId in zeitlicher Reihenfolge zu (US2-5, FR-015)', () => {
+      const log = new OperationsLog(dir);
+      log.append(entry({ ts: 1_000, instanceId: 'inst-a', kind: 'startup', pid: 1 }));
+      log.appendFarewell(entry({ ts: 2_000, instanceId: 'inst-a', kind: 'shutdown', signal: 'SIGINT' }));
+      // Zweite Instanz = zweiter OperationsLog, denn das Once-Flag gilt je Prozess.
+      const zweiter = new OperationsLog(dir);
+      zweiter.append(entry({ ts: 3_000, instanceId: 'inst-b', kind: 'startup', pid: 2 }));
+      zweiter.appendFarewell(entry({ ts: 4_000, instanceId: 'inst-b', kind: 'exit', exitCode: 0 }));
+
+      const alle = zweiter.tail(10);
+      expect(alle.map((e) => `${e.instanceId}:${e.kind}`)).toEqual([
+        'inst-a:startup',
+        'inst-a:shutdown',
+        'inst-b:startup',
+        'inst-b:exit',
+      ]);
+      // Die Reihenfolge in der Datei IST die zeitliche Reihenfolge.
+      expect(alle.map((e) => e.ts)).toEqual([...alle.map((e) => e.ts)].sort((a, b) => a - b));
+    });
+  });
+
+  describe('describeError', () => {
+    it('nimmt Message und Stack eines Fehlers', () => {
+      const err = new TypeError("Cannot read properties of undefined (reading 'id')");
+      const text = describeError(err);
+      expect(text).toContain("TypeError: Cannot read properties of undefined (reading 'id')");
+      expect(text).toContain('at ');
+    });
+
+    it('kürzt auf 2000 Zeichen mit sichtbarer Marke (FR-013)', () => {
+      const err = new Error('x'.repeat(5_000));
+      const text = describeError(err);
+      expect(text).toHaveLength(MAX_ERROR_CHARS);
+      expect(text.endsWith('…')).toBe(true);
+    });
+
+    it('verträgt eine Rejection, die gar kein Fehler ist', () => {
+      expect(describeError('nur ein String')).toBe('nur ein String');
+      expect(describeError(undefined)).toBe('undefined');
     });
   });
 });
