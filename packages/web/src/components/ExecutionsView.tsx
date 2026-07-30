@@ -337,7 +337,7 @@ export function RunCard({
               damit keinen anderen Wert zeigen als die Zeile darüber. */}
           <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px]">
             <span className="text-zinc-500">
-              Aufgaben <span className="text-zinc-300">{taskLabel(run)}</span>
+              Aufgaben <span className="text-zinc-300">{taskLabel(run, false)}</span>
             </span>
             <span className="text-zinc-500">
               Kosten <CostPerTask run={run} />
@@ -476,9 +476,13 @@ export function RunCard({
 }
 
 /** Token-Komposition des Laufs: frischer Input/Output vs. Cache (nur bei gemessener Usage). */
-/** Aufgabenstand eines Laufs — „keine Aufgabenliste" statt „0/0" (R5.1). */
-function taskLabel(run: RunSummary): string {
-  return run.tasksTotal === 0 ? 'keine Aufgabenliste' : `${run.tasksDone}/${run.tasksTotal} Aufgaben`;
+/**
+ * Aufgabenstand eines Laufs — „keine Aufgabenliste" statt „0/0" (R5.1).
+ * Ohne Einheit dort, wo schon eine Beschriftung „Aufgaben" davor steht.
+ */
+function taskLabel(run: RunSummary, withUnit = true): string {
+  if (run.tasksTotal === 0) return 'keine Aufgabenliste';
+  return `${run.tasksDone}/${run.tasksTotal}${withUnit ? ' Aufgaben' : ''}`;
 }
 
 /**
