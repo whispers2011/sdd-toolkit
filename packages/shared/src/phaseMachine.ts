@@ -159,6 +159,31 @@ export function reconcileWithDisk(phases: PhaseMap, artifactExists: (p: FeatureP
 }
 
 /**
+ * Phasen-Diff für die Ton-Ebene (Contract S6, research D2): welche Phase ist
+ * gerade *erreicht* worden? Erreicht = ihr Status wechselt auf `running`.
+ *
+ * Bewusst ohne neues Server-Ereignis: die Oberfläche hält den letzten
+ * `phases`-Stand je Feature und vergleicht ihn beim Eintreffen von
+ * `feature_updated`. `prev === undefined` (erstes Eintreffen, Bootstrap,
+ * Wiederverbinden) liefert `null` — kein Ton ohne echtes Ereignis.
+ *
+ * Ein Neustart derselben Phase gilt erneut als erreicht; hörbar ist „diese
+ * Phase läuft jetzt an", nicht „zum ersten Mal".
+ */
+export function enteredPhase(prev: PhaseMap | undefined, next: PhaseMap): FeaturePhase | null {
+  if (prev === undefined) return null;
+  let entered: FeaturePhase | null = null;
+  // FEATURE_PHASES ist die Workflow-Reihenfolge: bei mehreren gleichzeitigen
+  // Wechseln bleibt die SPÄTESTE stehen — die weitergehende Arbeit (S6.3).
+  for (const p of FEATURE_PHASES) {
+    const before = prev[p] as PhaseState | undefined;
+    const after = next[p] as PhaseState | undefined;
+    if (after?.status === 'running' && before?.status !== 'running') entered = p;
+  }
+  return entered;
+}
+
+/**
  * Startup-Reaper: `running`-Phasen ohne lebenden Prozess sind Leichen
  * (Server-Neustart) und fallen auf idle zurück — Fix des speckit-assistant-Bugs.
  */

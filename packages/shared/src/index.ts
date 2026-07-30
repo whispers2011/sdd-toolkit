@@ -1,6 +1,7 @@
 export * from './types.js';
 export * from './phaseMachine.js';
 export * from './sessionMachine.js';
+export * from './soundCatalog.js';
 export * from './transcript.js';
 export * from './transcriptLog.js';
 export * from './costMeter.js';

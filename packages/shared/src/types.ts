@@ -887,3 +887,50 @@ export function resolveAutomation(
 ): AutomationSettings {
   return { ...global, ...project, ...feature };
 }
+
+// ---------- Individuelle Einstellungen (Feature „persoenliche-einstellungen") ----------
+
+/**
+ * Schlüsselraum der Ton-Auslöser (20 Werte, data-model §1). Bewusst als
+ * Template-Literal ÜBER den bestehenden Unions gebildet: fällt eine
+ * `AttentionKind` weg oder kommt eine `FeaturePhase` hinzu, wandert der
+ * Schlüsselraum automatisch mit — es gibt keine zweite, handgeschriebene Liste.
+ */
+export type SoundTriggerId =
+  | `attention:${AttentionKind}`
+  | `flow:${'turn_completed' | 'merged'}`
+  | `phase:${'changed' | FeaturePhase}`;
+
+/** Stabiler Schlüssel eines Katalogtons (siehe `TONES` in soundCatalog.ts). */
+export type ToneId = string;
+
+/**
+ * Genau eine Reaktion je Auslöser (FR-005) — als unterscheidbare Union, damit
+ * „Ansage ohne Text" und „Stille" nicht verschmelzen (data-model §3).
+ */
+export type SoundReaction =
+  | { kind: 'silence' }
+  | { kind: 'tone'; toneId: ToneId }
+  | { kind: 'speech'; text: string };
+
+/** Nutzerweite Ton-Zuordnung (data-model §4). Ablage: settings-Eintrag `sound`. */
+export interface SoundSettings {
+  /** Hauptschalter (FR-010) — lässt `reactions` unangetastet. */
+  enabled: boolean;
+  /** Grundlautstärke 0…1; Standard 0.06 = heutiger Pegel (FR-013). */
+  volume: number;
+  /** Partiell: ein fehlender Auslöser bedeutet Stille (FR-020). */
+  reactions: Partial<Record<SoundTriggerId, SoundReaction>>;
+}
+
+/** Vorauswahl der Ticket-Quelle im „Neues Feature"-Fluss (data-model §6). */
+export type TicketSource = 'jira' | 'manual';
+
+/**
+ * Übertragungsform für Boot-Zustand und Teilaktualisierung (data-model §7).
+ * Enthält das Farbdesign NICHT — das liegt gerätelokal im localStorage.
+ */
+export interface PersonalSettings {
+  sound: SoundSettings;
+  ticketSource: TicketSource;
+}
