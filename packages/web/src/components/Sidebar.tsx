@@ -7,6 +7,7 @@ import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
+import { PersonalSettingsDialog } from './PersonalSettingsDialog.js';
 import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon, StepsIcon } from './icons.js';
 
 // ---- Projekt-Reihenfolge (gerätelokal, per Drag&Drop) ----
@@ -49,6 +50,7 @@ export function Sidebar() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [showJiraSettings, setShowJiraSettings] = useState(false);
   const [showToolSettings, setShowToolSettings] = useState(false);
+  const [showPersonalSettings, setShowPersonalSettings] = useState(false);
   const [order, setOrder] = useState<string[]>(() => loadProjectOrder());
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -291,9 +293,14 @@ export function Sidebar() {
             setShowToolSettings(false);
             setShowJiraSettings(true);
           }}
+          onOpenPersonal={() => {
+            setShowToolSettings(false);
+            setShowPersonalSettings(true);
+          }}
         />
       )}
       {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
+      {showPersonalSettings && <PersonalSettingsDialog onClose={() => setShowPersonalSettings(false)} />}
     </aside>
   );
 }
@@ -366,7 +373,15 @@ function NewFeatureFlow({
  * Tool-weite Einstellungen (Zentrale): nutzerweite, projektübergreifende Konfiguration.
  * Die Übersichten liegen nicht hier, sondern unter dem Menüpunkt „Übersichten".
  */
-function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira: () => void }) {
+function ToolSettings({
+  onClose,
+  onOpenJira,
+  onOpenPersonal,
+}: {
+  onClose: () => void;
+  onOpenJira: () => void;
+  onOpenPersonal: () => void;
+}) {
   return (
     <Dialog title="Einstellungen" onClose={onClose}>
       <p className="mb-3 text-xs text-zinc-500">Tool-weite Einstellungen (nutzerweit, projektübergreifend).</p>
@@ -378,6 +393,16 @@ function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira
           <span className="flex-1">
             <span className="block text-sm font-medium text-zinc-200">Jira-Verbindung</span>
             <span className="block text-xs text-zinc-500">Atlassian-Konto verbinden, Sites &amp; Projekte wählen</span>
+          </span>
+          <span className="text-zinc-500">→</span>
+        </button>
+        <button
+          onClick={onOpenPersonal}
+          className="flex w-full items-center gap-3 rounded border border-zinc-700 px-3 py-2 text-left hover:bg-zinc-800"
+        >
+          <span className="flex-1">
+            <span className="block text-sm font-medium text-zinc-200">Individuelle Einstellungen</span>
+            <span className="block text-xs text-zinc-500">Signaltöne, Darstellung, Vorauswahl der Ticket-Quelle</span>
           </span>
           <span className="text-zinc-500">→</span>
         </button>

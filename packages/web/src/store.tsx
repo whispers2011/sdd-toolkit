@@ -10,6 +10,7 @@ import {
 import type { AttentionItem, Feature, FeatureActionContext, MergeQueueItem } from '@sdd/shared';
 import { applyAttentionResolved, isFeatureComplete } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
+import { primePersonal, setPersonalErrorSink } from './personalSettings.js';
 
 export type View =
   | { kind: 'board' }
@@ -438,10 +439,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let closed = false;
 
+    // Fehler des Einstellungs-Clients landen im gewohnten Fehlerband, ohne dass
+    // das Modul den Store importieren müsste (das gäbe einen Import-Zyklus).
+    setPersonalErrorSink((message) => dispatch({ type: 'error', message }));
+
     const bootstrap = () =>
       api
         .state()
-        .then((s) => dispatch({ type: 'bootstrap', state: s }))
+        .then((s) => {
+          // Vor dem Reducer: die Ton-Ebene liest synchron aus dem Modulzustand
+          // und muss beim ersten Ereignis den echten Stand sehen (U3.2).
+          primePersonal(s.personal);
+          dispatch({ type: 'bootstrap', state: s });
+        })
         .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
 
     void bootstrap();

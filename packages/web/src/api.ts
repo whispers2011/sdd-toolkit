@@ -43,6 +43,7 @@ import type {
   KnowledgeTree,
   MergeQueueItem,
   OptimizationSettings,
+  PersonalSettings,
   PhaseDefinition,
   Project,
   ResolvedSelection,
@@ -99,6 +100,8 @@ export interface AppState {
   queues: Record<string, MergeQueueItem[]>;
   automation: AutomationSettings;
   optimization: OptimizationSettings;
+  /** Individuelle Einstellungen — immer vollständig, nie null (A1.1). */
+  personal: PersonalSettings;
 }
 
 /** Abweisungsgründe von `POST /api/worktrees/remove`. */
@@ -232,6 +235,9 @@ export const api = {
   ) => request<Feature>('PATCH', `/api/features/${featureId}`, patch),
   setOptimization: (patch: Partial<OptimizationSettings>) =>
     request<{ optimization: OptimizationSettings }>('PATCH', '/api/settings/optimization', patch),
+  /** Teilmengen-Semantik; die Antwort ist der vollständige, normalisierte Stand (A2). */
+  savePersonal: (patch: Partial<PersonalSettings>) =>
+    request<PersonalSettings>('PATCH', '/api/settings/personal', patch),
   costBreakdown: (featureId: string, groupByOptimization = false) =>
     request<FeatureCostBreakdown>(
       'GET',
