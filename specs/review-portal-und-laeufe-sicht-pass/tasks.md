@@ -186,7 +186,7 @@ Abnahme belegt vorliegt
 - [X] T034 Automatisierte Checks quickstart.md **Stufe 1** grün: `pnpm -r typecheck && pnpm -r test && pnpm --filter @sdd/web build` — der Web-Build enthält den Tailwind-Durchlauf und belegt damit, dass die Klassennamen der Diagramm-Töne gefunden werden (D9); bestehende Suites (`diffParse.test.ts`, `runSummary.test.ts`, `actionPolicy.test.ts`) bleiben unverändert grün
 - [X] T035 [P] `specs/review-portal-und-laeufe-sicht-pass/evidence/messwerte.md` schreiben: abgelesene Kontraste und Schriftgrössen je Modus, Soll/Ist gegenübergestellt (Referenzwerte research.md D6) — plus die Notiz, dass `docs/images/review.png` und `docs/images/laeufe.png` **bekannt veraltet** sind (Aktualisierung nicht Teil dieses Features)
 - [X] T036 [P] Vollständigkeit der Belege gegen quickstart.md Stufe 4 prüfen: alle 12 Einträge liegen unter `specs/review-portal-und-laeufe-sicht-pass/evidence/` (beide Modi je Ansicht, Graustufen-Beleg, drei Zustände der rechten Spalte, Leer-Feature, Herkunfts-Vergleich, Tabelle, `messwerte.md`) — SC-010
-- [ ] T037 Prüfinstanz aus T003 **gezielt** abbauen: `lsof -ti:4899 | xargs kill` und `lsof -ti:4898 | xargs kill` bzw. über die gemerkten PIDs. **Kein** `pkill -f vite`/`node`/`tsx`/`pnpm` — die eigene Session ist Kindprozess der laufenden Toolkit-Instanz und stirbt mit (CLAUDE.md)
+- [X] T037 Prüfinstanz aus T003 **gezielt** abbauen: `lsof -ti:4899 | xargs kill` und `lsof -ti:4898 | xargs kill` bzw. über die gemerkten PIDs. **Kein** `pkill -f vite`/`node`/`tsx`/`pnpm` — die eigene Session ist Kindprozess der laufenden Toolkit-Instanz und stirbt mit (CLAUDE.md)
 
 ---
 
