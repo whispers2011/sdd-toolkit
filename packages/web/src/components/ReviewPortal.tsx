@@ -34,6 +34,12 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const [treeSelected, setTreeSelected] = useState<string | null>(null);
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [runs, setRuns] = useState<AgentRunSummary[] | null>(null);
+  /**
+   * Der Fehler des Audit-Abrufs — zusätzlich zum globalen Kanal, weil die rechte
+   * Spalte sonst für immer „Lade Audits …" zeigt und der Reviewer nicht erfährt,
+   * dass niemand geprüft hat (FR-009, D12).
+   */
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [jumpTo, setJumpTo] = useState<{ line: number; side: 'old' | 'new'; ts: number } | null>(null);
   const [target, setTarget] = useState<MergeTarget | null>(null);
   const [rejectComment, setRejectComment] = useState('');
@@ -78,7 +84,14 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
 
   // Audits: initial + nach jedem Gate-Abschluss (agent_gate).
   useEffect(() => {
-    api.agentRuns(featureId).then(setRuns).catch(fail);
+    setRunsError(null);
+    api
+      .agentRuns(featureId)
+      .then(setRuns)
+      .catch((e: Error) => {
+        setRunsError(e.message);
+        fail(e);
+      });
   }, [featureId, state.agentGateVersion, fail]);
 
   useEffect(() => {
@@ -359,7 +372,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
           {/* Rechts: Audits + Kommentare */}
           <aside className="flex w-80 shrink-0 flex-col border-l border-zinc-800">
             <div className="min-h-0 flex-1 overflow-y-auto border-b border-zinc-800">
-              <AuditSidebar featureId={featureId} runs={runs} />
+              <AuditSidebar featureId={featureId} runs={runs} error={runsError} />
             </div>
             <div className="flex max-h-[45%] min-h-0 flex-col">
               <CommentsPanel
