@@ -49,6 +49,7 @@ import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
 import type { AgentGateService } from './agentGateService.js';
+import type { PlausibilityService } from './plausibilityService.js';
 import {
   findStaleOnBoot,
   findStaleRuntime,
@@ -70,6 +71,12 @@ export interface OrchestratorDeps {
   dataDir: string;
   /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
   telemetry?: TelemetryStore;
+  /**
+   * Plausibilitätsprüfung; fehlt sie, wird nur nicht beurteilt. Optional, damit
+   * bestehende Orchestrator-Tests unverändert kompilieren — und weil eine
+   * Beurteilung nie Voraussetzung eines Laufabschlusses sein darf (FR-003).
+   */
+  plausibility?: PlausibilityService;
 }
 
 /**
@@ -986,6 +993,12 @@ export class Orchestrator {
               // Der Nachtrag war schlechter als die vorhandene Zahl — die bleibt stehen.
               // Kein stiller Vorgang: der Grund benennt, welche Messung verworfen wurde.
               console.warn(`[metering] ${running.executionId}: Nachtrag verworfen — ${outcome.reason}`);
+              // Zusätzlich zur Konsole: ein grober Widerspruch gehört in die Inbox,
+              // nicht nur ins Protokoll (FR-010). Der console.warn bleibt wortgleich.
+              this.deps.plausibility?.reportMeteringConflict(
+                { id: running.executionId, projectId: session.projectId, featureId: session.featureId },
+                outcome,
+              );
             } else {
               bus.emitEvent('execution_updated', {
                 executionId: running.executionId,
@@ -1002,6 +1015,15 @@ export class Orchestrator {
           // Nachlauffenster zu: Puffer abmelden und freigeben, Akkumulator verwerfen.
           this.deps.telemetry?.forget(session.id);
           this.telemetryAccum.delete(running.executionId);
+          // Genau hier ist die Messung endgültig — der Moment, in dem sie beurteilt
+          // werden darf (FR-001). LETZTE Anweisung des Timer-Rumpfes, in eigenem
+          // try/catch: die Beurteilung ist kein Tor, sie kann nichts mehr
+          // beeinflussen, was davor passiert ist (FR-003, SC-006).
+          try {
+            this.deps.plausibility?.check();
+          } catch (err) {
+            console.warn('[plausibility] Beurteilung nach Laufabschluss fehlgeschlagen:', (err as Error).message);
+          }
         }
       }, delay);
       timer.unref?.();
@@ -1029,6 +1051,10 @@ export class Orchestrator {
       // Typischer Fall: der Puffer war leer, also fiel die Messung aufs Transkript
       // zurück — mehr Tokens, aber ohne Preis. Die bepreiste Zahl bleibt stehen.
       console.warn(`[metering] ${running.executionId}: Transkript-Nachtrag verworfen — ${outcome.reason}`);
+      this.deps.plausibility?.reportMeteringConflict(
+        { id: running.executionId, projectId: session.projectId, featureId: session.featureId },
+        outcome,
+      );
       return;
     }
     this.persistTranscriptRange(session, running); // End-Offset auf den vollen Turn

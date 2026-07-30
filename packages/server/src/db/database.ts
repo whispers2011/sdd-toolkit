@@ -346,6 +346,21 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   ALTER TABLE executions ADD COLUMN model TEXT;
   ALTER TABLE executions ADD COLUMN telemetry_final_at INTEGER;
   `,
+  // Feature "plausibilitaetspruefung": quittierter Wasserstand je Befund und Bezugsobjekt.
+  // AttentionRepo.raise() dedupliziert nur gegen OFFENE Meldungen — ohne diese Marke
+  // entstünde eine aufgelöste Meldung im nächsten Prüfintervall neu (FR-014, FR-017).
+  // feature_id = '' statt NULL für projektweite Befunde (A, C): NULL wäre in einem
+  // SQLite-Primärschlüssel mehrfach erlaubt und höbe die Eindeutigkeit auf.
+  `
+  CREATE TABLE plausibility_state (
+    kind           TEXT    NOT NULL,
+    project_id     TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    feature_id     TEXT    NOT NULL DEFAULT '',
+    reported_count INTEGER NOT NULL,
+    reported_at    INTEGER NOT NULL,
+    PRIMARY KEY (kind, project_id, feature_id)
+  );
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

@@ -16,6 +16,13 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
   phase_gate_failed: { label: 'Phasen-Gate FAIL', icon: '🚧', tone: 'text-red-400' },
   approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
+  // Datenbefunde: bernsteinfarben, denn es ist nichts kaputt, es ist etwas unklar.
+  // Rot bleibt für „rot geworden" reserviert (verify_failed, gate_failed) — ausser
+  // bei metering_conflict, wo nachweislich eine von zwei Zahlen falsch ist.
+  run_unpriced: { label: 'Verbrauch ohne Preis', icon: '💸', tone: 'text-amber-400' },
+  phase_false_start: { label: 'Fehlstart', icon: '🧨', tone: 'text-amber-400' },
+  project_without_runs: { label: 'Projekt ohne Lauf', icon: '🕸', tone: 'text-zinc-400' },
+  metering_conflict: { label: 'Messung widersprüchlich', icon: '⚖️', tone: 'text-red-400' },
 };
 
 const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700';

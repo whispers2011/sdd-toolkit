@@ -274,4 +274,57 @@ describe('ExecutionRepo — Telemetrie-Felder', () => {
       expect(executions.get(id)!.tokens).toBe(1_033);
     });
   });
+
+  /**
+   * Die Ablehnung trägt ihre Zahlen strukturiert, damit der Aufrufer (Befund D der
+   * Plausibilitätsprüfung) sie nicht aus `reason` zurückparsen muss. Die
+   * Ablehnungsregel selbst und der Wortlaut von `reason` ändern sich nicht (FR-018).
+   */
+  describe('Ablehnungsdaten strukturiert (FR-010)', () => {
+    it('liefert bei „Nachtrag würde die Messung senken" rejection, beide Zahlen und den Faktor', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 6_578_097, tokensSource: 'telemetry', costMicros: 3_803_016 });
+
+      const ergebnis = executions.updateTelemetry(id, { tokens: 568_955, tokensSource: 'telemetry', costMicros: 1 });
+
+      expect(ergebnis.applied).toBe(false);
+      if (ergebnis.applied) throw new Error('unerwartet angewendet');
+      expect(ergebnis.rejection).toBe('lowered');
+      expect(ergebnis.existingTokens).toBe(6_578_097);
+      expect(ergebnis.rejectedTokens).toBe(568_955);
+      expect(ergebnis.factor).toBeCloseTo(11.56, 2);
+    });
+
+    it('liefert bei „Nachtrag würde den Preis löschen" rejection price_loss', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 272_685, tokensSource: 'telemetry', costMicros: 248_242 });
+
+      const ergebnis = executions.updateTelemetry(id, { tokens: 5_947_193, tokensSource: 'transcript' });
+
+      expect(ergebnis.applied).toBe(false);
+      if (ergebnis.applied) throw new Error('unerwartet angewendet');
+      expect(ergebnis.rejection).toBe('price_loss');
+      expect(ergebnis.existingTokens).toBe(272_685);
+      expect(ergebnis.rejectedTokens).toBe(5_947_193);
+      // Dieser Zweig ist nur erreichbar, wenn die Tokenzahl NICHT sank — der
+      // Melde-Faktor 2 ist hier strukturell unerreichbar (research.md D10).
+      expect(ergebnis.factor).toBeLessThan(2);
+    });
+
+    it('lässt den Wortlaut von reason unverändert (FR-018)', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 1_000, tokensSource: 'telemetry', costMicros: 500 });
+      const gesenkt = executions.updateTelemetry(id, { tokens: 100, tokensSource: 'telemetry', costMicros: 50 });
+      expect(gesenkt.applied === false && gesenkt.reason).toBe(
+        'Nachtrag würde die Messung senken: 1000 → 100 Tokens (Faktor 10.0)',
+      );
+
+      const id2 = start();
+      executions.finishWithUsage(id2, 0, { tokens: 100, tokensSource: 'telemetry', costMicros: 500 });
+      const preis = executions.updateTelemetry(id2, { tokens: 200, tokensSource: 'transcript' });
+      expect(preis.applied === false && preis.reason).toBe(
+        'Nachtrag würde den Preis löschen: 0.00 USD vorhanden, Nachtrag ohne Kosten (Quelle transcript)',
+      );
+    });
+  });
 });

@@ -229,7 +229,13 @@ export type AttentionKind =
   | 'agent_errored'
   | 'run_interrupted'
   | 'phase_gate_failed'
-  | 'approval_required';
+  | 'approval_required'
+  // Datenbefunde der Plausibilitätsprüfung: der Widerspruch steht in der Datenbank
+  // und besteht unabhängig von laufender Arbeit — nur ein Mensch löst sie auf.
+  | 'run_unpriced' // A: Tokens gezählt, kein Betrag
+  | 'phase_false_start' // B: Phase lief nie an
+  | 'project_without_runs' // C: Features, aber nie ein Phasenlauf
+  | 'metering_conflict'; // D: Nachkorrektur verworfen, weil sie die Messung senkt
 
 export interface AttentionItem {
   id: string;

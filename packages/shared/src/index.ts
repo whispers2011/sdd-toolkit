@@ -25,6 +25,7 @@ export * from './reviewPrompt.js';
 export * from './agentSelect.js';
 export * from './workflowModel.js';
 export * from './lifecycleCatalog.js';
+export * from './plausibility.js';
 export * from './worktreeStatus.js';
 export * from './actionPolicy.js';
 export * from './jiraSprints.js';

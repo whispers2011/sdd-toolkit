@@ -70,6 +70,19 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       if (stage === undefined) return false;
       return stage === STAGE_FOR_KIND[item.kind];
     }
+    case 'run_unpriced':
+    case 'phase_false_start':
+    case 'project_without_runs':
+    case 'metering_conflict':
+      // Datenbefunde: der Widerspruch steht in der Datenbank und besteht unabhängig
+      // davon, ob gerade ein Agent arbeitet (FR-016) oder ob das Toolkit neu gestartet
+      // wurde (FR-017). Nur ein Mensch löst sie auf; danach kehren sie erst bei
+      // gewachsenem Bestand zurück (Wasserstand in plausibility_state).
+      //
+      // Sie fielen ohnehin in den default-Zweig — die Zweige stehen explizit da, damit
+      // ein späteres Umsortieren des switch sie nicht versehentlich in eine
+      // Prozess-Gruppe zieht. Kein Eintrag in STAGE_FOR_KIND: nicht stufengebunden.
+      return true;
     default:
       return true;
   }

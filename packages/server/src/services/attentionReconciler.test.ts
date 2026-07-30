@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AttentionItem, AttentionKind, IntegrationStage } from '@sdd/shared';
 import {
+  STAGE_FOR_KIND,
   findStaleOnBoot,
   findStaleRuntime,
   isAttentionValid,
@@ -140,5 +141,47 @@ describe('findStaleOnBoot', () => {
     const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
     expect(findStaleOnBoot(open, new Map([['f1', 'none' as IntegrationStage]]))).toEqual([]);
     expect(findStaleRuntime(open, snap([working], [['f1', 'merged']]))).toEqual([]);
+  });
+});
+
+/**
+ * Datenbefunde der Plausibilitätsprüfung sind KEINE Prozess-Meldungen: der
+ * Widerspruch steht in der Datenbank und verschwindet nicht, weil ein Agent wieder
+ * arbeitet (FR-016) oder das Toolkit neu startet (FR-017). Genau darum bekamen sie
+ * eigene Arten statt sich `agent_errored` zu leihen.
+ */
+describe('isAttentionValid — Datenbefunde (Plausibilitätsprüfung)', () => {
+  const BEFUNDE = ['run_unpriced', 'phase_false_start', 'project_without_runs', 'metering_conflict'] as const;
+
+  it.each(BEFUNDE)('%s bleibt gültig, während eine Session desselben Features arbeitet (US4-4, FR-016)', (kind) => {
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+    expect(isAttentionValid(item(kind, { featureId: 'f1' }), snap([working]))).toBe(true);
+  });
+
+  it.each(BEFUNDE)('%s bleibt gültig bei einem Wechsel der Integrations-Stufe', (kind) => {
+    expect(isAttentionValid(item(kind, { featureId: 'f1' }), snap([], [['f1', 'merged']]))).toBe(true);
+  });
+
+  it.each(BEFUNDE)('%s bleibt gültig ohne Feature-Bezug (projektweite Befunde)', (kind) => {
+    expect(isAttentionValid(item(kind, { featureId: null }), snap([]))).toBe(true);
+  });
+
+  it('findStaleRuntime räumt keinen Datenbefund ab, auch nicht bei arbeitender Session (FR-016)', () => {
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+    const open = BEFUNDE.map((k) => item(k, { featureId: 'f1' }));
+    expect(findStaleRuntime(open, snap([working]))).toEqual([]);
+  });
+
+  it('findStaleOnBoot liefert keine der vier neuen Arten — sie überleben den Neustart (US4-5, FR-017)', () => {
+    const open = [
+      ...BEFUNDE.map((k) => item(k, { featureId: 'f1' })),
+      ...BEFUNDE.map((k) => item(k, { id: 'projektweit', featureId: null })),
+    ];
+    expect(findStaleOnBoot(open, new Map())).toEqual([]);
+    expect(findStaleOnBoot(open, new Map([['f1', 'merged' as IntegrationStage]]))).toEqual([]);
+  });
+
+  it('keiner der vier Befunde ist an eine Integrations-Stufe gebunden', () => {
+    for (const kind of BEFUNDE) expect(STAGE_FOR_KIND[kind]).toBeUndefined();
   });
 });

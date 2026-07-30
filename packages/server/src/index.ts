@@ -13,6 +13,8 @@ import {
 } from './db/repos.js';
 import { AgentRepo, AgentRunRepo } from './db/agentRepo.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
+import { PlausibilityRepo } from './db/plausibilityRepo.js';
+import { PlausibilityService } from './services/plausibilityService.js';
 import { KnowledgeService } from './services/knowledgeService.js';
 import { AtlassianMcpClient } from './services/atlassianMcpClient.js';
 import { JiraBrowseService } from './services/jiraBrowseService.js';
@@ -83,6 +85,17 @@ async function main(): Promise<void> {
   // Dokument-Verweis in jeden Phasenauftrag hängt.
   const featureDocuments = new FeatureDocumentsService({ projects, features });
 
+  // Plausibilitätsprüfung: beurteilt gespeicherte Läufe, greift nie ein. Vor dem
+  // Orchestrator gebaut und ihm als optionale Abhängigkeit übergeben — der Service
+  // hängt nicht am Orchestrator, damit bestehende Orchestrator-Tests unberührt bleiben.
+  const plausibility = new PlausibilityService({
+    executions,
+    features,
+    projects,
+    attention,
+    state: new PlausibilityRepo(db),
+  });
+
   orchestrator = new Orchestrator({
     projects,
     features,
@@ -97,6 +110,7 @@ async function main(): Promise<void> {
     agentGate,
     dataDir: config.dataDir,
     telemetry,
+    plausibility,
   });
 
   const mergeQueue = new MergeQueueService({
@@ -145,6 +159,10 @@ async function main(): Promise<void> {
 
   // Startup-Reaper: verwaiste running-States aus früheren Server-Läufen bereinigen.
   orchestrator.reapOnBoot();
+  // Reihenfolge ist verbindlich: erst der Reaper, dann die erste Beurteilung. Sonst
+  // sähe die Prüfung running-Leichen ohne finished_at (kein Befund, aber die Absicht
+  // wäre unklar). Der erste Lauf macht den vorhandenen Bestand sichtbar (FR-002).
+  plausibility.check();
   // Merge-Queue-Recovery SEQUENZIELL (nie unawaited parallel): zwei gleichzeitige
   // Worktree-Reparaturen würden sonst denselben feature/<name>-Branch doppelt anlegen
   // → „cannot lock ref … reference already exists". Erst Restanzen bereits gemergter
@@ -177,6 +195,10 @@ async function main(): Promise<void> {
   // Verbrauch nicht gemessen und der Phasenzustand behauptet Fertigstellung, die es
   // nicht gibt (Befund A12 vom 30.07.2026). Nur melden, nicht eingreifen.
   const workWithoutRunInterval = setInterval(() => orchestrator.checkWorkWithoutRun(), 60_000);
+
+  // Bestandsprüfung im selben Takt: Befund C („Projekt mit Features, aber nie ein
+  // Phasenlauf") lässt sich nicht am Laufabschluss aufhängen — dort endet nie ein Lauf.
+  const plausibilityInterval = setInterval(() => plausibility.check(), 60_000);
 
   const onboarding = new OnboardingService(projects, features);
 
@@ -225,6 +247,7 @@ async function main(): Promise<void> {
     clearInterval(guardInterval);
     clearInterval(chatIdleInterval);
     clearInterval(workWithoutRunInterval);
+    clearInterval(plausibilityInterval);
     await changeGuard.stop();
     ptys.saveAllSnapshots();
     chat.killAll();

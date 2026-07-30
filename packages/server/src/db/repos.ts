@@ -26,6 +26,7 @@ import {
   LEVEL2_DEFAULTS,
   OPTIMIZATION_DEFAULTS,
   OPTIMIZATION_OFF_DEFAULTS,
+  meteringConflictFactor,
   parseOptimizationPartial,
   type PhaseMap,
 } from '@sdd/shared';
@@ -279,6 +280,7 @@ export class FeatureRepo {
       this.db.prepare('DELETE FROM executions WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM agent_runs WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM attention WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM plausibility_state WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM sessions WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM features WHERE id=?').run(id);
     })();
@@ -423,8 +425,24 @@ export interface ExecutionUsageInput {
 /**
  * Ergebnis eines Telemetrie-Nachtrags. `applied: false` heisst: die vorhandene Zahl
  * war besser und bleibt stehen — der Grund gehört gemeldet, nicht verschluckt.
+ *
+ * Die Zahlen stehen strukturiert daneben, damit der Aufrufer sie nicht aus `reason`
+ * zurückparsen oder den Vergleich ein zweites Mal rechnen muss (mit einem zweiten
+ * SELECT, dessen Ergebnis inzwischen abweichen kann). `reason` selbst bleibt
+ * wortgleich — eine Meldung ersetzt kein Protokoll (FR-018).
  */
-export type TelemetryUpdateOutcome = { applied: true } | { applied: false; reason: string };
+export type TelemetryUpdateOutcome =
+  | { applied: true }
+  | {
+      applied: false;
+      reason: string;
+      /** `lowered` = der Nachtrag würde die Tokenzahl senken; `price_loss` = er würde den Preis löschen. */
+      rejection: 'lowered' | 'price_loss';
+      existingTokens: number;
+      rejectedTokens: number;
+      /** `existingTokens / max(rejectedTokens, 1)` — siehe `meteringConflictFactor`. */
+      factor: number;
+    };
 
 export class ExecutionRepo {
   constructor(private db: DB) {}
@@ -519,12 +537,22 @@ export class ExecutionRepo {
         return {
           applied: false,
           reason: `Nachtrag würde die Messung senken: ${alt} → ${neu} Tokens (Faktor ${(alt / Math.max(neu, 1)).toFixed(1)})`,
+          rejection: 'lowered',
+          existingTokens: alt,
+          rejectedTokens: neu,
+          factor: meteringConflictFactor(alt, neu),
         };
       }
       if (vorher.cost_micros !== null && (usage.costMicros ?? null) === null) {
         return {
           applied: false,
           reason: `Nachtrag würde den Preis löschen: ${(vorher.cost_micros / 1e6).toFixed(2)} USD vorhanden, Nachtrag ohne Kosten (Quelle ${usage.tokensSource ?? 'keine'})`,
+          rejection: 'price_loss',
+          existingTokens: alt,
+          rejectedTokens: neu,
+          // Erreichbar nur, wenn die Token-Prüfung davor NICHT griff (neu >= alt) —
+          // dieser Zweig kann den Melde-Faktor 2 also nie erreichen (research.md D10).
+          factor: meteringConflictFactor(alt, neu),
         };
       }
     }
