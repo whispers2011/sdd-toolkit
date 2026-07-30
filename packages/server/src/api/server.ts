@@ -480,7 +480,10 @@ export async function buildServer(deps: ApiDeps) {
     const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
     const workPaused = base.conversation ? deps.chatWork.workPaused(base.conversation) : false;
     const pendingFeatures = deps.chatWork.proposalForProject(req.params.id);
-    return { ...base, workSession, workPaused, pendingFeatures };
+    // Nur der an der letzten Turn-Grenze gebildete Stand — diese Route erzeugt kein
+    // Angebot (FR-007).
+    const costProfile = base.conversation ? deps.chatWork.costProfileFor(base.conversation) : null;
+    return { ...base, workSession, workPaused, pendingFeatures, costProfile };
   });
 
   /** Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
@@ -511,6 +514,13 @@ export async function buildServer(deps: ApiDeps) {
   /** Feature-Vorschlag verwerfen. */
   app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/features/dismiss', (req) => {
     deps.chatWork.dismissProposal(req.params.id);
+    return { ok: true };
+  });
+
+  /** Neustart-Angebot ablehnen: Wasserstand merken, bis der Verlauf weiter gewachsen ist (FR-009). */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/offer/dismiss', (req) => {
+    if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
+    deps.chatWork.dismissOffer(req.params.id);
     return { ok: true };
   });
 

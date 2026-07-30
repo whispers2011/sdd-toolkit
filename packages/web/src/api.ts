@@ -11,6 +11,7 @@ import type {
   ReviewComment,
   ReviewOverviewItem,
   ChatConversation,
+  ChatCostProfile,
   ChatFeatureProposal,
   ChatMessage,
   ChatWorkRestartNeedsConfirm,
@@ -70,6 +71,8 @@ export interface ChatState {
   /** Session war live, ist aber pausiert (Leerlauf-Reaper) und fortsetzbar → Panel fragt nach. */
   workPaused?: boolean;
   pendingFeatures?: ChatFeatureProposal | null;
+  /** Bewertung der letzten Turn-Grenze: Verlaufsgröße, Verbrauch, Verhältnis, offenes Angebot. */
+  costProfile?: ChatCostProfile | null;
 }
 
 export interface LiveSessionInfo {
@@ -393,6 +396,9 @@ export const api = {
     request<{ features: Feature[] }>('POST', `/api/projects/${projectId}/chat/work/features/create`, { names }),
   dismissChatFeatures: (projectId: string) =>
     request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/features/dismiss`),
+  /** „Chat fortsetzen": Neustart-Angebot ablehnen, bis der Verlauf weiter gewachsen ist. */
+  dismissChatRestartOffer: (projectId: string) =>
+    request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/offer/dismiss`),
 
   // Review-Portal
   reviewOverview: (projectId: string) =>

@@ -4,7 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { FastifyInstance } from 'fastify';
-import { ACTION_REASON, BUSY_REASON, initialPhases, phaseRunningReason, type FeaturePhase, type PhaseMap } from '@sdd/shared';
+import {
+  ACTION_REASON,
+  BUSY_REASON,
+  initialPhases,
+  phaseRunningReason,
+  type ChatCostProfile,
+  type FeaturePhase,
+  type PhaseMap,
+} from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import {
   AttentionRepo,
@@ -870,5 +878,123 @@ describe('Feature-Dokumente: Routen', () => {
 
     expect(res.statusCode).toBe(400);
     expect(existsSync(docsDirOf('schon-da'))).toBe(false);
+  });
+});
+
+/**
+ * Kontext-Hygiene über die API: `GET /chat` transportiert nur den an der letzten Turn-Grenze
+ * gebildeten Stand (FR-007), und das Angebot lässt sich ablehnen (FR-008/FR-009).
+ */
+describe('Chat-Routen — Kostenprofil und Neustart-Angebot', () => {
+  let app: FastifyInstance;
+  let db: DB;
+  let telemetry: TelemetryStore;
+  let projectId: string;
+  let costProfile: ChatCostProfile | null;
+  let dismissed: string[];
+
+  const teuer: ChatCostProfile = {
+    historyBytes: Math.round(16.8 * 1024 * 1024),
+    lastTurn: { cacheReadTokens: 265_673, outputTokens: 300, costMicros: 890_000, tokens: 266_000, measured: true },
+    ratio: { kind: 'value', ratio: 885.6 },
+    reasons: ['history_size', 'context_per_turn'],
+    offerOpen: true,
+    message: 'Der Verlauf ist 16,8 MB groß — jeder weitere Turn zahlt den Verlauf mit.',
+  };
+
+  beforeEach(async () => {
+    db = openMemoryDatabase();
+    telemetry = new TelemetryStore({ autoSweep: false });
+    const projects = new ProjectRepo(db);
+    projectId = projects.create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    costProfile = null;
+    dismissed = [];
+
+    const conversation = {
+      id: 'c1', projectId, mode: 'work', claudeSessionId: null, createdAt: 0, updatedAt: 0, endedAt: null,
+    };
+
+    app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
+      projects,
+      features: new FeatureRepo(db),
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      chat: { getState: () => ({ conversation, messages: [] }) },
+      chatWork: {
+        workSessionInfo: () => null,
+        workPaused: () => false,
+        proposalForProject: () => null,
+        costProfileFor: () => costProfile,
+        // Wie im Service: Wasserstand merken ⇒ das Angebot ist zu, die Zahlen bleiben.
+        dismissOffer: (id: string) => {
+          dismissed.push(id);
+          if (costProfile) costProfile = { ...costProfile, reasons: [], offerOpen: false, message: null };
+        },
+      },
+      telemetry,
+      dataDir: mkdtempSync(join(tmpdir(), 'sdd-chat-hygiene-')),
+      webDir: null,
+      port: 4899,
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    telemetry.stop();
+    db.close();
+  });
+
+  const getChat = async (id = projectId) => {
+    const res = await app.inject({ method: 'GET', url: `/api/projects/${id}/chat` });
+    return { status: res.statusCode, body: res.json() as Record<string, unknown> };
+  };
+
+  it('liefert ohne Messung costProfile: null und lässt die bestehenden Felder unverändert', async () => {
+    const { status, body } = await getChat();
+
+    expect(status).toBe(200);
+    expect(body.costProfile).toBeNull();
+    expect(body.workSession).toBeNull();
+    expect(body.workPaused).toBe(false);
+    expect(body.pendingFeatures).toBeNull();
+    expect(body.conversation).toMatchObject({ id: 'c1' });
+  });
+
+  it('liefert das Kostenprofil der letzten Turn-Grenze mit', async () => {
+    costProfile = teuer;
+
+    const { body } = await getChat();
+
+    expect(body.costProfile).toEqual(teuer);
+  });
+
+  it('POST …/chat/work/offer/dismiss lehnt ab; danach ist das Angebot zu', async () => {
+    costProfile = teuer;
+
+    const res = await app.inject({ method: 'POST', url: `/api/projects/${projectId}/chat/work/offer/dismiss` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+    expect(dismissed).toEqual([projectId]);
+
+    const { body } = await getChat();
+    expect((body.costProfile as ChatCostProfile).offerOpen).toBe(false);
+    // Die Zahlen bleiben ablesbar — abgelehnt ist das Angebot, nicht die Messung.
+    expect((body.costProfile as ChatCostProfile).lastTurn?.cacheReadTokens).toBe(265_673);
+  });
+
+  it('unbekannte Projekt-ID → 404 wie bei den benachbarten Chat-Routen', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/projects/gibt-es-nicht/chat/work/offer/dismiss' });
+
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Projekt nicht gefunden');
+    expect(dismissed).toEqual([]);
+
+    expect((await getChat('gibt-es-nicht')).status).toBe(404);
   });
 });

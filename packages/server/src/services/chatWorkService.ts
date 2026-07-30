@@ -2,17 +2,24 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
+  CHAT_HYGIENE_LIMITS,
   displayStatus,
+  evaluateChatHygiene,
   hasUsage,
   meter,
   parseSessionFeatures,
   resolveAutomation,
+  restartOfferMessage,
   selectEventsForWindow,
   summarizeEvents,
   sumUsage,
   usageTotalTokens,
   type ChatConversation,
+  type ChatCostProfile,
   type ChatFeatureProposal,
+  type ChatOfferWatermark,
+  type ChatRestartReason,
+  type ChatTurnUsage,
   type ChatWorkRestartNeedsConfirm,
   type ChatWorkRestartResult,
   type ChatWorkSessionInfo,
@@ -20,7 +27,15 @@ import {
   type Project,
   type SessionEffect,
 } from '@sdd/shared';
-import type { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
+import type {
+  AttentionRepo,
+  ChatRepo,
+  ExecutionRepo,
+  ExecutionUsageInput,
+  ProjectRepo,
+  SessionRepo,
+  SettingsRepo,
+} from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
@@ -32,14 +47,6 @@ import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import { ChatError } from './chatService.js';
 import { bus, emitAttentionResolved } from '../events.js';
-
-/**
- * Ein Projekt-Chat ohne Aktivität für diese Dauer wird automatisch beendet, damit
- * keine Leerlauf-Session im Hintergrund weiterläuft. Der Verlauf bleibt erhalten:
- * Das Panel zeigt danach eine „Pausiert"-Karte (`workPaused`), über die der Nutzer
- * fortsetzen (`ensure()` → Scrollback-Snapshot + Claude-Resume) oder frisch beginnen kann.
- */
-export const CHAT_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 export interface ChatWorkDeps {
   projects: ProjectRepo;
@@ -57,6 +64,31 @@ export interface ChatWorkDeps {
   /** Meldungen der CLI — vorrangige Quelle für Verbrauch UND Kosten eines Turns. */
   telemetry?: TelemetryStore;
 }
+
+/**
+ * Kontext-Hygiene einer Unterhaltung: die letzten Turns, die Verlaufsgröße, ein etwaiger
+ * Ablehnungs-Wasserstand und das daraus an der Turn-Grenze gebildete Urteil.
+ */
+interface ChatHygieneState {
+  /** Ringpuffer, jüngster Turn zuletzt — höchstens `CHAT_HYGIENE_LIMITS.ratioTurns` Einträge. */
+  turns: ChatTurnUsage[];
+  historyBytes: number | null;
+  watermark: ChatOfferWatermark | null;
+  profile: ChatCostProfile | null;
+}
+
+/**
+ * Gemessener Verbrauch → Turn-Verbrauch der Bewertung. `null` heißt „für diesen Turn war nichts
+ * messbar" und wird als `measured: false` festgehalten, nicht als Nullmessung (FR-016). Die
+ * Schätz-Rückfallebene liefert keinen Cache-Read/Output-Split — die fehlenden Felder bleiben `null`.
+ */
+const toChatTurnUsage = (usage: ExecutionUsageInput | null): ChatTurnUsage => ({
+  cacheReadTokens: usage?.cacheReadTokens ?? null,
+  outputTokens: usage?.outputTokens ?? null,
+  costMicros: usage?.costMicros ?? null,
+  tokens: usage?.tokens ?? null,
+  measured: usage !== null,
+});
 
 /**
  * Projekt-Chat als vollwertige Claude-Code-Session: eine interaktive, persistente Session pro
@@ -77,6 +109,13 @@ export class ChatWorkService {
   private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
   /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
   private lastMarker = new Map<string, string>();
+  /**
+   * Kostenprofil je Unterhaltung (im Speicher, überlebt Panel-Öffnen, nicht den
+   * Server-Neustart). Nach einem Neustart des Servers wird an der ersten Turn-Grenze neu
+   * bewertet; ein dann erneut erscheinendes Angebot ist sachlich richtig — der Verlauf ist ja
+   * groß. Kein DB-Feld, keine Migration.
+   */
+  private hygiene = new Map<string, ChatHygieneState>(); // conversationId → Bewertung
   /** Laufender Neustart je Projekt — koalesziert schnelle Doppelklicks (FR-008). */
   private restarting = new Map<string, Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm>>();
   /** Laufendes ensure() je Projekt — verhindert zwei Sessions auf derselben Unterhaltung. */
@@ -229,6 +268,7 @@ export class ChatWorkService {
       // Flüchtigen Feature-Vorschlag entfernen (FR-009) und Unterhaltung deaktivieren (behalten).
       this.proposals.delete(old.id);
       this.lastMarker.delete(old.id);
+      this.hygiene.delete(old.id); // frische Unterhaltung startet mit leerer Bewertung (FR-012)
       this.deps.chatRepo.endConversation(old.id);
     }
 
@@ -403,6 +443,9 @@ export class ChatWorkService {
     this.turnStartedAt.set(session.id, finishedAt);
 
     const usage = this.usageForTurn(session, startedAt, finishedAt, outputText);
+    // Auch der Fall „nichts messbar" wird festgehalten (FR-001/FR-016) — er ist eine Aussage
+    // über den Turn, keine Null-Messung.
+    this.recordHygieneTurn(session, usage);
     if (!usage) return;
 
     const execId = this.deps.executions.start({
@@ -415,8 +458,97 @@ export class ChatWorkService {
     this.deps.executions.finishWithUsage(execId, 0, usage);
   }
 
+  // ---------- Kontext-Hygiene (Angebot aus Kosten) ----------
+
+  /**
+   * Turn-Verbrauch und Verlaufsgröße festhalten und die Unterhaltung neu bewerten — der
+   * einzige Ort, an dem ein Angebot entsteht (FR-007). `GET /chat` rechnet nur den
+   * gespeicherten Stand aus.
+   */
+  private recordHygieneTurn(session: LiveSession, usage: ExecutionUsageInput | null): void {
+    const conversationId = session.conversationId;
+    if (!conversationId) return;
+
+    const state = this.hygiene.get(conversationId) ?? {
+      turns: [],
+      historyBytes: null,
+      watermark: null,
+      profile: null,
+    };
+    state.turns.push(toChatTurnUsage(usage));
+    if (state.turns.length > CHAT_HYGIENE_LIMITS.ratioTurns) {
+      state.turns.splice(0, state.turns.length - CHAT_HYGIENE_LIMITS.ratioTurns);
+    }
+    state.historyBytes = this.historyBytesFor(session);
+    // `idle` bleibt hier false: die Session lebt gerade: Der Leerlauf-Grund kommt erst in
+    // costProfileFor() dazu, wo `workPaused` gilt (FR-013).
+    state.profile = evaluateChatHygiene({
+      historyBytes: state.historyBytes,
+      turns: state.turns,
+      idle: false,
+      watermark: state.watermark,
+    });
+    this.hygiene.set(conversationId, state);
+    bus.emitEvent('chat_updated', { projectId: session.projectId, conversationId });
+  }
+
+  /**
+   * Größe des Verlaufs an der Transkript-Ablage der Unterhaltung. `null`, wenn kein Transkript
+   * auffindbar ist — dann greift nur der verbrauchsbasierte Auslöser, ohne Fehlermeldung im Chat.
+   *
+   * Bewusst nur die aktuelle Transkriptdatei: hat eine Unterhaltung nach einer
+   * Resume-Recovery mehrere, wird zu klein gemessen und der Auslöser greift später — nie fälschlich.
+   */
+  private historyBytesFor(session: LiveSession): number | null {
+    if (!session.claudeSessionId) return null;
+    const path = locateTranscript(session.cwd, session.claudeSessionId);
+    return path ? transcriptSize(path) : null;
+  }
+
+  /**
+   * Gespeichertes Kostenprofil der Unterhaltung (für `GET /chat`). Bewertet NICHT neu —
+   * ein Angebot entsteht ausschließlich an der Turn-Grenze (FR-007). Ergänzt wird nur der
+   * Leerlauf-Grund, damit dieselbe eine Karte beide Gründe nennt (FR-013).
+   */
+  costProfileFor(conversation: ChatConversation): ChatCostProfile | null {
+    const stored = this.hygiene.get(conversation.id)?.profile ?? null;
+    if (!stored) return null;
+    if (!this.workPaused(conversation) || stored.reasons.includes('idle')) return stored;
+    const reasons: ChatRestartReason[] = ['idle', ...stored.reasons];
+    const withIdle: ChatCostProfile = { ...stored, reasons };
+    return { ...withIdle, message: restartOfferMessage(withIdle) };
+  }
+
+  /**
+   * Angebot ablehnen (FR-008/FR-009): den Stand der auslösenden Größen als Wasserstand merken
+   * und mit ihm neu bewerten. Erneut angeboten wird erst eine Schwellenstufe darüber — im
+   * selben Turn also nie ein zweites Mal.
+   */
+  dismissOffer(projectId: string): void {
+    const conv = this.deps.chatRepo.getActive(projectId);
+    if (!conv) return;
+    const state = this.hygiene.get(conv.id);
+    if (!state) return;
+    state.watermark = {
+      historyBytes: state.historyBytes,
+      cacheReadTokens: state.turns.at(-1)?.cacheReadTokens ?? null,
+    };
+    state.profile = evaluateChatHygiene({
+      historyBytes: state.historyBytes,
+      turns: state.turns,
+      idle: false,
+      watermark: state.watermark,
+    });
+    bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
+  }
+
   /** Meldungen → Transkript → Scrollback-Schätzung; `null`, wenn der Turn nichts hergab. */
-  private usageForTurn(session: LiveSession, startedAt: number, finishedAt: number, outputText: string) {
+  private usageForTurn(
+    session: LiveSession,
+    startedAt: number,
+    finishedAt: number,
+    outputText: string,
+  ): ExecutionUsageInput | null {
     const store = this.deps.telemetry;
     if (store) {
       const events = selectEventsForWindow(store.eventsFor(session.id), { from: startedAt, to: finishedAt });
@@ -467,6 +599,10 @@ export class ChatWorkService {
     this.turnStart.delete(session.id);
     this.turnStartedAt.delete(session.id);
     this.turnTranscriptOffset.delete(session.id);
+    // `hygiene` wird hier bewusst NICHT geräumt: es gehört der Unterhaltung, nicht der Session.
+    // Nach einem Leerlauf-Reap ist die Unterhaltung pausiert und weiterhin teuer — genau dann
+    // muss die eine Pausiert-Karte beide Gründe nennen können (FR-013). Geräumt wird beim
+    // Neustart, wo die Unterhaltung endet (FR-012), und in killAll().
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
     emitAttentionResolved(this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] }));
     const intentional = this.terminating.delete(session.id); // Neustart-Termination → kein Alarm
@@ -492,8 +628,13 @@ export class ChatWorkService {
    * Gemessen wird an `lastUsedAt`, nicht an `lastActiveAt`: Letzteres sagt nur, wann der
    * Agent zuletzt gearbeitet hat, und wurde für die Grid-Sortierung gebaut. Wer die Antwort
    * las und fünf Minuten nachdachte, fand die Session beendet vor und musste sie fortsetzen.
+   *
+   * Die Leerlaufzeit steht bei den übrigen Grenzwerten einer Unterhaltung
+   * (`CHAT_HYGIENE_LIMITS.idleMs`, FR-018) — der Verlauf bleibt beim Reap erhalten: Das Panel
+   * zeigt danach eine „Pausiert"-Karte (`workPaused`), über die der Nutzer fortsetzen
+   * (`ensure()` → Scrollback-Snapshot + Claude-Resume) oder frisch beginnen kann.
    */
-  reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_IDLE_TIMEOUT_MS): void {
+  reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_HYGIENE_LIMITS.idleMs): void {
     for (const s of this.deps.ptys.list()) {
       try {
         if (s.kind !== 'chat_work' || s.exited) continue;
@@ -517,6 +658,7 @@ export class ChatWorkService {
 
   killAll(): void {
     this.turnStart.clear();
+    this.hygiene.clear();
   }
 
   // ---------- Helpers ----------

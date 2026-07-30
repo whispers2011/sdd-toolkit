@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react';
+import {
+  CHAT_HYGIENE_LIMITS,
+  formatHistorySize,
+  ratioLabel,
+  type ChatCostProfile,
+} from '@sdd/shared';
 import { api, type ChatState } from '../api.js';
 import { useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
-import { CloseIcon, IdeaIcon, RestartIcon } from './icons.js';
+import { fmtCost, fmtTokens } from './charts.js';
+import { CloseIcon, IdeaIcon, RestartIcon, WarningIcon } from './icons.js';
 
 const MIN_W = 340;
 const MIN_H = 320;
@@ -86,6 +93,16 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   // Wegen 5 min Inaktivität pausiert: Session beendet, Verlauf erhalten. Der Nutzer
   // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird.
   const paused = !!chat?.workPaused;
+  // Bewertung der letzten Turn-Grenze. Der Verlauf kann auch aus Kosten teuer geworden sein —
+  // dann trägt entweder die Pausiert-Karte den Grund mit oder der Streifen über der Konsole
+  // fragt, nie beides (FR-013).
+  const costProfile = chat?.costProfile ?? null;
+  const costReasons = costProfile?.reasons.filter((r) => r !== 'idle') ?? [];
+  const offerOpen = !!costProfile?.offerOpen && !paused;
+  const pausedMessage =
+    costReasons.length > 0 && costProfile?.message
+      ? costProfile.message
+      : 'Seit 5 min keine Aktivität — die Session wurde beendet. Dein Verlauf ist erhalten.';
 
   // Bei neuem Vorschlag alle Features vorauswählen.
   useEffect(() => {
@@ -108,6 +125,10 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   };
 
   const dismiss = () => void api.dismissChatFeatures(projectId).catch((e: Error) => setError(e.message));
+
+  /** „Chat fortsetzen": Angebot ablehnen, ohne die laufende Session anzufassen (FR-008). */
+  const dismissOffer = () =>
+    void api.dismissChatRestartOffer(projectId).catch((e: Error) => setError(e.message));
 
   // Neustart: frische Session. Bei drohendem Verlust erst bestätigen lassen (FR-006).
   const runRestart = async (confirm: boolean): Promise<void> => {
@@ -137,8 +158,11 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   // Bewusst kein load() hier: getChat könnte zurückkommen, bevor die resumte Session
   // serverseitig live ist (workPaused kurz wieder true → Karten-Flackern). Der Status
   // aktualisiert sich über den App-WS; chat_updated-Events lösen später ein load() aus.
+  // Ein offenes Kosten-Angebot wird mit abgelehnt: sonst springt direkt nach „Chat fortsetzen"
+  // der Streifen an und stellt dieselbe Frage ein zweites Mal.
   const resume = () => {
     setError(null);
+    dismissOffer();
     setChat((c) => (c ? { ...c, workPaused: false } : c));
     setReady(true);
   };
@@ -225,6 +249,30 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         </div>
       )}
 
+      {/* Der Verlauf ist teuer geworden (FR-002/003/004): dieselbe Entscheidung wie beim
+          Leerlauf, aber als Streifen — die Konsole bleibt bedienbar (FR-008, SC-006). */}
+      {offerOpen && costProfile?.message && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-amber-900 bg-amber-950/50 px-3 py-1.5 text-xs text-amber-200">
+          <span className="text-amber-400">
+            <WarningIcon title="Hinweis" />
+          </span>
+          <span className="min-w-0 flex-1">{costProfile.message}</span>
+          <button
+            onClick={dismissOffer}
+            className="rounded border border-amber-800 px-2 py-0.5 text-amber-200 hover:bg-amber-900/50"
+          >
+            Chat fortsetzen
+          </button>
+          <button
+            onClick={onRestart}
+            disabled={restarting}
+            className="rounded bg-emerald-700 px-2 py-0.5 font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
+          >
+            Neuen Chat starten
+          </button>
+        </div>
+      )}
+
       {/* Echte Konsole der Session — man tippt direkt hier hinein.
           Hintergrund folgt dem Terminal-Theme (zinc-950 ⇄ hell). */}
       <div className="min-h-0 flex-1 bg-zinc-950">
@@ -235,9 +283,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
             </span>
             <div>
               <p className="text-sm font-semibold text-zinc-200">Chat wegen Inaktivität pausiert</p>
-              <p className="mt-1 text-xs text-zinc-500">
-                Seit 5 min keine Aktivität — die Session wurde beendet. Dein Verlauf ist erhalten.
-              </p>
+              <p className="mt-1 text-xs text-zinc-500">{pausedMessage}</p>
             </div>
             <div className="flex flex-col gap-2">
               <button
@@ -267,6 +313,9 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           !error && <p className="p-4 text-xs text-zinc-500">Claude-Session wird gestartet …</p>
         )}
       </div>
+
+      {/* Was der zuletzt beendete Turn gekostet hat — ohne Wechsel der Ansicht (FR-014/015) */}
+      {!paused && <CostStrip profile={costProfile} />}
 
       {/* Feature-Vorschlag der Session → Bestätigungskarte */}
       {pending && (
@@ -313,6 +362,49 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Eine Kennzahl im Streifen. `critical` markiert sie sichtbar, ohne Emoji (FR-015). */
+function Metric({ label, value, critical = false }: { label: string; value: string; critical?: boolean }) {
+  return (
+    <span className="flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-zinc-500">{label}</span>
+      {critical ? (
+        <span className="flex items-center gap-1 font-medium text-amber-400">
+          <WarningIcon title="kritisch" />
+          {value}
+        </span>
+      ) : (
+        <span className="text-zinc-300">{value}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Kennzahlen des zuletzt beendeten Turns unter der Konsole (FR-014/FR-015): gelesener Kontext,
+ * Kosten, Verhältnis gelesener Kontext : Ausgabe und Verlaufsgröße. Fehlende Werte stehen als
+ * „unbekannt", nie als `0` oder `$0.00` (FR-016) — vor der ersten Messung steht dort nur ein
+ * unauffälliges „noch keine Messung".
+ */
+function CostStrip({ profile }: { profile: ChatCostProfile | null }) {
+  const last = profile?.lastTurn ?? null;
+  if (!profile || !last) {
+    return <div className="border-t border-zinc-800 px-3 py-1 text-[11px] text-zinc-500">noch keine Messung</div>;
+  }
+  const ratio = profile.ratio;
+  const critical = ratio.kind === 'value' && ratio.ratio >= CHAT_HYGIENE_LIMITS.ratioCritical;
+  return (
+    <div
+      title="Zahlen des zuletzt beendeten Turns"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-zinc-800 px-3 py-1 text-[11px]"
+    >
+      <Metric label="Kontext" value={last.cacheReadTokens === null ? 'unbekannt' : fmtTokens(last.cacheReadTokens)} />
+      <Metric label="Kosten" value={last.costMicros === null ? 'unbekannt' : fmtCost(last.costMicros)} />
+      <Metric label="Kontext : Ausgabe" value={ratioLabel(ratio)} critical={critical} />
+      <Metric label="Verlauf" value={formatHistorySize(profile.historyBytes)} />
     </div>
   );
 }

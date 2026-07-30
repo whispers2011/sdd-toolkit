@@ -2,19 +2,27 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Feature } from '@sdd/shared';
+import { CHAT_HYGIENE_LIMITS, type Feature } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import { isCleanWorkingTree } from '../git/git.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import type { Orchestrator } from './orchestrator.js';
-import { ChatWorkService, CHAT_IDLE_TIMEOUT_MS } from './chatWorkService.js';
+import { ChatWorkService } from './chatWorkService.js';
 
 // Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
 vi.mock('../git/git.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git/git.js')>();
   return { ...actual, isCleanWorkingTree: vi.fn() };
+});
+
+// Verlaufsgröße steuerbar machen (sie liegt sonst im echten ~/.claude/projects);
+// die übrigen Transkript-Funktionen bleiben real.
+vi.mock('../pty/transcriptWatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../pty/transcriptWatcher.js')>();
+  return { ...actual, locateTranscript: vi.fn(), transcriptSize: vi.fn() };
 });
 
 const marker = (feats: { name: string; description: string }[]) =>
@@ -295,13 +303,13 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
 
   it('beendet eine inaktive Chat-Session nach Ablauf der Leerlaufzeit', () => {
     sessions = [mkSession({ id: 'idle-old', lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
     expect(terminated).toEqual(['idle-old']);
   });
 
   it('würgt eine arbeitende Session nie ab', () => {
     sessions = [mkSession({ id: 'busy', machine: { state: { kind: 'working' } } as LiveSession['machine'], lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 10);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs * 10);
     expect(terminated).toEqual([]);
   });
 
@@ -311,7 +319,7 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
    * frisch). Am alten Maß gemessen war das „seit Ewigkeiten inaktiv".
    */
   it('verschont eine Session, der sich der Nutzer gerade zuwendet', () => {
-    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    const now = CHAT_HYGIENE_LIMITS.idleMs * 10;
     sessions = [mkSession({ id: 'lesend', lastActiveAt: 0, lastUsedAt: now - 1000 })];
     svc.reapIdleSessions(now);
     expect(terminated).toEqual([]);
@@ -319,26 +327,26 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
 
   it('verschont eine Session mit offenem Panel, egal wie lange sie still ist', () => {
     sessions = [mkSession({ id: 'beobachtet', lastUsedAt: 0, subscribers: new Set([{}]) as LiveSession['subscribers'] })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 100);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs * 100);
     expect(terminated).toEqual([]);
   });
 
   it('beendet eine Session, die niemand mehr offen hat und der sich niemand zuwendet', () => {
     sessions = [mkSession({ id: 'vergessen', lastUsedAt: 0, subscribers: new Set() })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
     expect(terminated).toEqual(['vergessen']);
   });
 
   it('lässt eine noch frische Session in Ruhe', () => {
     // dispatch() setzt beide Marken gemeinsam, wenn der Agent zu arbeiten beginnt.
     sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000, lastUsedAt: 1_000 })];
-    svc.reapIdleSessions(1_000 + CHAT_IDLE_TIMEOUT_MS - 1);
+    svc.reapIdleSessions(1_000 + CHAT_HYGIENE_LIMITS.idleMs - 1);
     expect(terminated).toEqual([]);
   });
 
   it('ignoriert Nicht-Chat-Sessions (Feature/Shell)', () => {
     sessions = [mkSession({ id: 'feat', kind: 'feature', lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
     expect(terminated).toEqual([]);
   });
 });
@@ -485,6 +493,337 @@ describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
   });
 });
 
+// ---------- Kontext-Hygiene (Kostenprofil und Neustart-Angebot) ----------
+
+const MB = 1024 * 1024;
+/** Referenzfall 28.07.2026: 16,8 MB Verlauf, ~265'000 gelesene Tokens je Turn, ~300 erzeugte. */
+const REFERENZ_VERLAUF = Math.round(16.8 * MB);
+
+interface TurnVerbrauch {
+  cacheReadTokens: number;
+  outputTokens: number;
+  costMicros?: number;
+}
+
+/** Projekt + aktive Unterhaltung + steuerbare Session, Verlaufsgröße und Verbrauchsmeldungen. */
+function hygieneSetup() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-hygiene-'));
+  const db = openMemoryDatabase();
+  const chatRepo = new ChatRepo(db);
+  const sessionsRepo = new SessionRepo(db);
+  const projectId = new ProjectRepo(db).create({
+    name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+    verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+  }).id;
+  const convId = chatRepo.createConversation(projectId, 'work').id;
+
+  const ctx = {
+    db,
+    dataDir,
+    chatRepo,
+    sessionsRepo,
+    projectId,
+    convId,
+    /** Verbrauchsmeldungen des laufenden Turns (leer = die CLI hat nichts gemeldet). */
+    events: [] as Record<string, unknown>[],
+    live: undefined as LiveSession | undefined,
+    svc: null as unknown as ChatWorkService,
+  };
+
+  ctx.svc = new ChatWorkService({
+    projects: new ProjectRepo(db),
+    chatRepo,
+    sessions: sessionsRepo,
+    attention: new AttentionRepo(db),
+    executions: new ExecutionRepo(db),
+    settings: new SettingsRepo(db),
+    worktrees: {
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'wt', p.id, name),
+      remove: async () => {},
+      deleteBranch: async () => {},
+    } as unknown as WorktreeManager,
+    ptys: { forConversation: () => ctx.live } as unknown as PtySessionManager,
+    orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator,
+    dataDir,
+    telemetry: { eventsFor: () => ctx.events } as never,
+  });
+  ctx.svc.ensure = async () => ({ sessionId: 's-neu' });
+  vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
+  return ctx;
+}
+
+type Hygiene = ReturnType<typeof hygieneSetup>;
+
+const hygieneSession = (ctx: Hygiene, over: Record<string, unknown> = {}): LiveSession =>
+  ({
+    id: 's1',
+    projectId: ctx.projectId,
+    conversationId: ctx.convId,
+    cwd: '/tmp/demo',
+    claudeSessionId: 'claude-abc',
+    scrollback: 'Antwort des Agenten.\n',
+    machine: { state: { kind: 'turn_done' } },
+    ...over,
+  }) as unknown as LiveSession;
+
+/** Verlaufsgröße, die `historyBytesFor()` findet (`null` = kein Transkript auffindbar). */
+const setzeVerlauf = (bytes: number | null) => {
+  vi.mocked(locateTranscript).mockReturnValue(bytes === null ? null : '/tmp/transkript.jsonl');
+  vi.mocked(transcriptSize).mockReturnValue(bytes ?? 0);
+};
+
+/** Einen Turn beenden; `null` = für diesen Turn war nichts messbar. */
+const beendeTurn = (ctx: Hygiene, verbrauch: TurnVerbrauch | null) => {
+  ctx.events = verbrauch
+    ? [
+        {
+          sessionId: 's1',
+          requestId: `req-${Math.random()}`,
+          at: Date.now(),
+          origin: 'main',
+          model: 'claude-opus-5',
+          tokens: verbrauch.cacheReadTokens + verbrauch.outputTokens,
+          inputTokens: 0,
+          outputTokens: verbrauch.outputTokens,
+          cacheReadTokens: verbrauch.cacheReadTokens,
+          cacheCreationTokens: 0,
+          costMicros: verbrauch.costMicros ?? 890_000,
+        },
+      ]
+    : [];
+  // Ohne Meldungen UND ohne Ausgabe im Scrollback gibt der Turn nichts her → Verbrauch unbekannt.
+  const live = hygieneSession(ctx, verbrauch ? {} : { scrollback: '' });
+  ctx.svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+};
+
+const profil = (ctx: Hygiene) => ctx.svc.costProfileFor(ctx.chatRepo.getActive(ctx.projectId)!);
+
+/** Die Unterhaltung pausieren lassen: frühere Session mit Claude-ID, keine laufende. */
+const pausiere = (ctx: Hygiene) => {
+  ctx.sessionsRepo.create({
+    id: 's-alt', featureId: null, conversationId: ctx.convId, projectId: ctx.projectId,
+    kind: 'chat_work', pid: 123,
+  });
+  ctx.sessionsRepo.setClaudeSessionId('s-alt', 'claude-abc');
+};
+
+const TEUER: TurnVerbrauch = { cacheReadTokens: 265_673, outputTokens: 300 };
+const GUENSTIG: TurnVerbrauch = { cacheReadTokens: 12_000, outputTokens: 600 };
+
+/**
+ * Messung an der Turn-Grenze: der Verbrauch des Turns und die Verlaufsgröße werden für die
+ * Unterhaltung festgehalten — auch dann, wenn nichts messbar war (dann als „unbekannt",
+ * nie als 0, FR-016).
+ */
+describe('ChatWorkService — Kostenprofil an der Turn-Grenze', () => {
+  let ctx: Hygiene;
+
+  beforeEach(() => {
+    ctx = hygieneSetup();
+    setzeVerlauf(300 * 1024);
+  });
+
+  afterEach(() => {
+    ctx.db.close();
+    rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  it('vor dem ersten Turn gibt es kein Profil', () => {
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('Turn-Ende schreibt Verbrauch und Verlaufsgröße fest', () => {
+    setzeVerlauf(2 * MB);
+    beendeTurn(ctx, { cacheReadTokens: 90_000, outputTokens: 1_500, costMicros: 42_000 });
+
+    const p = profil(ctx)!;
+    expect(p.lastTurn).toEqual({
+      cacheReadTokens: 90_000,
+      outputTokens: 1_500,
+      costMicros: 42_000,
+      tokens: 91_500,
+      measured: true,
+    });
+    expect(p.historyBytes).toBe(2 * MB);
+    expect(p.ratio).toEqual({ kind: 'value', ratio: 60 });
+  });
+
+  it('ein Turn ohne messbaren Verbrauch landet als unbekannt, nicht als 0 (FR-016)', () => {
+    beendeTurn(ctx, null);
+
+    const p = profil(ctx)!;
+    expect(p.lastTurn).toEqual({
+      cacheReadTokens: null, outputTokens: null, costMicros: null, tokens: null, measured: false,
+    });
+    expect(p.ratio).toEqual({ kind: 'unknown' });
+    expect(p.reasons).toEqual([]);
+  });
+
+  it('die Zahlen beziehen sich stets auf den zuletzt beendeten Turn', () => {
+    beendeTurn(ctx, { cacheReadTokens: 90_000, outputTokens: 100 });
+    beendeTurn(ctx, { cacheReadTokens: 11_000, outputTokens: 800 });
+
+    expect(profil(ctx)!.lastTurn?.cacheReadTokens).toBe(11_000);
+  });
+
+  it('der Ringpuffer hält nur die letzten drei Turns', () => {
+    for (const v of [GUENSTIG, GUENSTIG, GUENSTIG, TEUER, TEUER, TEUER]) beendeTurn(ctx, v);
+    // Die günstigen Turns sind herausgefallen — drei teure in Folge lösen das Verhältnis aus.
+    expect(profil(ctx)!.reasons).toContain('context_ratio');
+
+    for (const v of [TEUER, TEUER, TEUER, GUENSTIG]) beendeTurn(ctx, v);
+    // Ein günstiger Turn im Fenster genügt, damit das Verhältnis nicht mehr gilt.
+    expect(profil(ctx)!.reasons).not.toContain('context_ratio');
+  });
+
+  it('nicht ermittelbare Verlaufsgröße bleibt unbekannt und löst nichts aus', () => {
+    setzeVerlauf(null);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.historyBytes).toBeNull();
+    expect(p.reasons).toEqual([]);
+  });
+
+  it('nach einem Neustart beginnt die Bewertung der frischen Unterhaltung bei null (FR-012)', async () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    expect(profil(ctx)!.offerOpen).toBe(true);
+
+    await ctx.svc.restart(ctx.projectId, { confirm: true });
+
+    expect(ctx.chatRepo.getActive(ctx.projectId)!.id).not.toBe(ctx.convId);
+    expect(profil(ctx)).toBeNull();
+  });
+});
+
+/**
+ * Der zweite Auslöser derselben Entscheidung: nicht „5 Minuten Leerlauf", sondern „der
+ * Verlauf ist teuer geworden". Gemessen am Fall vom 28.07.2026 — dort lasen sechs Turns je
+ * ~265'000 Tokens Kontext, um 100–400 Tokens zu erzeugen.
+ */
+describe('ChatWorkService — Neustart-Angebot aus Kosten', () => {
+  let ctx: Hygiene;
+
+  beforeEach(() => {
+    ctx = hygieneSetup();
+    setzeVerlauf(300 * 1024);
+  });
+
+  afterEach(() => {
+    ctx.db.close();
+    rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  it('bietet bei großem Verlauf an, ohne dass eine Leerlaufzeit abläuft (AC1/SC-001)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['history_size']);
+    expect(p.reasons).not.toContain('idle');
+    expect(p.message).toContain('16,8 MB');
+  });
+
+  it('bietet bei hohem gelesenen Kontext an, obwohl der Verlauf klein ist (AC2)', () => {
+    setzeVerlauf(200 * 1024);
+    beendeTurn(ctx, TEUER);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['context_per_turn']);
+    expect(p.message).toContain("265'673");
+  });
+
+  it('während ein Turn arbeitet, entsteht kein Angebot (AC5/FR-007)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    const arbeitend = hygieneSession(ctx, { machine: { state: { kind: 'working' } } });
+
+    ctx.svc.handleStatusChange(arbeitend, [] as never);
+
+    // Auch der Abruf über GET /chat erzeugt nichts — es gibt noch keine Turn-Grenze.
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('ein frischer Chat mit kurzem Verlauf bekommt über mehrere Turns nichts angeboten (AC6/SC-004)', () => {
+    setzeVerlauf(400 * 1024);
+    for (let i = 0; i < 9; i++) beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(false);
+    expect(p.reasons).toEqual([]);
+    expect(p.message).toBeNull();
+  });
+
+  it('Ablehnen unterdrückt das Angebot; im selben Turn erscheint kein zweites (AC4/SC-006)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    expect(profil(ctx)!.offerOpen).toBe(true);
+
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(false);
+    expect(p.reasons).toEqual([]);
+    expect(p.message).toBeNull();
+    // Die Zahlen bleiben ablesbar — abgelehnt ist das Angebot, nicht die Messung (FR-014).
+    expect(p.lastTurn?.cacheReadTokens).toBe(265_673);
+  });
+
+  it('nach der Ablehnung bleibt es still, solange der Verlauf nur wenig wächst (FR-009)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    setzeVerlauf(REFERENZ_VERLAUF + 2 * MB);
+    beendeTurn(ctx, GUENSTIG);
+    expect(profil(ctx)!.offerOpen).toBe(false);
+  });
+
+  it('nach Wachstum um eine weitere Schwellenstufe wird erneut angeboten (FR-009)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    setzeVerlauf(REFERENZ_VERLAUF + CHAT_HYGIENE_LIMITS.historyBytes);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['history_size']);
+  });
+
+  it('Ablehnen ohne vorherige Messung tut nichts (kein Zustand aus dem Nichts)', () => {
+    ctx.svc.dismissOffer(ctx.projectId);
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('pausiert UND teuer ergibt EINEN Text, der beide Gründe nennt (AC7/FR-013)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    pausiere(ctx);
+
+    const p = profil(ctx)!;
+    expect(ctx.svc.workPaused(ctx.chatRepo.getActive(ctx.projectId)!)).toBe(true);
+    expect(p.reasons).toEqual(['idle', 'history_size', 'context_per_turn']);
+    expect(p.message).toContain('keine Aktivität');
+    expect(p.message).toContain('16,8 MB');
+    expect(p.message).toContain("265'673");
+    expect(p.message?.match(/\./g)).toHaveLength(1); // ein Satz, nicht zwei Karten-Texte
+  });
+
+  it('pausiert und günstig nennt nur den Leerlauf', () => {
+    setzeVerlauf(400 * 1024);
+    beendeTurn(ctx, GUENSTIG);
+    pausiere(ctx);
+
+    const p = profil(ctx)!;
+    expect(p.reasons).toEqual(['idle']);
+    expect(p.offerOpen).toBe(false); // die bestehende Karte trägt den Leerlauf, kein Streifen
+  });
+});
+
 /**
  * Doppelstart-Schutz. Zwischen „läuft schon eine Session?" und dem Spawn liegt ein
  * `await` auf die Worktree-Anlage — zwei gleichzeitige Aufrufe lasen beide „keine"
@@ -596,7 +935,7 @@ describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
   });
 
   it('verschont eine Session, die Ausgabe liefert, obwohl der Automat sie als ready führt', () => {
-    const now = CHAT_IDLE_TIMEOUT_MS * 10;
+    const now = CHAT_HYGIENE_LIMITS.idleMs * 10;
     sessions = [
       {
         id: 'denkt-nach', kind: 'chat_work', exited: false, projectId, conversationId: 'c1',
