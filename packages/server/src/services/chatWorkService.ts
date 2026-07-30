@@ -31,7 +31,7 @@ import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import { ChatError } from './chatService.js';
-import { bus } from '../events.js';
+import { bus, emitAttentionResolved } from '../events.js';
 
 /**
  * Ein Projekt-Chat ohne Aktivität für diese Dauer wird automatisch beendet, damit
@@ -341,8 +341,12 @@ export class ChatWorkService {
     });
 
     if (status === 'working') {
-      this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input', 'permission_request'] });
-      bus.emitEvent('attention_resolved', session.id);
+      emitAttentionResolved(
+        this.deps.attention.resolveFor({
+          sessionId: session.id,
+          kinds: ['awaiting_input', 'permission_request'],
+        }),
+      );
     }
     // Zustandsgekoppelte Bereinigung (US1): überholte Meldungen (auch der frühere „Agent-Fehler"
     // dieser Unterhaltung) auflösen, sobald wieder gearbeitet wird. Nicht im Warte-Übergang, damit
@@ -464,8 +468,7 @@ export class ChatWorkService {
     this.turnStartedAt.delete(session.id);
     this.turnTranscriptOffset.delete(session.id);
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
-    this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
-    bus.emitEvent('attention_resolved', session.id);
+    emitAttentionResolved(this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] }));
     const intentional = this.terminating.delete(session.id); // Neustart-Termination → kein Alarm
     if (exitCode !== 0 && !intentional) {
       const item = this.deps.attention.raise({

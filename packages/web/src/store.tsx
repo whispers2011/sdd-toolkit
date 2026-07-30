@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import type { AttentionItem, Feature, FeatureActionContext, MergeQueueItem } from '@sdd/shared';
-import { isFeatureComplete } from '@sdd/shared';
+import { applyAttentionResolved, isFeatureComplete } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
 
 export type View =
@@ -154,13 +154,9 @@ function reducer(state: UiState, action: Action): UiState {
     }
     case 'attention_resolved': {
       if (!state.app) return state;
-      // id kann eine Attention-ID oder eine Session-ID (resolveFor) sein.
       return {
         ...state,
-        app: {
-          ...state.app,
-          attention: state.app.attention.filter((a) => a.id !== action.id && a.sessionId !== action.id),
-        },
+        app: { ...state.app, attention: applyAttentionResolved(state.app.attention, action.id) },
       };
     }
     case 'queue_updated': {

@@ -783,12 +783,33 @@ export class AttentionRepo {
     return item;
   }
 
-  resolve(id: string): void {
-    this.db.prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(Date.now(), id);
+  /**
+   * Ein Item auflösen. Sendet kein Ereignis — das ist Sache des Aufrufers
+   * (`emitAttentionResolved`).
+   *
+   * @returns true genau dann, wenn dieser Aufruf den Übergang offen → aufgelöst bewirkt hat.
+   *          false bei unbekannter id und bei einem bereits aufgelösten Item.
+   */
+  resolve(id: string): boolean {
+    const res = this.db
+      .prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL')
+      .run(Date.now(), id);
+    return res.changes > 0;
   }
 
-  /** Offene Items einer Session/eines Features/einer Unterhaltung auflösen (z.B. Input wurde gegeben). */
-  resolveFor(filter: { sessionId?: string; featureId?: string; conversationId?: string; kinds?: AttentionKind[] }): void {
+  /**
+   * Offene Items einer Session/eines Features/einer Unterhaltung auflösen (z.B. Input wurde gegeben).
+   * Sendet kein Ereignis — das ist Sache des Aufrufers (`emitAttentionResolved`).
+   *
+   * @returns die IDs der Items, deren resolved_at durch *diesen* Aufruf gesetzt wurde;
+   *          leer, wenn keines betroffen war. Bereits aufgelöste Items erscheinen nicht.
+   */
+  resolveFor(filter: {
+    sessionId?: string;
+    featureId?: string;
+    conversationId?: string;
+    kinds?: AttentionKind[];
+  }): string[] {
     const conds: string[] = ['resolved_at IS NULL'];
     const params: unknown[] = [];
     if (filter.sessionId) {
@@ -807,7 +828,11 @@ export class AttentionRepo {
       conds.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
       params.push(...filter.kinds);
     }
-    this.db.prepare(`UPDATE attention SET resolved_at=? WHERE ${conds.join(' AND ')}`).run(Date.now(), ...params);
+    return (
+      this.db
+        .prepare(`UPDATE attention SET resolved_at=? WHERE ${conds.join(' AND ')} RETURNING id`)
+        .all(Date.now(), ...params) as { id: string }[]
+    ).map((r) => r.id);
   }
 
   get(id: string): AttentionItem | null {

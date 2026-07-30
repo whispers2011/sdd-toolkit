@@ -44,7 +44,7 @@ import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/command
 import { TELEMETRY_GRACE_MS, type TelemetryStore } from '../telemetry/telemetryStore.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
-import { bus } from '../events.js';
+import { bus, emitAttentionResolved } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
@@ -441,8 +441,9 @@ export class Orchestrator {
 
   /** Freigabe/Verwerfen/Neustart einer Phase löst offene Gate-Meldungen des Features auf. */
   private resolveGateAttention(featureId: string): void {
-    this.deps.attention.resolveFor({ featureId, kinds: ['phase_gate_failed', 'approval_required'] });
-    bus.emitEvent('attention_resolved', featureId);
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({ featureId, kinds: ['phase_gate_failed', 'approval_required'] }),
+    );
   }
 
   /** Fehlgeschlagenen Phasenstart zurückrollen (running → idle) und ein „braucht dich"-Item erzeugen. */
@@ -779,11 +780,12 @@ export class Orchestrator {
 
     // Wieder aktiv → offene Aufmerksamkeits-Items dieser Session sind erledigt.
     if (status === 'working') {
-      this.deps.attention.resolveFor({
-        sessionId: session.id,
-        kinds: ['awaiting_input', 'permission_request'],
-      });
-      bus.emitEvent('attention_resolved', session.id);
+      emitAttentionResolved(
+        this.deps.attention.resolveFor({
+          sessionId: session.id,
+          kinds: ['awaiting_input', 'permission_request'],
+        }),
+      );
     }
     // Zustandsgekoppelte Bereinigung: jede jetzt überholte Meldung auflösen (auch feature-weit,
     // z.B. „Agent-Fehler" sobald wieder gearbeitet wird). Nur in Nicht-Warte-Übergängen, damit
@@ -1246,8 +1248,7 @@ export class Orchestrator {
     }
     this.deps.sessions.end(session.id);
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
-    this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] });
-    bus.emitEvent('attention_resolved', session.id);
+    emitAttentionResolved(this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] }));
     if (session.featureId) {
       // Session ist tot → die injizierte Präambel steckt nicht mehr garantiert im
       // Kontext der (evtl. frisch gestarteten) Nachfolge-Session → einmalig neu erlauben.
@@ -1313,8 +1314,7 @@ export class Orchestrator {
     // integration-Stage geprüft.
     const featureStages = new Map(this.deps.features.listAll().map((f) => [f.id, f.integration]));
     for (const stale of findStaleOnBoot(this.deps.attention.listOpen(), featureStages)) {
-      this.deps.attention.resolve(stale.id);
-      bus.emitEvent('attention_resolved', stale.id);
+      if (this.deps.attention.resolve(stale.id)) emitAttentionResolved([stale.id]);
     }
     if (orphaned > 0) {
       console.log(`[reaper] ${orphaned} verwaiste Executions bereinigt`);
@@ -1328,8 +1328,7 @@ export class Orchestrator {
   reconcileOpenAttention(): void {
     const snap = this.buildReconcileSnapshot();
     for (const stale of findStaleRuntime(this.deps.attention.listOpen(), snap)) {
-      this.deps.attention.resolve(stale.id);
-      bus.emitEvent('attention_resolved', stale.id);
+      if (this.deps.attention.resolve(stale.id)) emitAttentionResolved([stale.id]);
     }
   }
 

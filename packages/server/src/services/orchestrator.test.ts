@@ -92,7 +92,7 @@ function setup(
               enabledPhases: ['specify', 'plan'],
             },
     },
-    attention: { raise, resolveFor: vi.fn(), listOpen: () => [], resolve: vi.fn() },
+    attention: { raise, resolveFor: vi.fn(() => []), listOpen: () => [], resolve: vi.fn(() => true) },
     executions: {
       finish,
       reapOrphans: () => 0,
@@ -425,7 +425,7 @@ describe('Orchestrator — Telemetrie schlägt Transkript', () => {
     const deps = {
       features: { get: () => makeFeature(), savePhases: vi.fn(), setTasks: vi.fn() },
       projects: { get: () => ({ id: 'p1', path: '/p', defaultBranch: 'main', enabledPhases: [] }) },
-      attention: { raise: vi.fn(), resolveFor: vi.fn(), listOpen: () => [] },
+      attention: { raise: vi.fn(), resolveFor: vi.fn(() => []), listOpen: () => [] },
       executions: { finishWithUsage, updateTelemetry, recordTranscriptEnd: vi.fn(), finish: vi.fn() },
       sessions: { end: vi.fn() },
       settings: {
@@ -821,7 +821,7 @@ describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
     const deps = {
       features: { get: () => makeFeature(), savePhases: vi.fn() },
       projects: { get: () => ({ id: 'p1', path: '/p', defaultBranch: 'main', enabledPhases: [] }) },
-      attention: { raise, resolveFor: vi.fn(), listOpen: () => [] },
+      attention: { raise, resolveFor: vi.fn(() => []), listOpen: () => [] },
       executions: { start: vi.fn(), finishWithUsage: vi.fn(), updateTelemetry: vi.fn() },
       sessions: { end: vi.fn() },
       settings: {

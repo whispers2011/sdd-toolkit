@@ -67,7 +67,7 @@ import {
   writeFeatureArtifact,
 } from '../services/featureArtifacts.js';
 import type { FeatureDocumentsService, IncomingDocument } from '../services/featureDocuments.js';
-import { bus, BUS_EVENT_NAMES } from '../events.js';
+import { bus, BUS_EVENT_NAMES, emitAttentionResolved } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 import { registerReviewRoutes } from './reviewRoutes.js';
 import { registerWorktreeRoutes } from './worktreeRoutes.js';
@@ -817,7 +817,7 @@ export async function buildServer(deps: ApiDeps) {
       deps.features.setIntegrationTarget(feature.id, null);
       deps.features.savePhases(feature.id, reopenLastPhase(feature.phases).phases);
       deps.features.setReviewRejected(feature.id, Date.now());
-      deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] });
+      emitAttentionResolved(deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] }));
       const openComments = deps.reviewComments
         .listForFeature(feature.id)
         .filter((c) => c.status === 'open');
@@ -961,8 +961,7 @@ export async function buildServer(deps: ApiDeps) {
     return deps.attention.listOpen();
   });
   app.post<{ Params: { id: string } }>('/api/attention/:id/resolve', (req) => {
-    deps.attention.resolve(req.params.id);
-    bus.emitEvent('attention_resolved', req.params.id);
+    if (deps.attention.resolve(req.params.id)) emitAttentionResolved([req.params.id]);
     return { ok: true };
   });
 

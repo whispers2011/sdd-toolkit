@@ -13,7 +13,7 @@ import { hasUnmergedChanges } from './unmergedChanges.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
-import { bus } from '../events.js';
+import { bus, emitAttentionResolved } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
 
@@ -356,7 +356,7 @@ export class MergeQueueService {
       forceVerify = true;
     }
 
-    this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] });
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] }));
     this.enqueue(this.mustFeature(featureId), { forceVerify });
   }
 
@@ -368,10 +368,12 @@ export class MergeQueueService {
    */
   retry(featureId: string): void {
     const feature = this.mustFeature(featureId);
-    this.deps.attention.resolveFor({
-      featureId,
-      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
-    });
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({
+        featureId,
+        kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
+      }),
+    );
     this.setStage(feature, 'none');
     void this.beginIntegration(featureId).then((r) => {
       if (!r.started && r.reason) {
@@ -705,10 +707,12 @@ export class MergeQueueService {
     this.deps.ptys.snapshots.remove(feature.id);
     const item = this.deps.queue.listByProject(feature.projectId).find((i) => i.featureId === feature.id);
     if (item) this.deps.queue.remove(item.id);
-    this.deps.attention.resolveFor({
-      featureId: feature.id,
-      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed', 'review_due'],
-    });
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({
+        featureId: feature.id,
+        kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed', 'review_due'],
+      }),
+    );
     this.setStage(feature, 'merged');
     this.emitQueue(feature.projectId);
   }
@@ -733,8 +737,7 @@ export class MergeQueueService {
       if (it.featureId !== feature.id) continue;
       const wanted = STAGE_FOR_KIND[it.kind];
       if (wanted !== undefined && wanted !== stage) {
-        this.deps.attention.resolve(it.id);
-        bus.emitEvent('attention_resolved', it.id);
+        if (this.deps.attention.resolve(it.id)) emitAttentionResolved([it.id]);
       }
     }
   }

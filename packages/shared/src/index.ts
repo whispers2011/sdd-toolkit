@@ -28,5 +28,6 @@ export * from './lifecycleCatalog.js';
 export * from './plausibility.js';
 export * from './worktreeStatus.js';
 export * from './actionPolicy.js';
+export * from './attentionList.js';
 export * from './jiraSprints.js';
 export * from './jiraContent.js';
