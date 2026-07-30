@@ -670,6 +670,59 @@ export interface WorktreeOverview {
   collectedAt: number;
 }
 
+// ---------- Betriebsspuren: Lebenszeichen, Ausfall, Protokoll (Feature „server-ausfaelle-sichtbar-machen") ----------
+
+/** Lebenszeichen des Servers; liegt als eine JSON-Zeile in `$SDD_DATA_DIR/heartbeat.json`. */
+export interface Heartbeat {
+  /** Zeitpunkt des Schreibens (ms seit Epoche). */
+  ts: number;
+  /** Kennung des schreibenden Serverlaufs; wechselt bei jedem Start. */
+  instanceId: string;
+  /** true = der Server hat sich geordnet verabschiedet; eine Lücke danach ist kein Ausfall. */
+  clean: boolean;
+  /** Startzeitpunkt der schreibenden Instanz (Laufzeit im Abgangseintrag). */
+  startedAt: number;
+}
+
+/** Festgehaltener Ausfall — so steht er im Protokoll und so geht er an die Oberfläche. */
+export interface OutageRecord {
+  /** Letztes Lebenszeichen vor dem Ausfall; null, wenn das Fenster nicht bestimmbar ist. */
+  from: number | null;
+  /** Startzeitpunkt der neuen Instanz. */
+  to: number;
+  /** Dauer der Lücke; null bei nicht bestimmbarem Fenster. */
+  durationMs: number | null;
+  /** Zahl der zum Ausfallzeitpunkt noch als laufend geführten Läufe (über alle Projekte). */
+  affectedRuns: number;
+  /** true = kein Abgangseintrag vorhanden → stiller Abgang (FR-014). */
+  silent: boolean;
+  /** true = Zeitfenster nicht bestimmbar, etwa weil die Uhr rückwärts sprang (D15). */
+  undetermined: boolean;
+}
+
+export type OperationsEntryKind = 'startup' | 'shutdown' | 'uncaught' | 'exit' | 'outage';
+
+/** Eine Zeile in `$SDD_DATA_DIR/operations.jsonl` — ein Betriebsereignis (Contract C2). */
+export interface OperationsEntry {
+  /** Zeitpunkt des Ereignisses, ms seit Epoche. */
+  ts: number;
+  /** Kennung des Serverlaufs; verbindet `startup` mit seinem Abgang. */
+  instanceId: string;
+  kind: OperationsEntryKind;
+  /** kind='shutdown': empfangenes Signal, z. B. 'SIGINT'. */
+  signal?: string;
+  /** kind='uncaught': Fehlerbeschreibung (Message + erste Zeilen des Stacks, gekürzt). */
+  error?: string;
+  /** kind='exit': Rückgabewert des Prozesses. */
+  exitCode?: number;
+  /** kind='shutdown' | 'exit': Laufzeit der Instanz in ms. */
+  uptimeMs?: number;
+  /** kind='outage': der nachgetragene Ausfall (FR-014). */
+  outage?: OutageRecord;
+  /** kind='startup': Prozesskennung zur Zuordnung. */
+  pid?: number;
+}
+
 export function resolveAutomation(
   global: AutomationSettings,
   project: Partial<AutomationSettings>,

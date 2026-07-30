@@ -597,6 +597,22 @@ export class ExecutionRepo {
       .run(path, offsetEnd, id);
   }
 
+  /**
+   * Die aktuell als laufend geführten Läufe. Zwei Verwendungen, beide im Feature
+   * „Server-Ausfälle sichtbar machen": die betroffenen Läufe eines Ausfalls (FR-005)
+   * und die Zahl gleichzeitig arbeitender Features (D12).
+   *
+   * Reihenfolge ist entscheidend: nach `reapOrphans()` liefert diese Methode nichts
+   * mehr, weil der Reaper alles auf `orphaned` setzt. Wer den Ausfall zählen will,
+   * muss VORHER lesen (D3).
+   */
+  listRunning(): ExecutionRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM executions WHERE status='running' ORDER BY started_at ASC`)
+      .all();
+    return (rows as Record<string, unknown>[]).map((r) => this.map(r));
+  }
+
   /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
   reapOrphans(): number {
     return this.db
