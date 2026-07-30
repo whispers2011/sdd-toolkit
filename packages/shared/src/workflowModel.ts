@@ -18,6 +18,9 @@ import type {
   Feature,
   FeaturePhase,
   IntegrationStage,
+  LifecycleStageId,
+  LifecycleTrigger,
+  LifecycleTriggerKind,
 } from './types.js';
 
 // ---------- Phasen ----------
@@ -143,6 +146,63 @@ export const AGENT_TRIGGER_META: Record<AgentTriggerKind, AgentTriggerMeta> = {
   manual: { label: 'Nur manuell', short: 'manuell', where: 'manual' },
 };
 
+// ---------- Lebenszyklus-Schritte ----------
+
+export interface LifecycleTriggerMeta {
+  /** Titel im Auslöser-Katalog (Auswahlfeld, Workflow-Übersicht). */
+  title: string;
+  /** Kompaktes Chip-Label; bei Phasen-/Stufen-Arten der Präfix vor dem Phasen-/Stufentitel. */
+  short: string;
+}
+
+/**
+ * Beschriftung je Auslöser-Art der Lebenszyklus-Schritte. Über
+ * `Record<LifecycleTriggerKind, …>` getypt ⇒ eine neue Art erzwingt hier einen
+ * Eintrag und erscheint damit automatisch in der Workflow-Übersicht.
+ */
+export const LIFECYCLE_TRIGGER_META: Record<LifecycleTriggerKind, LifecycleTriggerMeta> = {
+  before_worktree_create: { title: 'Vor Worktree-Anlage', short: 'vor Worktree' },
+  after_worktree_create: { title: 'Nach Worktree-Anlage', short: 'nach Worktree' },
+  before_phase: { title: 'Vor Phase …', short: 'vor' },
+  after_phase: { title: 'Nach Phase …', short: 'nach' },
+  before_stage: { title: 'Vor Stufe …', short: 'vor' },
+  after_stage: { title: 'Nach Stufe …', short: 'nach' },
+};
+
+/** Titel je Integrations-Stufe — dieselben Labels wie in {@link INTEGRATION_STEPS}. */
+export function stageTitle(stage: LifecycleStageId): string {
+  return INTEGRATION_STEPS.find((s) => s.id === stage)?.label ?? stage;
+}
+
+/**
+ * Voller Titel eines KONKRETEN Auslösers (Meldungstexte, Verwaltung) — z. B.
+ * „Nach Worktree-Anlage" oder „Vor Phase „Planen"". Immer aus
+ * {@link LIFECYCLE_TRIGGER_META}, {@link PHASE_META} und {@link INTEGRATION_STEPS}
+ * abgeleitet, nie aus einem lokalen Literal.
+ */
+export function lifecycleTriggerTitle(t: LifecycleTrigger): string {
+  const when = t.kind.startsWith('before_') ? 'Vor' : 'Nach';
+  if ((t.kind === 'before_phase' || t.kind === 'after_phase') && t.phase) {
+    return `${when} Phase „${PHASE_META[t.phase].label}"`;
+  }
+  if ((t.kind === 'before_stage' || t.kind === 'after_stage') && t.stage) {
+    return `${when} Stufe „${stageTitle(t.stage)}"`;
+  }
+  return LIFECYCLE_TRIGGER_META[t.kind].title;
+}
+
+/** Kompaktes Chip-Label eines konkreten Auslösers (`vor Worktree`, `nach Planen`). */
+export function lifecycleTriggerChip(t: LifecycleTrigger): string {
+  const meta = LIFECYCLE_TRIGGER_META[t.kind];
+  if ((t.kind === 'before_phase' || t.kind === 'after_phase') && t.phase) {
+    return `${meta.short} ${PHASE_META[t.phase].label}`;
+  }
+  if ((t.kind === 'before_stage' || t.kind === 'after_stage') && t.stage) {
+    return `${meta.short} ${stageTitle(t.stage)}`;
+  }
+  return meta.short;
+}
+
 // ---------- Integration-Pipeline ----------
 
 export type IntegrationTone = 'idle' | 'progress' | 'human' | 'escalation' | 'done';
@@ -228,7 +288,8 @@ export function featureProgressLabel(feature: Pick<Feature, 'phases' | 'integrat
  * Automation-Flags und Stages sind jedoch getypt (Compile-Fehler bei Umbenennung).
  */
 export interface IntegrationStep {
-  id: string;
+  /** Identität der Stufe; zugleich der Bezug der Stufen-Auslöser (LifecycleStageId). */
+  id: LifecycleStageId;
   label: string;
   detail: string;
   icon: string;

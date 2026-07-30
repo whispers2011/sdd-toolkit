@@ -16,6 +16,7 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
   phase_gate_failed: { label: 'Phasen-Gate FAIL', icon: '🚧', tone: 'text-red-400' },
   approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
+  lifecycle_step_failed: { label: 'Schritt fehlgeschlagen', icon: '⛔', tone: 'text-red-400' },
   // Datenbefunde: bernsteinfarben, denn es ist nichts kaputt, es ist etwas unklar.
   // Rot bleibt für „rot geworden" reserviert (verify_failed, gate_failed) — ausser
   // bei metering_conflict, wo nachweislich eine von zwei Zahlen falsch ist.

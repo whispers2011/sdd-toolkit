@@ -12,6 +12,7 @@ import {
   SettingsRepo,
 } from './db/repos.js';
 import { AgentRepo, AgentRunRepo } from './db/agentRepo.js';
+import { LifecycleStepRepo } from './db/lifecycleStepRepo.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { PlausibilityRepo } from './db/plausibilityRepo.js';
 import { PlausibilityService } from './services/plausibilityService.js';
@@ -23,6 +24,7 @@ import { FeatureDocumentsService } from './services/featureDocuments.js';
 import { ChatService } from './services/chatService.js';
 import { ChatWorkService } from './services/chatWorkService.js';
 import { AgentGateService } from './services/agentGateService.js';
+import { LifecycleStepService } from './services/lifecycleStepService.js';
 import { WorktreeManager } from './git/worktrees.js';
 import { PtySessionManager } from './pty/sessionManager.js';
 import { Orchestrator } from './services/orchestrator.js';
@@ -57,6 +59,7 @@ async function main(): Promise<void> {
   const settings = new SettingsRepo(db);
   const agents = new AgentRepo(db);
   const agentRuns = new AgentRunRepo(db);
+  const lifecycleStepRepo = new LifecycleStepRepo(db);
   const reviewComments = new ReviewCommentRepo(db);
   const knowledge = new KnowledgeRepo(db);
   const worktrees = new WorktreeManager(config.dataDir);
@@ -114,6 +117,15 @@ async function main(): Promise<void> {
     port: config.port,
   });
 
+  // Lebenszyklus-Schritte: eigene Shell-Kommandos an den Punkten des Feature-
+  // Lebenszyklus. Vor dem Orchestrator und der Merge-Queue, die ihn beide einhängen.
+  const lifecycleSteps = new LifecycleStepService({
+    steps: lifecycleStepRepo,
+    executions,
+    attention,
+    dataDir: config.dataDir,
+  });
+
   // Feature-Dokumente (Ablage + Manifest); vor dem Orchestrator, der den
   // Dokument-Verweis in jeden Phasenauftrag hängt.
   const featureDocuments = new FeatureDocumentsService({ projects, features });
@@ -141,6 +153,7 @@ async function main(): Promise<void> {
     knowledge: knowledgeService,
     featureDocuments,
     agentGate,
+    lifecycleSteps,
     dataDir: config.dataDir,
     telemetry,
     plausibility,
@@ -156,6 +169,7 @@ async function main(): Promise<void> {
     worktrees,
     ptys,
     agentGate,
+    lifecycleSteps,
     dataDir: config.dataDir,
     port: config.port,
   });
@@ -251,6 +265,8 @@ async function main(): Promise<void> {
     agents,
     agentRuns,
     agentGate,
+    lifecycleStepRepo,
+    lifecycleSteps,
     reviewComments,
     knowledge,
     knowledgeService,

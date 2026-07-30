@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   FEATURE_PHASES,
+  INTEGRATION_STAGE_IDS,
   LEVEL2_DEFAULTS,
+  LIFECYCLE_TRIGGER_KINDS,
   OPTIONAL_PHASES,
   type FeaturePhase,
 } from './types.js';
@@ -10,10 +12,12 @@ import {
   AUTOMATION_META,
   INTEGRATION_STAGE_META,
   INTEGRATION_STEPS,
+  LIFECYCLE_TRIGGER_META,
   PHASE_META,
   featureProgressLabel,
   isOptionalPhase,
   orderedEnabledPhases,
+  stageTitle,
 } from './workflowModel.js';
 import type { Feature, IntegrationStage, PhaseState, PhaseStatus } from './types.js';
 
@@ -68,6 +72,27 @@ describe('workflowModel deckt die Domäne vollständig ab', () => {
     }
     // Genau ein terminaler Erfolgsschritt.
     expect(INTEGRATION_STEPS.filter((s) => s.terminal)).toHaveLength(1);
+  });
+
+  it('kennt jede Lebenszyklus-Auslöser-Art mit nicht-leerem Titel und Chip', () => {
+    for (const kind of LIFECYCLE_TRIGGER_KINDS) {
+      const meta = LIFECYCLE_TRIGGER_META[kind];
+      expect(meta, `LIFECYCLE_TRIGGER_META fehlt für ${kind}`).toBeDefined();
+      expect(meta.title.length).toBeGreaterThan(0);
+      expect(meta.short.length).toBeGreaterThan(0);
+    }
+    // Kein Eintrag zu viel — sonst zeigt die Übersicht eine Art, die es nicht gibt.
+    expect(Object.keys(LIFECYCLE_TRIGGER_META).sort()).toEqual([...LIFECYCLE_TRIGGER_KINDS].sort());
+  });
+
+  it('INTEGRATION_STEPS-IDs sind exakt INTEGRATION_STAGE_IDS (Reihenfolge inklusive)', () => {
+    expect(INTEGRATION_STEPS.map((s) => s.id)).toEqual([...INTEGRATION_STAGE_IDS]);
+  });
+
+  it('liefert für jede Stufen-ID einen nicht-leeren Titel', () => {
+    for (const stage of INTEGRATION_STAGE_IDS) {
+      expect(stageTitle(stage).length).toBeGreaterThan(0);
+    }
   });
 });
 

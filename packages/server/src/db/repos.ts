@@ -399,6 +399,11 @@ export interface ExecutionStartInput {
   kind: ExecutionRecord['kind'];
   phase: WorkflowPhase | null;
   logPath: string | null;
+  /**
+   * Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start.
+   * Hält den Lauf lesbar, nachdem der Schritt umbenannt oder gelöscht wurde.
+   */
+  label?: string | null;
   /** Transkript-Byte-Offset beim Start (Usage-Attribution, nur Phasen). */
   transcriptOffsetStart?: number | null;
   /** Snapshot der aktiven Optimierungs-Strategie (nur Phasen). */
@@ -451,15 +456,16 @@ export class ExecutionRepo {
     const id = nanoid(10);
     this.db
       .prepare(
-        `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, log_path,
+        `INSERT INTO executions (id, project_id, feature_id, kind, label, phase, status, started_at, log_path,
            transcript_offset_start, opt_context_strategy, opt_compression)
-         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         e.projectId,
         e.featureId,
         e.kind,
+        e.label ?? null,
         e.phase,
         Date.now(),
         e.logPath,
@@ -646,6 +652,7 @@ export class ExecutionRepo {
       projectId: r.project_id as string,
       featureId: r.feature_id as string | null,
       kind: r.kind as ExecutionRecord['kind'],
+      label: (r.label as string | null) ?? null,
       phase: r.phase as ExecutionRecord['phase'],
       status: r.status as ExecutionRecord['status'],
       startedAt: r.started_at as number,

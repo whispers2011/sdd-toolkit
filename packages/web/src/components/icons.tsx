@@ -453,6 +453,15 @@ export function WorktreeIcon(props: IconProps) {
   );
 }
 
+/** Lebenszyklus-Schritte (Treppe): eigene Kommandos an den Punkten des Ablaufs. */
+export function StepsIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="3 19 8 19 8 14 13 14 13 9 18 9 18 4 21 4" />
+    </Base>
+  );
+}
+
 /** Tool-Einstellungen (Zahnrad). */
 export function SettingsIcon(props: IconProps) {
   return (

@@ -24,6 +24,7 @@ import {
   SessionRepo,
   SettingsRepo,
 } from '../db/repos.js';
+import { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
 import { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { FeatureDocumentsService } from '../services/featureDocuments.js';
 import { buildAllowedOrigins } from './originGuard.js';
@@ -996,5 +997,322 @@ describe('Chat-Routen — Kostenprofil und Neustart-Angebot', () => {
     expect(dismissed).toEqual([]);
 
     expect((await getChat('gibt-es-nicht')).status).toBe(404);
+  });
+});
+
+// ---------- Lebenszyklus-Schritte (Verwaltung + per-Feature-Auswahl) ----------
+
+describe('Lebenszyklus-Schritt-Routen', () => {
+  let app: FastifyInstance;
+  let db: DB;
+  let features: FeatureRepo;
+  let steps: LifecycleStepRepo;
+  let projectId: string;
+  let featureId: string;
+  let dataDir: string;
+
+  const body = (over: Record<string, unknown> = {}) => ({
+    projectId: null,
+    name: 'Abhängigkeiten installieren',
+    command: 'pnpm install --frozen-lockfile',
+    trigger: { kind: 'after_worktree_create' },
+    blocking: true,
+    timeoutMs: null,
+    enabled: true,
+    sortOrder: 0,
+    ...over,
+  });
+
+  beforeEach(async () => {
+    db = openMemoryDatabase();
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-api-steps-'));
+    const projects = new ProjectRepo(db);
+    features = new FeatureRepo(db);
+    steps = new LifecycleStepRepo(db);
+    projectId = projects.create({
+      name: 'Demo',
+      path: dataDir,
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: ENABLED,
+      verifyCommands: [],
+      automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+    featureId = features.create({
+      projectId,
+      name: 'demo-eins',
+      branch: 'feature/demo-eins',
+      worktreePath: join(dataDir, 'wt'),
+      phases: initialPhases(ENABLED),
+      integration: 'none',
+      integrationTarget: null,
+      automation: {},
+      optimization: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    }).id;
+
+    app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
+      projects,
+      features,
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      queue: new QueueRepo(db),
+      settings: new SettingsRepo(db),
+      reviewComments: new ReviewCommentRepo(db),
+      lifecycleStepRepo: steps,
+      lifecycleSteps: {},
+      telemetry: new TelemetryStore({ autoSweep: false }),
+      dataDir,
+      webDir: null,
+      port: 4899,
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const put = (url: string, payload: unknown) => app.inject({ method: 'PUT', url, payload });
+  const get = (url: string) => app.inject({ method: 'GET', url });
+  const del = (url: string) => app.inject({ method: 'DELETE', url });
+
+  it('Upsert-Rundlauf: anlegen, lesen, ändern', async () => {
+    const created = await put('/api/lifecycle-steps', body({ projectId }));
+    expect(created.statusCode).toBe(200);
+    const step = JSON.parse(created.payload) as { id: string; name: string; trigger: unknown };
+    expect(step.id).toBeTruthy();
+    expect(step.trigger).toEqual({ kind: 'after_worktree_create' });
+
+    const list = JSON.parse((await get(`/api/lifecycle-steps?projectId=${projectId}`)).payload) as unknown[];
+    expect(list).toHaveLength(1);
+
+    const changed = await put('/api/lifecycle-steps', body({ id: step.id, projectId, name: 'Umbenannt' }));
+    expect((JSON.parse(changed.payload) as { name: string }).name).toBe('Umbenannt');
+    expect(steps.list()).toHaveLength(1);
+  });
+
+  it('GET ohne Query und mit projectId=global liefert alles', async () => {
+    await put('/api/lifecycle-steps', body({ projectId: null, name: 'Global' }));
+    await put('/api/lifecycle-steps', body({ projectId, name: 'Projekt' }));
+
+    expect(JSON.parse((await get('/api/lifecycle-steps')).payload)).toHaveLength(2);
+    expect(JSON.parse((await get('/api/lifecycle-steps?projectId=global')).payload)).toHaveLength(2);
+  });
+
+  it('normalisiert den Trigger: nicht zutreffende Felder fehlen in der Antwort', async () => {
+    const res = await put('/api/lifecycle-steps', body({ trigger: { kind: 'before_phase', phase: 'plan' } }));
+    expect((JSON.parse(res.payload) as { trigger: unknown }).trigger).toEqual({
+      kind: 'before_phase',
+      phase: 'plan',
+    });
+  });
+
+  // Je ein Fall pro Validierungsregel (contracts/http-api.md).
+  const invalid: [string, Record<string, unknown>, string][] = [
+    ['leerer Name', { name: '  ' }, 'Name fehlt'],
+    ['leeres Kommando', { command: '' }, 'Kommando fehlt'],
+    ['unbekannte Art', { trigger: { kind: 'irgendwas' } }, 'Unbekannte Auslöser-Art'],
+    [
+      'Phasen-Auslöser ohne Phase',
+      { trigger: { kind: 'before_phase' } },
+      'Phasen-Auslöser braucht eine gültige Phase',
+    ],
+    [
+      'Phasen-Auslöser mit unbekannter Phase',
+      { trigger: { kind: 'after_phase', phase: 'gibtsnicht' } },
+      'Phasen-Auslöser braucht eine gültige Phase',
+    ],
+    [
+      'Stufen-Auslöser ohne Stufe',
+      { trigger: { kind: 'before_stage' } },
+      'Stufen-Auslöser braucht eine gültige Stufe',
+    ],
+    [
+      'Stufen-Auslöser mit unbekannter Stufe',
+      { trigger: { kind: 'after_stage', stage: 'gibtsnicht' } },
+      'Stufen-Auslöser braucht eine gültige Stufe',
+    ],
+    [
+      'Phase an einer Art ohne Phase',
+      { trigger: { kind: 'after_worktree_create', phase: 'plan' } },
+      'Auslöser-Art erlaubt keine Phase',
+    ],
+    [
+      'Stufe an einer Art ohne Stufe',
+      { trigger: { kind: 'before_worktree_create', stage: 'verify' } },
+      'Auslöser-Art erlaubt keine Stufe',
+    ],
+    ['Zeitlimit 0', { timeoutMs: 0 }, 'Zeitlimit muss zwischen 1 ms und 24 h liegen'],
+    ['Zeitlimit negativ', { timeoutMs: -1 }, 'Zeitlimit muss zwischen 1 ms und 24 h liegen'],
+    ['Zeitlimit über 24 h', { timeoutMs: 86_400_001 }, 'Zeitlimit muss zwischen 1 ms und 24 h liegen'],
+  ];
+
+  for (const [label, patch, expected] of invalid) {
+    it(`400 bei ${label}: „${expected}"`, async () => {
+      const res = await put('/api/lifecycle-steps', body(patch));
+      expect(res.statusCode).toBe(400);
+      expect(message(res)).toBe(expected);
+      expect(steps.list()).toHaveLength(0);
+    });
+  }
+
+  it('akzeptiert ein Zeitlimit an den Rändern des erlaubten Bereichs', async () => {
+    expect((await put('/api/lifecycle-steps', body({ timeoutMs: 1 }))).statusCode).toBe(200);
+    expect((await put('/api/lifecycle-steps', body({ timeoutMs: 86_400_000 }))).statusCode).toBe(200);
+  });
+
+  it('404 „Projekt nicht gefunden" bei unbekanntem projectId', async () => {
+    const res = await put('/api/lifecycle-steps', body({ projectId: 'gibtsnicht' }));
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Projekt nicht gefunden');
+  });
+
+  it('Löschen ist idempotent', async () => {
+    const step = JSON.parse((await put('/api/lifecycle-steps', body())).payload) as { id: string };
+    expect((await del(`/api/lifecycle-steps/${step.id}`)).statusCode).toBe(200);
+    expect((await del(`/api/lifecycle-steps/${step.id}`)).statusCode).toBe(200);
+    expect((await del('/api/lifecycle-steps/gibtsnicht')).statusCode).toBe(200);
+    expect(steps.list()).toHaveLength(0);
+  });
+
+  // ----- Feature-Sicht -----
+
+  it('liefert die effektive Feature-Sicht mit decision, effective und lastRun', async () => {
+    const global = steps.upsert({
+      projectId: null,
+      name: 'Global A',
+      command: 'true',
+      trigger: { kind: 'after_worktree_create' },
+      blocking: true,
+      timeoutMs: null,
+      enabled: true,
+      sortOrder: 0,
+    });
+    const aus = steps.upsert({
+      projectId,
+      name: 'Projekt B',
+      command: 'true',
+      trigger: { kind: 'after_worktree_create' },
+      blocking: false,
+      timeoutMs: null,
+      enabled: false,
+      sortOrder: 10,
+    });
+
+    // Ein Lauf des globalen Schritts (Zuordnung über label = Name).
+    const executions = new ExecutionRepo(db);
+    const execId = executions.start({
+      projectId,
+      featureId,
+      kind: 'lifecycle_step',
+      label: 'Global A',
+      phase: null,
+      logPath: null,
+    });
+    executions.finish(execId, 0);
+
+    const view = JSON.parse((await get(`/api/features/${featureId}/lifecycle-steps`)).payload) as {
+      step: { id: string };
+      decision: string;
+      effective: boolean;
+      lastRun: { executionId: string; status: string; exitCode: number } | null;
+    }[];
+
+    expect(view.map((v) => v.step.id)).toEqual([global.id, aus.id]);
+    expect(view[0]!.decision).toBe('auto');
+    expect(view[0]!.effective).toBe(true);
+    expect(view[0]!.lastRun).toEqual({
+      executionId: execId,
+      startedAt: expect.any(Number),
+      finishedAt: expect.any(Number),
+      status: 'succeeded',
+      exitCode: 0,
+    });
+    // Deaktiviert und ohne Lauf.
+    expect(view[1]!.effective).toBe(false);
+    expect(view[1]!.lastRun).toBeNull();
+  });
+
+  it('effective folgt der Feature-Entscheidung: exclude schlägt alles, include erzwingt', async () => {
+    const an = steps.upsert({
+      projectId,
+      name: 'Aktiv',
+      command: 'true',
+      trigger: { kind: 'after_worktree_create' },
+      blocking: true,
+      timeoutMs: null,
+      enabled: true,
+      sortOrder: 0,
+    });
+    const aus = steps.upsert({
+      projectId,
+      name: 'Inaktiv',
+      command: 'true',
+      trigger: { kind: 'after_worktree_create' },
+      blocking: true,
+      timeoutMs: null,
+      enabled: false,
+      sortOrder: 10,
+    });
+
+    expect((await put(`/api/features/${featureId}/lifecycle-steps/selection`, { stepId: an.id, decision: 'exclude' })).statusCode).toBe(200);
+    expect((await put(`/api/features/${featureId}/lifecycle-steps/selection`, { stepId: aus.id, decision: 'include' })).statusCode).toBe(200);
+
+    let view = JSON.parse((await get(`/api/features/${featureId}/lifecycle-steps`)).payload) as {
+      step: { id: string };
+      decision: string;
+      effective: boolean;
+    }[];
+    expect(view.find((v) => v.step.id === an.id)).toMatchObject({ decision: 'exclude', effective: false });
+    expect(view.find((v) => v.step.id === aus.id)).toMatchObject({ decision: 'include', effective: true });
+
+    // 'auto' hebt die Ausnahme auf — die Ebene darüber gilt wieder.
+    await put(`/api/features/${featureId}/lifecycle-steps/selection`, { stepId: an.id, decision: 'auto' });
+    view = JSON.parse((await get(`/api/features/${featureId}/lifecycle-steps`)).payload) as typeof view;
+    expect(view.find((v) => v.step.id === an.id)).toMatchObject({ decision: 'auto', effective: true });
+  });
+
+  it('404 „Feature nicht gefunden" auf beiden Feature-Routen', async () => {
+    expect((await get('/api/features/gibtsnicht/lifecycle-steps')).statusCode).toBe(404);
+    const res = await put('/api/features/gibtsnicht/lifecycle-steps/selection', { stepId: 'x', decision: 'auto' });
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Feature nicht gefunden');
+  });
+
+  it('404 „Schritt nicht gefunden" bei unbekanntem stepId', async () => {
+    const res = await put(`/api/features/${featureId}/lifecycle-steps/selection`, {
+      stepId: 'gibtsnicht',
+      decision: 'include',
+    });
+    expect(res.statusCode).toBe(404);
+    expect(message(res)).toBe('Schritt nicht gefunden');
+  });
+
+  it('400 bei ungültiger decision', async () => {
+    const step = JSON.parse((await put('/api/lifecycle-steps', body())).payload) as { id: string };
+    const res = await put(`/api/features/${featureId}/lifecycle-steps/selection`, {
+      stepId: step.id,
+      decision: 'vielleicht',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(message(res)).toBe('decision muss include|exclude|auto sein');
+  });
+
+  /** Kein Endpunkt für einen manuellen Einzellauf — anders als bei den Agents (Out of Scope). */
+  it('bietet keinen Endpunkt für einen manuellen Einzellauf', async () => {
+    const step = JSON.parse((await put('/api/lifecycle-steps', body())).payload) as { id: string };
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/features/${featureId}/lifecycle-steps/${step.id}/run`,
+    });
+    expect(res.statusCode).toBe(404);
   });
 });

@@ -8,6 +8,7 @@ function exec(partial: Partial<ExecutionRecord>): ExecutionRecord {
     projectId: 'p1',
     featureId: 'f1',
     kind: 'phase',
+    label: null,
     phase: null,
     status: 'succeeded',
     startedAt: 0,

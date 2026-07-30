@@ -50,11 +50,21 @@ import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
 import type { AgentGateService } from './agentGateService.js';
 import type { PlausibilityService } from './plausibilityService.js';
+import type { LifecycleStepService } from './lifecycleStepService.js';
 import {
   findStaleOnBoot,
   findStaleRuntime,
   type ReconcileSnapshot,
 } from './attentionReconciler.js';
+
+export interface EnsureSessionOptions {
+  /**
+   * Worktree-Vorbereitung (inkl. der Worktree-Auslöser) überspringen, weil der
+   * Aufrufer sie unmittelbar davor selbst ausgeführt hat. Nur `createFeature`
+   * setzt das Flag; jeder andere Weg soll die Auslöser wiederholen (FR-025).
+   */
+  skipPrepare?: boolean;
+}
 
 export interface OrchestratorDeps {
   projects: ProjectRepo;
@@ -68,6 +78,7 @@ export interface OrchestratorDeps {
   knowledge: KnowledgeService;
   featureDocuments: FeatureDocumentsService;
   agentGate: AgentGateService;
+  lifecycleSteps: LifecycleStepService;
   dataDir: string;
   /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
   telemetry?: TelemetryStore;
@@ -211,6 +222,16 @@ export class Orchestrator {
 
   // ---------- Feature-Lifecycle ----------
 
+  /**
+   * Feature anlegen. Der **Datensatz entsteht vor dem Worktree** (umgestellte
+   * Reihenfolge): jeder Lebenszyklus-Schritt braucht einen Lauf-Eintrag am
+   * zugehörigen Feature, und `buildRunSummaries()` überspringt Executions ohne
+   * `featureId` — ein `before_worktree_create`-Lauf wäre sonst nicht attribuierbar.
+   *
+   * Scheitert die Vorbereitung (typisch `git worktree add`), wird der frisch
+   * angelegte Datensatz zurückgerollt und der Fehler weitergeworfen: nach außen
+   * exakt die heutige Fehlersemantik („Worktree kaputt ⇒ kein Feature in der Ansicht").
+   */
   async createFeature(projectId: string, name: string, description?: string): Promise<Feature> {
     const project = this.mustProject(projectId);
     const slug = slugify(name);
@@ -218,19 +239,12 @@ export class Orchestrator {
       throw new Error(`Feature '${slug}' existiert bereits`);
     }
     const branch = `feature/${slug}`;
-    const worktreePath = await this.deps.worktrees.create({
-      project,
-      projectPath: project.path,
-      featureName: slug,
-      branch,
-      defaultBranch: project.defaultBranch,
-    });
 
     const feature = this.deps.features.create({
       projectId,
       name: slug,
       branch,
-      worktreePath,
+      worktreePath: null,
       phases: initialPhases(project.enabledPhases),
       integration: 'none',
       integrationTarget: null,
@@ -239,9 +253,24 @@ export class Orchestrator {
       tasksDone: 0,
       tasksTotal: 0,
     });
-    bus.emitEvent('feature_updated', feature);
 
-    await this.ensureSession(feature.id);
+    let prepared: { ok: boolean };
+    try {
+      prepared = await this.prepareWorktree(feature);
+    } catch (err) {
+      this.deps.features.hardDelete(feature.id);
+      throw err;
+    }
+    this.emitFeature(feature.id);
+
+    // Blockierender Schritt-Fehlschlag: keine Session, keine erste Phase. Das Feature
+    // bleibt stehen und meldet sich in der Inbox; erneutes Anstoßen läuft über
+    // dieselbe prepareWorktree()-Methode und löst die Meldung bei Erfolg auf.
+    if (!prepared.ok) return this.deps.features.get(feature.id)!;
+
+    // `skipPrepare`: die Vorbereitung ist gerade gelaufen. Ohne das Flag liefe sie
+    // in `ensureSessionInner` ein zweites Mal — und mit ihr jeder Worktree-Schritt.
+    await this.ensureSession(feature.id, { skipPrepare: true });
     if (description) {
       await this.startPhaseRun(feature.id, 'specify', description);
     }
@@ -249,21 +278,69 @@ export class Orchestrator {
   }
 
   /**
+   * Worktree für ein Feature bereitstellen — der EINE Weg für beide Anlagepfade
+   * (Erstanlage und erneutes Anstoßen einer Session), damit ein Wiederanlauf
+   * denselben Auslöser wiederholt.
+   *
+   * Reihenfolge: `before_worktree_create`-Schritte (im Haupt-Checkout, mit dem
+   * künftigen Pfad im Kontext) → `git worktree add` → Pfad persistieren →
+   * `after_worktree_create`-Schritte (im neuen Worktree).
+   *
+   * `{ ok: false }` = ein blockierender Schritt ist fehlgeschlagen; der Aufrufer
+   * startet weder Session noch erste Phase.
+   */
+  private async prepareWorktree(feature: Feature): Promise<{ ok: boolean }> {
+    const project = this.mustProject(feature.projectId);
+
+    // Der künftige Pfad ist schon vor der Anlage bekannt — ein Schritt „vor
+    // Worktree-Anlage" kann ihn also auswerten (US3 Szenario 5).
+    const futurePath = feature.worktreePath ?? this.deps.worktrees.pathFor(project, feature.name);
+    const before = await this.deps.lifecycleSteps.runTrigger(
+      feature,
+      project,
+      { kind: 'before_worktree_create' },
+      { worktreePath: futurePath },
+    );
+    if (!before.ok) return { ok: false };
+
+    // Idempotent: auch wenn ein gespeicherter Pfad auf Disk fehlt (z. B. manuell gelöscht).
+    if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
+      if (feature.worktreePath) {
+        await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
+      }
+      const wt = await this.deps.worktrees.create({
+        project,
+        projectPath: project.path,
+        featureName: feature.name,
+        branch: feature.branch,
+        defaultBranch: project.defaultBranch,
+      });
+      this.deps.features.setWorktree(feature.id, wt);
+      feature.worktreePath = wt;
+    }
+
+    return this.deps.lifecycleSteps.runTrigger(feature, project, { kind: 'after_worktree_create' });
+  }
+
+  /**
    * Konsole pro Feature: eine persistente Claude-Session im Worktree.
    * Pro Feature serialisiert (in-flight Promise), sonst spawnen zwei gleichzeitige
    * Aufrufe (z. B. Grid-Auto-Select + Konsole öffnen) doppelte Sessions.
    */
-  ensureSession(featureId: string): Promise<LiveSession> {
+  ensureSession(featureId: string, opts: EnsureSessionOptions = {}): Promise<LiveSession> {
     const inFlight = this.ensuringSessions.get(featureId);
     if (inFlight) return inFlight;
-    const p = this.ensureSessionInner(featureId).finally(() => {
+    const p = this.ensureSessionInner(featureId, opts).finally(() => {
       this.ensuringSessions.delete(featureId);
     });
     this.ensuringSessions.set(featureId, p);
     return p;
   }
 
-  private async ensureSessionInner(featureId: string): Promise<LiveSession> {
+  private async ensureSessionInner(
+    featureId: string,
+    opts: EnsureSessionOptions = {},
+  ): Promise<LiveSession> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
     const existing = this.deps.ptys.forFeature(featureId);
@@ -275,27 +352,27 @@ export class Orchestrator {
       throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
     }
 
-    // Worktree sicherstellen — auch wenn ein gespeicherter Pfad auf Disk fehlt
-    // (z. B. manuell gelöscht): worktrees.create ist idempotent.
-    if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
-      if (feature.worktreePath) await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
-      const wt = await this.deps.worktrees.create({
-        project,
-        projectPath: project.path,
-        featureName: feature.name,
-        branch: feature.branch,
-        defaultBranch: project.defaultBranch,
-      });
-      this.deps.features.setWorktree(featureId, wt);
-      feature.worktreePath = wt;
+    // Worktree über denselben Weg wie bei der Erstanlage sicherstellen: ein erneutes
+    // Anstoßen wiederholt damit auch die Worktree-Auslöser (Wiederanlauf, FR-025).
+    // Ausnahme: `createFeature` hat unmittelbar davor selbst vorbereitet — ein
+    // zweiter Durchlauf würde jeden Worktree-Schritt der Anlage doppelt ausführen.
+    if (!opts.skipPrepare) {
+      const prepared = await this.prepareWorktree(feature);
+      if (!prepared.ok) {
+        throw new Error(
+          `${feature.name}: Lebenszyklus-Schritt vor der Session fehlgeschlagen — siehe „Braucht dich".`,
+        );
+      }
     }
+    const worktreePath = feature.worktreePath;
+    if (!worktreePath) throw new Error(`${feature.name}: Worktree konnte nicht bereitgestellt werden`);
 
     // Resume-Recovery (WP2): nie blind auf eine tote Session-ID resumen —
     // erst prüfen, ob das Transkript-JSONL noch existiert (Claude räumt nach ~30 Tagen auf).
     const prev = this.deps.sessions.latestForFeature(featureId);
     let resumeId = prev?.claude_session_id ?? undefined;
     if (resumeId && prev) {
-      if (!locateTranscript(feature.worktreePath ?? project.path, resumeId)) {
+      if (!locateTranscript(worktreePath, resumeId)) {
         this.deps.sessions.setClaudeSessionId(prev.id, null);
         resumeId = undefined;
       }
@@ -314,7 +391,7 @@ export class Orchestrator {
       projectId: project.id,
       featureId,
       kind: 'feature',
-      cwd: feature.worktreePath,
+      cwd: worktreePath,
       argv,
       withHooks: true,
     });
@@ -348,10 +425,16 @@ export class Orchestrator {
     }
     this.startingPhases.add(featureId);
     try {
-      // before_phase-Gate: Start deferren, Phase bleibt idle (crash-sicher — ein
-      // Absturz während des Gates hinterlässt schlicht eine ungestartete Phase).
+      // before_phase-Vorlauf: Start deferren, Phase bleibt idle (crash-sicher — ein
+      // Absturz während des Vorlaufs hinterlässt schlicht eine ungestartete Phase).
+      // Deferriert wird für Schritte UND Agents; ohne beides bleibt der Weg exakt
+      // wie bisher (kein zusätzlicher Prozess, keine Verzögerung).
       const trigger = { kind: 'before_phase', phase } as const;
-      if (!opts.skipGates && this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) {
+      const deferred =
+        !opts.skipGates &&
+        (this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger) ||
+          this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger));
+      if (deferred) {
         const key = `${featureId}:${phase}`;
         if (!this.runningGates.has(key)) {
           this.runningGates.add(key);
@@ -386,8 +469,13 @@ export class Orchestrator {
   }
 
   /**
-   * before_phase-Gate asynchron ausführen: PASS startet die Phase (skipGates),
-   * blockierender FAIL erzeugt ein Inbox-Item — der Start unterbleibt.
+   * before_phase-Vorlauf asynchron ausführen: erst die Lebenszyklus-Schritte, dann
+   * das Agenten-Gate, dann der Phasenstart (skipGates). Ein blockierender Fehlschlag
+   * auf einer der beiden Stufen verhindert den Start — die Phase bleibt `idle`.
+   *
+   * Schritte VOR Agents (research.md E8): Schritte bereiten mechanisch vor
+   * (installieren, generieren, formatieren), Agents urteilen. Ein Agent soll den
+   * vorbereiteten Stand beurteilen, nicht einen halb vorbereiteten.
    */
   private async runBeforePhaseGate(
     key: string,
@@ -398,7 +486,14 @@ export class Orchestrator {
     try {
       const feature = this.mustFeature(featureId);
       const project = this.mustProject(feature.projectId);
-      const outcome = await this.deps.agentGate.runTrigger(feature, project, { kind: 'before_phase', phase });
+      const trigger = { kind: 'before_phase', phase } as const;
+
+      // Das Inbox-Item hat der Schritt-Service schon erzeugt; hier bleibt nur, den
+      // Start zu unterlassen (Human-Override über manuelles Starten bleibt möglich).
+      const steps = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      if (!steps.ok) return;
+
+      const outcome = await this.deps.agentGate.runTrigger(feature, project, trigger);
       if (outcome.ok) {
         await this.startPhaseRun(featureId, phase, extraPrompt, { skipGates: true });
         return;
@@ -876,9 +971,11 @@ export class Orchestrator {
       this.deps.features.savePhases(featureId, t.phases);
       this.emitFeature(featureId);
 
-      // after_phase-Gate: läuft NACH dem Phasenabschluss und VOR dem Auto-
-      // Progress. Blockierender FAIL → Phase bleibt awaiting_review, Inbox-Item,
+      // after_phase-Vorlauf: läuft NACH dem Phasenabschluss und VOR dem Auto-
+      // Progress. Blockierender Fehlschlag → Phase bleibt awaiting_review, Inbox-Item,
       // kein Auto-Approve; manuelles Freigeben (Human-Override) bleibt möglich.
+      // Schritte vor Agents (E8) — und beide vor jedem Weiterlauf (FR-009).
+      if (await this.runAfterPhaseSteps(featureId, running.phase)) return;
       const gateBlocked = await this.runAfterPhaseGate(featureId, running.phase);
       if (gateBlocked) return;
 
@@ -909,6 +1006,32 @@ export class Orchestrator {
           kind: 'turn_completed',
         });
       }
+    }
+  }
+
+  /**
+   * after_phase-Schritte ausführen; true = blockierender Fehlschlag (Aufrufer stoppt
+   * Gate und Auto-Progress). Infrastruktur-Fehler blockieren nie (best-effort +
+   * behebbare Meldung) — dieselbe Linie wie beim Agenten-Gate.
+   */
+  private async runAfterPhaseSteps(featureId: string, phase: FeaturePhase): Promise<boolean> {
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return false;
+    const trigger = { kind: 'after_phase', phase } as const;
+    if (!this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger)) return false;
+    try {
+      const project = this.mustProject(feature.projectId);
+      const outcome = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      return !outcome.ok;
+    } catch (err) {
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: feature.projectId,
+        featureId,
+        message: `${feature.name}: Schritte nach Phase '${phase}' fehlgeschlagen — ${(err as Error).message}`,
+      });
+      bus.emitEvent('attention_raised', item);
+      return false;
     }
   }
 

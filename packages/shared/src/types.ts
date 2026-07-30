@@ -237,7 +237,9 @@ export type AttentionKind =
   | 'project_without_runs' // C: Features, aber nie ein Phasenlauf
   | 'metering_conflict' // D: Nachkorrektur verworfen, weil sie die Messung senkt
   /** Der Server war unerwartet weg; die Meldung nennt Fenster, Dauer und betroffene Läufe (FR-007). */
-  | 'server_outage';
+  | 'server_outage'
+  /** Ein blockierender Lebenszyklus-Schritt ist fehlgeschlagen (FR-023). */
+  | 'lifecycle_step_failed';
 
 export interface AttentionItem {
   id: string;
@@ -269,7 +271,16 @@ export interface ExecutionRecord {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
+  kind:
+    | 'phase'
+    | 'verify'
+    | 'review'
+    | 'conflict_resolution'
+    | 'chat'
+    | 'chat_work'
+    | 'lifecycle_step';
+  /** Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start. */
+  label: string | null;
   phase: WorkflowPhase | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
@@ -525,6 +536,100 @@ export interface FeatureAgentView {
   /** Läuft der Agent für dieses Feature beim nächsten passenden Trigger? */
   effective: boolean;
   lastRun: AgentRunSummary | null;
+}
+
+// ---------- Lebenszyklus-Schritte (eigene Kommandos am Feature-Lebenszyklus) ----------
+
+/** Punkte im Lebenszyklus, an denen eigene Schritte feuern können. */
+export const LIFECYCLE_TRIGGER_KINDS = [
+  'before_worktree_create',
+  'after_worktree_create',
+  'before_phase',
+  'after_phase',
+  'before_stage',
+  'after_stage',
+] as const;
+export type LifecycleTriggerKind = (typeof LIFECYCLE_TRIGGER_KINDS)[number];
+
+/**
+ * Stufen der Integrations-Pipeline — Identität ist die `IntegrationStep.id` aus
+ * workflowModel.ts, nicht der {@link IntegrationStage}-Union: der enthält Fehler-
+ * und Zwischenzustände, an die kein Schritt gehängt werden soll.
+ *
+ * Die Konstante liegt hier statt in workflowModel.ts, weil workflowModel.ts aus
+ * types.ts importiert — die Gegenrichtung wäre ein Zyklus. workflowModel.ts
+ * verengt `IntegrationStep.id` darauf und ein Test nagelt die Gleichheit fest.
+ */
+export const INTEGRATION_STAGE_IDS = [
+  'verify',
+  'review_gate',
+  'human_review',
+  'merge_queue',
+  'merged',
+] as const;
+export type LifecycleStageId = (typeof INTEGRATION_STAGE_IDS)[number];
+
+/**
+ * Auslöser eines Schritts. `phase` NUR bei before_phase/after_phase,
+ * `stage` NUR bei before_stage/after_stage — beides nie gleichzeitig.
+ */
+export interface LifecycleTrigger {
+  kind: LifecycleTriggerKind;
+  phase?: FeaturePhase;
+  stage?: LifecycleStageId;
+}
+
+/** Benanntes Shell-Kommando an einem Punkt des Feature-Lebenszyklus. */
+export interface LifecycleStep {
+  id: string;
+  /** null = global (gilt via Union in allen Projekten). */
+  projectId: string | null;
+  name: string;
+  /** Shell-Kommando; läuft in einer Login-Shell im Zielverzeichnis. */
+  command: string;
+  trigger: LifecycleTrigger;
+  /** true = blockierend (Fehlschlag hält an), false = beratend (nur verbucht). */
+  blocking: boolean;
+  /** Zeitlimit in ms; null = DEFAULT_STEP_TIMEOUT_MS. */
+  timeoutMs: number | null;
+  enabled: boolean;
+  sortOrder: number;
+}
+
+/** Per-Feature-Override der Geltung eines Schritts; kein Eintrag = 'auto'. */
+export type LifecycleStepFeatureDecision = 'include' | 'exclude';
+
+/**
+ * Kontext eines Schritt-Laufs. Einzige Eingabe von `buildLifecycleEnv()` — dem
+ * einen Ort, an dem der Variablensatz entsteht (Erweiterungspunkt für die
+ * zentrale Portvergabe: portBase/profile kommen später hier dazu).
+ */
+export interface LifecycleContext {
+  /** Worktree-Pfad; bei before_worktree_create der KÜNFTIGE Pfad. */
+  worktreePath: string;
+  projectName: string;
+  featureName: string;
+  branch: string;
+  /** null, wenn am Auslöser fachlich keine Phase existiert. */
+  phase: FeaturePhase | null;
+  /** null, wenn am Auslöser fachlich keine Stufe existiert. */
+  stage: LifecycleStageId | null;
+}
+
+/** Effektive Schritt-Sicht eines Features (per-Feature-Auswahl + jüngster Lauf). */
+export interface FeatureLifecycleStepView {
+  step: LifecycleStep;
+  decision: LifecycleStepFeatureDecision | 'auto';
+  /** Läuft der Schritt für dieses Feature beim nächsten passenden Auslöser? */
+  effective: boolean;
+  /** Jüngster Lauf dieses Schritts für dieses Feature; null = noch keiner. */
+  lastRun: {
+    executionId: string;
+    startedAt: number;
+    finishedAt: number | null;
+    status: ExecutionRecord['status'];
+    exitCode: number | null;
+  } | null;
 }
 
 // ---------- Review-Portal ----------

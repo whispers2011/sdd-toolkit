@@ -8,7 +8,7 @@ import {
   PHASE_LIFECYCLE_STAGES,
   lifecycleStage,
   orderedLifecycleStages,
-  type LifecycleStageId,
+  type LifecycleCatalogStageId,
 } from './lifecycleCatalog.js';
 
 /**
@@ -31,7 +31,7 @@ const allSteps = orderedLifecycleStages().flatMap((stage) =>
 );
 
 describe('LIFECYCLE_CATALOG deckt alle Stufen ab', () => {
-  it('hat für jede LifecycleStageId einen Eintrag, dessen id dem Schlüssel entspricht', () => {
+  it('hat für jede LifecycleCatalogStageId einen Eintrag, dessen id dem Schlüssel entspricht', () => {
     for (const id of LIFECYCLE_STAGES) {
       const stage = LIFECYCLE_CATALOG[id];
       expect(stage, `Katalogeintrag fehlt für ${id}`).toBeDefined();
@@ -122,7 +122,7 @@ describe('Schritte des Katalogs sind vollständig beschrieben', () => {
 describe('Katalog bleibt an die Domäne gebunden (Drift-Guard, FR-010)', () => {
   it('kennt jede Feature-Phase mit existierenden, nicht-leeren Stufen', () => {
     for (const phase of FEATURE_PHASES) {
-      const stages: readonly LifecycleStageId[] = PHASE_LIFECYCLE_STAGES[phase satisfies FeaturePhase];
+      const stages: readonly LifecycleCatalogStageId[] = PHASE_LIFECYCLE_STAGES[phase satisfies FeaturePhase];
       expect(stages, `PHASE_LIFECYCLE_STAGES fehlt für '${phase}'`).toBeDefined();
       expect(stages.length, `keine Stufe für Phase '${phase}'`).toBeGreaterThan(0);
       for (const id of stages) {

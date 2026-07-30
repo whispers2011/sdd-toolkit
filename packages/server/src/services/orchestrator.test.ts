@@ -40,6 +40,8 @@ function setup(
     running?: boolean;
     feature?: Partial<Feature>;
     gate?: { hasAgentsFor?: (...args: unknown[]) => boolean; runTrigger?: ReturnType<typeof vi.fn> };
+    /** Lebenszyklus-Schritte; ohne Angabe gilt „keine konfiguriert" (Fast-Path). */
+    steps?: { hasStepsFor?: (...args: unknown[]) => boolean; runTrigger?: ReturnType<typeof vi.fn> };
     automation?: Record<string, unknown>;
     /** Laufende Session bereitstellen, damit `launchPhase` erreicht wird. */
     withSession?: boolean;
@@ -64,6 +66,8 @@ function setup(
   const raise = vi.fn((a: { kind: string }) => ({ id: 'a1', ...a }));
   const finish = vi.fn();
   const runTrigger = opts.gate?.runTrigger ?? vi.fn();
+  const stepsRunTrigger =
+    opts.steps?.runTrigger ?? vi.fn(async () => ({ ok: true, failed: null, ran: [] }));
   const sendPrompt = vi.fn();
   const session = opts.withSession
     ? ({ id: 's1', kind: 'feature', featureId: 'f1', projectId: 'p1', scrollback: '', claudeSessionId: null, cwd: '/nonexistent' } as unknown as LiveSession)
@@ -121,10 +125,14 @@ function setup(
       runTrigger,
       runAgent: vi.fn(),
     },
+    lifecycleSteps: {
+      hasStepsFor: opts.steps?.hasStepsFor ?? (() => false),
+      runTrigger: stepsRunTrigger,
+    },
     dataDir: '/tmp',
   } as unknown as OrchestratorDeps;
   const orch = new Orchestrator(deps);
-  return { orch, state, savePhases, raise, finish, runTrigger, sendPrompt, listDocuments };
+  return { orch, state, savePhases, raise, finish, runTrigger, stepsRunTrigger, sendPrompt, listDocuments };
 }
 
 describe('Orchestrator — Fehler- und Unterbrechungs-Pfade', () => {
@@ -879,5 +887,399 @@ describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
     const { orch, raise } = setupZuordnung({ kind: 'chat_work' });
     orch.checkWorkWithoutRun(JETZT);
     expect(raise).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Feature "eigene-schritte-an-den-lebenszyklus-haengen": die Worktree-Auslöser.
+ * Eigener Aufbau, weil `createFeature` mehr Repo-Oberfläche braucht als die
+ * Phasen-Tests — insbesondere `create`/`hardDelete`/`setWorktree`.
+ */
+describe('Orchestrator — Worktree-Auslöser (Lebenszyklus-Schritte)', () => {
+  function setupCreate(
+    opts: {
+      worktreeCreate?: (calls: string[]) => Promise<string>;
+      stepOutcome?: (trigger: { kind: string }) => { ok: boolean };
+      /** Gelten Schritte an einem Phasen-Auslöser? Vorgabe: nein (der Fast-Path). */
+      hasSteps?: (trigger: { kind: string }) => boolean;
+      /**
+       * Vorgabe true: `ptys.forFeature` liefert sofort eine Session, `ensureSession`
+       * steigt früh aus. Mit `false` läuft der ECHTE Weg einer Neuanlage — erst der
+       * Spawn erzeugt die Session. Nur so wird sichtbar, was `ensureSession` selbst tut.
+       */
+      existingSession?: boolean;
+    } = {},
+  ) {
+    const calls: string[] = [];
+    const stored = new Map<string, Feature>();
+    const hardDelete = vi.fn((id: string) => {
+      calls.push('feature:hardDelete');
+      stored.delete(id);
+      return { executionIds: [] };
+    });
+    const sendPrompt = vi.fn(() => calls.push('phase:prompt'));
+    let spawnedSession = opts.existingSession ?? true;
+    const session = {
+      id: 's1',
+      kind: 'feature',
+      featureId: 'f1',
+      projectId: 'p1',
+      scrollback: '',
+      claudeSessionId: null,
+      cwd: '/wt/feat',
+      pty: { pid: 4242 },
+    } as unknown as LiveSession;
+
+    const stepsRunTrigger = vi.fn(async (_f: Feature, _p: unknown, trigger: { kind: string }) => {
+      calls.push(`steps:${trigger.kind}`);
+      return { ok: opts.stepOutcome?.(trigger).ok ?? true, failed: null, ran: [] };
+    });
+
+    const deps = {
+      features: {
+        get: (id: string) => stored.get(id),
+        getByName: () => null,
+        create: (f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt' | 'reviewRejectedAt'>) => {
+          calls.push('feature:create');
+          const feature = { ...f, id: 'f1', createdAt: 0, archivedAt: null, reviewRejectedAt: null } as Feature;
+          stored.set('f1', feature);
+          return feature;
+        },
+        setWorktree: vi.fn((id: string, wt: string | null) => {
+          calls.push('feature:setWorktree');
+          const f = stored.get(id);
+          if (f) stored.set(id, { ...f, worktreePath: wt });
+        }),
+        hardDelete,
+        savePhases: vi.fn((id: string, phases: Feature['phases']) => {
+          const f = stored.get(id);
+          if (f) stored.set(id, { ...f, phases });
+        }),
+        setTasks: vi.fn(),
+      },
+      projects: {
+        get: () => ({
+          id: 'p1',
+          name: 'proj',
+          path: '/p',
+          defaultBranch: 'main',
+          enabledPhases: ['specify', 'plan'],
+        }),
+      },
+      attention: { raise: vi.fn((a: { kind: string }) => ({ id: 'a1', ...a })), resolveFor: vi.fn(), listOpen: () => [] },
+      executions: { start: vi.fn(() => 'e1'), finish: vi.fn(), finishWithUsage: vi.fn(), reapOrphans: () => 0 },
+      sessions: { latestForFeature: () => undefined, create: vi.fn(), listOpen: () => [] },
+      settings: {
+        getAutomation: () => ({
+          autoProgressUntil: 'off',
+          autoVerify: false,
+          autoReviewAgents: false,
+          autoMerge: false,
+          autoMode: true,
+        }),
+        getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+      },
+      worktrees: {
+        pathFor: () => '/wt/feat',
+        create:
+          opts.worktreeCreate ??
+          (async () => {
+            calls.push('worktree:create');
+            return '/wt/feat';
+          }),
+        remove: vi.fn(async () => {}),
+      },
+      ptys: {
+        forFeature: () => (spawnedSession ? session : undefined),
+        spawn: vi.fn(async () => {
+          calls.push('session:spawn');
+          spawnedSession = true;
+          return session;
+        }),
+        sendPrompt,
+        list: () => [],
+      },
+      knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+      featureDocuments: { listDocuments: () => [] },
+      agentGate: { hasAgentsFor: () => false, runTrigger: vi.fn(), runAgent: vi.fn() },
+      lifecycleSteps: {
+        // Die Worktree-Auslöser rufen runTrigger direkt (der Service hat seinen
+        // eigenen Fast-Path); hasStepsFor entscheidet nur über die Phasen-Deferral.
+        hasStepsFor: (...a: unknown[]) => opts.hasSteps?.(a[2] as { kind: string }) ?? false,
+        runTrigger: stepsRunTrigger,
+      },
+      dataDir: '/tmp',
+    } as unknown as OrchestratorDeps;
+
+    return { orch: new Orchestrator(deps), calls, stored, hardDelete, stepsRunTrigger, deps };
+  }
+
+  it('führt die Worktree-Auslöser in der richtigen Reihenfolge aus: vor Anlage → Anlage → nach Anlage → Phase', async () => {
+    const { orch, calls } = setupCreate();
+
+    await orch.createFeature('p1', 'demo eins', 'beschreibung');
+
+    expect(calls).toEqual([
+      // Der Datensatz entsteht ZUERST — sonst wäre der before-Lauf keinem Feature zuordenbar.
+      'feature:create',
+      'steps:before_worktree_create',
+      'worktree:create',
+      'feature:setWorktree',
+      'steps:after_worktree_create',
+      // Erst danach startet die erste Phase.
+      'phase:prompt',
+    ]);
+  });
+
+  it('der Schritt läuft im neuen Worktree — der Kontext trägt den Worktree-Pfad', async () => {
+    const { orch, stepsRunTrigger } = setupCreate();
+
+    await orch.createFeature('p1', 'demo eins');
+
+    // Vor der Anlage: künftiger Pfad wird explizit mitgegeben (US3 Szenario 5).
+    expect(stepsRunTrigger.mock.calls[0]![3]).toEqual({ worktreePath: '/wt/feat' });
+    // Nach der Anlage: der Pfad steht am Feature.
+    expect((stepsRunTrigger.mock.calls[1]![0] as Feature).worktreePath).toBe('/wt/feat');
+    expect(stepsRunTrigger.mock.calls[1]![3]).toBeUndefined();
+  });
+
+  /** FR-027: ohne konfigurierte Schritte bleibt der Weg exakt wie bisher. */
+  it('ohne konfigurierte Schritte entsteht keine zusätzliche Execution', async () => {
+    const { orch, deps, calls } = setupCreate();
+
+    await orch.createFeature('p1', 'demo eins', 'los');
+
+    // Der Service entscheidet selbst über den Fast-Path; hier zählt: kein Lauf für einen Schritt.
+    expect((deps.executions.start as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (c) => (c[0] as { kind: string }).kind === 'lifecycle_step',
+    )).toHaveLength(0);
+    expect(calls).toContain('phase:prompt');
+  });
+
+  it('bei einem Git-Fehler bleibt kein Feature-Datensatz zurück (Rollback)', async () => {
+    const { orch, calls, stored, hardDelete } = setupCreate({
+      worktreeCreate: async () => {
+        calls.push('worktree:create-fehler');
+        throw new Error('fatal: cannot lock ref');
+      },
+    });
+
+    await expect(orch.createFeature('p1', 'demo eins')).rejects.toThrow(/cannot lock ref/);
+
+    expect(hardDelete).toHaveBeenCalledWith('f1');
+    expect(stored.size).toBe(0);
+    expect(calls).not.toContain('phase:prompt');
+  });
+
+  it('blockierender Fehlschlag vor der Anlage verhindert git worktree add, Session und erste Phase', async () => {
+    const { orch, calls, stored } = setupCreate({
+      stepOutcome: (t) => ({ ok: t.kind !== 'before_worktree_create' }),
+    });
+
+    const feature = await orch.createFeature('p1', 'demo eins', 'los');
+
+    expect(calls).toEqual(['feature:create', 'steps:before_worktree_create']);
+    expect(calls).not.toContain('worktree:create');
+    expect(calls).not.toContain('phase:prompt');
+    // Das Feature bleibt stehen — ohne Worktree, ohne laufende Phase.
+    expect(stored.get('f1')).toBeDefined();
+    expect(feature.worktreePath).toBeNull();
+    expect(feature.phases.specify.status).toBe('idle');
+  });
+
+  it('blockierender Fehlschlag nach der Anlage verhindert Session und erste Phase; der Worktree bleibt', async () => {
+    const { orch, calls, stored } = setupCreate({
+      stepOutcome: (t) => ({ ok: t.kind !== 'after_worktree_create' }),
+    });
+
+    const feature = await orch.createFeature('p1', 'demo eins', 'los');
+
+    expect(calls).toContain('worktree:create');
+    expect(calls).not.toContain('phase:prompt');
+    expect(stored.get('f1')!.worktreePath).toBe('/wt/feat');
+    expect(feature.phases.specify.status).toBe('idle');
+  });
+
+  it('beratender Fehlschlag verhindert nichts (der Service meldet ok)', async () => {
+    const { orch, calls } = setupCreate({ stepOutcome: () => ({ ok: true }) });
+
+    await orch.createFeature('p1', 'demo eins', 'los');
+
+    expect(calls).toContain('phase:prompt');
+  });
+
+  /**
+   * Regression (30.07.2026, in der eigenen Test-Instanz aufgefallen): bei einer
+   * Neuanlage gibt es noch KEINE Session. `createFeature` bereitete den Worktree vor
+   * und `ensureSession` tat es unmittelbar danach ein zweites Mal — jeder
+   * Worktree-Schritt lief doppelt (zwei Läufe je Schritt, `pnpm install` zweimal).
+   * Die übrigen Tests sahen es nicht, weil ihr `ptys.forFeature` sofort eine Session
+   * liefert und `ensureSession` deshalb früh aussteigt.
+   */
+  it('feuert die Worktree-Auslöser bei der Anlage genau EINMAL — auch ohne bestehende Session', async () => {
+    const { orch, calls, stepsRunTrigger } = setupCreate({ existingSession: false });
+
+    await orch.createFeature('p1', 'demo eins', 'los');
+
+    expect(calls.filter((c) => c === 'steps:before_worktree_create')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'steps:after_worktree_create')).toHaveLength(1);
+    expect(stepsRunTrigger).toHaveBeenCalledTimes(2);
+    // Der Worktree entsteht ebenfalls nur einmal, die Session wird trotzdem gespawnt.
+    expect(calls.filter((c) => c === 'worktree:create')).toHaveLength(1);
+    expect(calls).toContain('session:spawn');
+    expect(calls).toContain('phase:prompt');
+  });
+
+  /**
+   * Die Gegenprobe zum Flag: jeder ANDERE Weg zur Session wiederholt die
+   * Worktree-Auslöser — das ist der Wiederanlauf nach einem blockierenden
+   * Fehlschlag (FR-025).
+   */
+  it('ein erneutes Anstoßen nach blockierendem Fehlschlag wiederholt die Worktree-Auslöser', async () => {
+    let blockiert = true;
+    const { orch, calls, stepsRunTrigger } = setupCreate({
+      existingSession: false,
+      stepOutcome: (t) => ({ ok: !(blockiert && t.kind === 'after_worktree_create') }),
+    });
+
+    await orch.createFeature('p1', 'demo eins', 'los');
+    // Blockiert: keine Session, keine Phase — das Feature steht.
+    expect(calls).not.toContain('session:spawn');
+    expect(calls).not.toContain('phase:prompt');
+
+    // Ursache behoben, Session erneut anstoßen (POST /api/features/:id/session).
+    blockiert = false;
+    stepsRunTrigger.mockClear();
+    calls.length = 0;
+    await orch.ensureSession('f1');
+
+    expect(calls.filter((c) => c === 'steps:before_worktree_create')).toHaveLength(1);
+    expect(calls.filter((c) => c === 'steps:after_worktree_create')).toHaveLength(1);
+    expect(calls).toContain('session:spawn');
+  });
+});
+
+describe('Orchestrator — Phasen-Auslöser (Lebenszyklus-Schritte)', () => {
+  const tick = () => new Promise((r) => setTimeout(r, 10));
+
+  it('deferrt den Phasenstart auch ohne Agents, wenn Schritte gelten', async () => {
+    const stepsRunTrigger = vi.fn(() => new Promise(() => {})); // hängt bewusst
+    const { orch, state } = setup({
+      steps: { hasStepsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger: stepsRunTrigger },
+    });
+
+    const result = await orch.startPhaseRun('f1', 'specify');
+
+    expect(result).toEqual({ gateRunning: true });
+    expect(state.phases.specify.status).toBe('idle');
+    await tick();
+    expect(stepsRunTrigger).toHaveBeenCalledTimes(1);
+  });
+
+  it('Schritte laufen VOR dem Agenten-Gate (E8)', async () => {
+    const order: string[] = [];
+    const stepsRunTrigger = vi.fn(async (_f: unknown, _p: unknown, t: { kind: string }) => {
+      // Der nachgeholte Start läuft über ensureSession → prepareWorktree; hier sind
+      // nur die Phasen-Auslöser interessant.
+      if (t.kind === 'before_phase') order.push('steps');
+      return { ok: true, failed: null, ran: [] };
+    });
+    const runTrigger = vi.fn(async () => {
+      order.push('gate');
+      return { ok: true, failedAgent: null, runs: [] };
+    });
+    const { orch } = setup({
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+      steps: { hasStepsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger: stepsRunTrigger },
+    });
+
+    await orch.startPhaseRun('f1', 'specify');
+    await tick();
+
+    expect(order).toEqual(['steps', 'gate']);
+  });
+
+  it('blockierender Fehlschlag an before_phase hält die Phase auf idle — und das Gate läuft nicht', async () => {
+    const runTrigger = vi.fn();
+    const stepsRunTrigger = vi.fn(async () => ({ ok: false, failed: null, ran: [] }));
+    const { orch, state, raise } = setup({
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger },
+      steps: { hasStepsFor: (...a) => (a[2] as { kind: string }).kind === 'before_phase', runTrigger: stepsRunTrigger },
+    });
+
+    await orch.startPhaseRun('f1', 'specify');
+    await tick();
+
+    expect(state.phases.specify.status).toBe('idle');
+    expect(runTrigger).not.toHaveBeenCalled();
+    // Das Inbox-Item kommt vom Schritt-Service, nicht vom Orchestrator.
+    expect(raise).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'phase_gate_failed' }));
+  });
+
+  it('blockierender Fehlschlag an after_phase verhindert Gate und Auto-Progress', async () => {
+    const runTrigger = vi.fn();
+    const stepsRunTrigger = vi.fn(async () => ({ ok: false, failed: null, ran: [] }));
+    const { orch, state } = setup({
+      running: true,
+      automation: { autoProgressUntil: 'plan' }, // ohne Halt würde plan automatisch starten
+      gate: { hasAgentsFor: (...a) => (a[2] as { kind: string }).kind === 'after_phase', runTrigger },
+      steps: { hasStepsFor: (...a) => (a[2] as { kind: string }).kind === 'after_phase', runTrigger: stepsRunTrigger },
+    });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      promptText: '',
+      promptConfirmed: true,
+    });
+    const session = {
+      kind: 'feature',
+      featureId: 'f1',
+      projectId: 'p1',
+      id: 's1',
+      scrollback: '',
+      cwd: '/nonexistent',
+    } as unknown as LiveSession;
+
+    await (orch as unknown as { handleTurnCompleted: (s: LiveSession) => Promise<void> }).handleTurnCompleted(session);
+    await tick();
+
+    expect(stepsRunTrigger).toHaveBeenCalledTimes(1);
+    expect(runTrigger).not.toHaveBeenCalled();
+    expect(state.phases.specify.status).toBe('awaiting_review');
+    expect(state.phases.plan.status).toBe('idle');
+  });
+
+  it('ohne Schritte am after_phase-Punkt bleibt der Weg unverändert (Fast-Path)', async () => {
+    const stepsRunTrigger = vi.fn();
+    const { orch, state } = setup({
+      running: true,
+      automation: { autoProgressUntil: 'off' },
+      steps: { hasStepsFor: () => false, runTrigger: stepsRunTrigger },
+    });
+    (orch as unknown as { runningPhases: Map<string, unknown> }).runningPhases.set('f1', {
+      phase: 'specify',
+      executionId: 'e1',
+      scrollbackStart: 0,
+      transcriptOffsetStart: 0,
+      transcriptPathStart: null,
+      promptText: '',
+      promptConfirmed: true,
+    });
+    const session = {
+      kind: 'feature',
+      featureId: 'f1',
+      projectId: 'p1',
+      id: 's1',
+      scrollback: '',
+      cwd: '/nonexistent',
+    } as unknown as LiveSession;
+
+    await (orch as unknown as { handleTurnCompleted: (s: LiveSession) => Promise<void> }).handleTurnCompleted(session);
+
+    expect(stepsRunTrigger).not.toHaveBeenCalled();
+    expect(state.phases.specify.status).toBe('awaiting_review');
   });
 });

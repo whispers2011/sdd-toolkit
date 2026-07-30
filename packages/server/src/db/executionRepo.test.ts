@@ -328,3 +328,95 @@ describe('ExecutionRepo — Telemetrie-Felder', () => {
     });
   });
 });
+
+/**
+ * Feature "eigene-schritte-an-den-lebenszyklus-haengen": Schritt-Läufe reihen sich
+ * in die bestehende Lauferfassung ein. `label` trägt den Schrittnamen zum
+ * Startzeitpunkt, damit der Lauf nach Umbenennung oder Löschung lesbar bleibt.
+ */
+describe('ExecutionRepo — label und Schritt-Läufe', () => {
+  let db: DB;
+  let executions: ExecutionRepo;
+  let projectId: string;
+
+  beforeEach(() => {
+    db = openMemoryDatabase();
+    executions = new ExecutionRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo',
+      path: '/tmp/demo',
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: [],
+      verifyCommands: [],
+      automation: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+  });
+
+  afterEach(() => db.close());
+
+  it('speichert und liest label', () => {
+    const id = executions.start({
+      projectId,
+      featureId: null,
+      kind: 'lifecycle_step',
+      label: 'Abhängigkeiten installieren',
+      phase: null,
+      logPath: '/tmp/x.log',
+    });
+    expect(executions.get(id)!.label).toBe('Abhängigkeiten installieren');
+    expect(executions.get(id)!.kind).toBe('lifecycle_step');
+  });
+
+  it('lässt label NULL, wenn keins angegeben wurde — auch bei Bestandsarten', () => {
+    const id = executions.start({ projectId, featureId: null, kind: 'phase', phase: 'plan', logPath: null });
+    expect(executions.get(id)!.label).toBeNull();
+  });
+
+  it('schreibt bei einem Schritt-Lauf keinen Verbrauchswert — nie 0, nie geschätzt (FR-020)', () => {
+    const id = executions.start({
+      projectId,
+      featureId: null,
+      kind: 'lifecycle_step',
+      label: 'Marker schreiben',
+      phase: null,
+      logPath: null,
+    });
+    // Der Service ruft finish() OHNE Tokens — hier festgenagelt.
+    executions.finish(id, 0);
+
+    const r = executions.get(id)!;
+    expect(r.tokens).toBeNull();
+    expect(r.tokensSource).toBeNull();
+    expect(r.costMicros).toBeNull();
+    expect(r.status).toBe('succeeded');
+  });
+
+  /**
+   * FR-021: Endet das Toolkit während eines Schritt-Laufs, bleibt der Lauf nicht
+   * dauerhaft „läuft". Der vorhandene Boot-Reaper erledigt das ohne Zusatzcode —
+   * dieser Test nagelt die Kopplung fest, damit sie nicht unbemerkt bricht.
+   */
+  it('reapOrphans() markiert einen laufenden Schritt-Lauf beim Boot als orphaned (FR-021)', () => {
+    const id = executions.start({
+      projectId,
+      featureId: null,
+      kind: 'lifecycle_step',
+      label: 'Hänger',
+      phase: null,
+      logPath: null,
+    });
+    expect(executions.get(id)!.status).toBe('running');
+
+    expect(executions.reapOrphans()).toBe(1);
+
+    const r = executions.get(id)!;
+    expect(r.status).toBe('orphaned');
+    expect(r.finishedAt).not.toBeNull();
+    // Der Name bleibt lesbar, auch wenn der Lauf nie zu Ende kam.
+    expect(r.label).toBe('Hänger');
+  });
+});

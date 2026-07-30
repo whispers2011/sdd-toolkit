@@ -2,7 +2,13 @@ import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { ACTION_REASON, alreadyIntegratingReason, isValidBranchName } from '@sdd/shared';
-import type { ApproveMergeRequest, Feature, IntegrationStage, Project } from '@sdd/shared';
+import type {
+  ApproveMergeRequest,
+  Feature,
+  IntegrationStage,
+  LifecycleStageId,
+  Project,
+} from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
@@ -12,6 +18,7 @@ import { runVerification } from './verifyService.js';
 import { hasUnmergedChanges } from './unmergedChanges.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
+import type { LifecycleStepService } from './lifecycleStepService.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
 import { bus, emitAttentionResolved } from '../events.js';
 
@@ -35,6 +42,7 @@ export interface MergeQueueDeps {
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   agentGate: AgentGateService;
+  lifecycleSteps: LifecycleStepService;
   dataDir: string;
   /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
   port: number;
@@ -249,6 +257,12 @@ export class MergeQueueService {
       // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
       if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
 
+      // Stufe „Verifikation": Schritte vor der Arbeit; ein blockierender Fehlschlag
+      // lässt das Feature in `verifying` stehen — keine Verifikation, kein Gate.
+      if (!(await this.runStageSteps(feature, project, 'before_stage', 'verify'))) {
+        return { started: true };
+      }
+
       if (project.verifyCommands.length > 0) {
         const execId = this.deps.executions.start({
           projectId: project.id,
@@ -271,12 +285,21 @@ export class MergeQueueService {
         }
       }
 
+      // Nach grüner Verifikation.
+      if (!(await this.runStageSteps(feature, project, 'after_stage', 'verify'))) {
+        return { started: true };
+      }
+
       const automation = this.automationFor(feature);
 
       // Review-Gate (WP4 → Agents): review_gate-Agents sequentiell; erster
       // blockierender FAIL eskaliert, beratende FAILs werden nur verbucht.
       if (automation.autoReviewAgents) {
         this.setStage(feature, 'review_gate');
+        // Schritte vor den Review-Agents (E8: Schritte bereiten vor, Agents urteilen).
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'review_gate'))) {
+          return { started: true };
+        }
         const gate = await this.deps.agentGate.runTrigger(this.mustFeature(featureId), project, {
           kind: 'review_gate',
         });
@@ -287,11 +310,19 @@ export class MergeQueueService {
           this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedAgent}`);
           return { started: true };
         }
+        // Nach bestandenem Gate.
+        if (!(await this.runStageSteps(feature, project, 'after_stage', 'review_gate'))) {
+          return { started: true };
+        }
       }
 
       if (automation.autoMerge) {
         this.enqueue(feature);
       } else {
+        // Stufe „Menschliches Review": Schritte vor der Übergabe an den Menschen.
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'human_review'))) {
+          return { started: true };
+        }
         this.setStage(feature, 'awaiting_human_review');
         this.escalate(feature, 'review_due', `${feature.name}: verifiziert — bereit für dein Review & Merge`);
       }
@@ -356,6 +387,13 @@ export class MergeQueueService {
       forceVerify = true;
     }
 
+    // Stufe „Menschliches Review" ist erfolgreich beendet: Schritte laufen nach der
+    // Freigabe und VOR dem Einreihen. Ein blockierender Fehlschlag reiht nicht ein —
+    // das Feature bleibt sichtbar prüfbereit, die Meldung steht in der Inbox.
+    if (!(await this.runStageSteps(this.mustFeature(featureId), project, 'after_stage', 'human_review'))) {
+      return;
+    }
+
     emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] }));
     this.enqueue(this.mustFeature(featureId), { forceVerify });
   }
@@ -380,6 +418,37 @@ export class MergeQueueService {
         console.warn(`[merge-queue] ${feature.name}: Wiederaufnahme abgelehnt — ${r.reason}`);
       }
     });
+  }
+
+  /**
+   * Lebenszyklus-Schritte einer Pipeline-Stufe ausführen. `false` = ein blockierender
+   * Schritt ist fehlgeschlagen: die Stufe hält an UND der Queue-Worker stoppt —
+   * dieselbe Wirkung wie jede bestehende Eskalation („eskaliert → Queue anhalten bis
+   * Mensch eingreift"). Das Inbox-Item hat der Schritt-Service schon erzeugt.
+   *
+   * Ein Infrastrukturfehler (Worktree unerwartet weg) ist kein fachlicher Fehlschlag:
+   * er meldet sich als behebbar und hält ebenfalls an, damit nichts halb Gemergtes
+   * weiterläuft.
+   */
+  private async runStageSteps(
+    feature: Feature,
+    project: Project,
+    kind: 'before_stage' | 'after_stage',
+    stage: LifecycleStageId,
+  ): Promise<boolean> {
+    const trigger = { kind, stage } as const;
+    if (!this.deps.lifecycleSteps.hasStepsFor(project.id, feature.id, trigger)) return true;
+    try {
+      const outcome = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      return outcome.ok;
+    } catch (err) {
+      this.escalate(
+        feature,
+        'agent_errored',
+        `${feature.name}: Schritte ${kind === 'before_stage' ? 'vor' : 'nach'} Stufe '${stage}' fehlgeschlagen — ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   private enqueue(feature: Feature, opts: { forceVerify?: boolean } = {}): void {
@@ -456,6 +525,10 @@ export class MergeQueueService {
     this.setStage(feature, 'merging');
     this.deps.queue.setStage(queueId, 'merging');
     this.emitQueue(projectId);
+
+    // Stufe „Merge-Queue": Schritte vor dem Rebase. Ein blockierender Fehlschlag
+    // verhindert Rebase und Merge und hält den Worker an.
+    if (!(await this.runStageSteps(feature, project, 'before_stage', 'merge_queue'))) return false;
 
     // 1) Rebase auf das Ziel (neuer Ziel-Branch existiert noch nicht → identische
     //    Basis ist der Default-Branch), Konflikte agentisch auflösen.
@@ -558,8 +631,22 @@ export class MergeQueueService {
       return false;
     }
 
+    // Merge ist durch, der Worktree existiert noch: erst die Schritte NACH der
+    // Merge-Queue-Stufe, dann die VOR der Abschluss-Stufe — letzte Gelegenheit, im
+    // Worktree zu arbeiten, bevor das Cleanup ihn entfernt.
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'merge_queue'))) return false;
+    if (!(await this.runStageSteps(feature, project, 'before_stage', 'merged'))) return false;
+
     // 4) Cleanup: Session beenden, Worktree + Branch entfernen, DB angleichen.
     await this.cleanupMerged(feature, project);
+
+    // Nach dem Cleanup, VOR dem Abschluss-Vermerk (cwd = Haupt-Checkout, der
+    // Worktree ist weg). Ein blockierender Fehlschlag lässt den Merge bestehen,
+    // vermerkt den Abschluss aber NICHT: das Feature bleibt davor stehen und meldet
+    // sich in der Inbox. Der bestehende Selbstheilungspfad (reconcile → „Branch
+    // bereits im Ziel" → finalizeMerged) führt es beim nächsten Anstoßen zu Ende.
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'merged'))) return false;
+
     this.setStage(feature, 'merged');
     this.deps.queue.remove(queueId);
     this.emitQueue(projectId);

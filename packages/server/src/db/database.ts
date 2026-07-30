@@ -361,6 +361,41 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
     PRIMARY KEY (kind, project_id, feature_id)
   );
   `,
+  // Feature "eigene-schritte-an-den-lebenszyklus-haengen": eigene Shell-Kommandos an
+  // definierten Punkten des Lebenszyklus. Muster: agents / agent_feature_selection.
+  // Additiv, keine Seeds, kein Backfill — ohne konfigurierte Schritte bleibt das
+  // Verhalten einer bestehenden Datenbank unverändert.
+  `
+  CREATE TABLE lifecycle_steps (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,   -- NULL = global
+    name          TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    trigger_kind  TEXT NOT NULL CHECK (trigger_kind IN (
+                    'before_worktree_create','after_worktree_create',
+                    'before_phase','after_phase','before_stage','after_stage')),
+    trigger_phase TEXT,
+    trigger_stage TEXT,
+    blocking      INTEGER NOT NULL DEFAULT 1,
+    timeout_ms    INTEGER,                                          -- NULL = Vorgabewert
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    enabled       INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE lifecycle_step_feature_selection (
+    feature_id TEXT NOT NULL REFERENCES features(id)        ON DELETE CASCADE,
+    step_id    TEXT NOT NULL REFERENCES lifecycle_steps(id) ON DELETE CASCADE,
+    decision   TEXT NOT NULL CHECK (decision IN ('include','exclude')),
+    PRIMARY KEY (feature_id, step_id)
+  );
+
+  CREATE INDEX idx_lifecycle_steps_project ON lifecycle_steps(project_id);
+  CREATE INDEX idx_lifecycle_steps_trigger ON lifecycle_steps(trigger_kind);
+
+  -- Bezeichnung eines Laufs; bei kind='lifecycle_step' der Schrittname beim Start.
+  -- Hält Läufe eines später gelöschten oder umbenannten Schritts lesbar.
+  ALTER TABLE executions ADD COLUMN label TEXT;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

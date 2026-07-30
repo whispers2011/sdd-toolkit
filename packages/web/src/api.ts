@@ -8,6 +8,9 @@ import type {
   AutomationSettings,
   BranchInfo,
   FeatureAgentView,
+  FeatureLifecycleStepView,
+  LifecycleStep,
+  LifecycleStepFeatureDecision,
   ReviewComment,
   ReviewOverviewItem,
   ChatConversation,
@@ -497,6 +500,24 @@ export const api = {
     request<unknown>('PUT', `/api/features/${featureId}/agents/selection`, { agentId, decision }),
   runAgent: (featureId: string, agentId: string) =>
     request<{ started: true }>('POST', `/api/features/${featureId}/agents/${agentId}/run`),
+
+  // Lebenszyklus-Schritte (Zwilling der Agent-Aufrufe). Bewusst OHNE „jetzt ausführen":
+  // ein Schritt läuft an seinem Auslöser, die Stufe wird als Ganzes erneut angestoßen.
+  lifecycleSteps: (projectId?: string) =>
+    request<LifecycleStep[]>(
+      'GET',
+      projectId ? `/api/lifecycle-steps?projectId=${projectId}` : '/api/lifecycle-steps',
+    ),
+  saveLifecycleStep: (step: Omit<LifecycleStep, 'id'> & { id?: string }) =>
+    request<LifecycleStep>('PUT', '/api/lifecycle-steps', step),
+  deleteLifecycleStep: (stepId: string) => request<unknown>('DELETE', `/api/lifecycle-steps/${stepId}`),
+  featureLifecycleSteps: (featureId: string) =>
+    request<FeatureLifecycleStepView[]>('GET', `/api/features/${featureId}/lifecycle-steps`),
+  setLifecycleStepSelection: (
+    featureId: string,
+    stepId: string,
+    decision: LifecycleStepFeatureDecision | 'auto',
+  ) => request<unknown>('PUT', `/api/features/${featureId}/lifecycle-steps/selection`, { stepId, decision }),
   // Jira-Anbindung & Import (US1–US4)
   jiraStatus: () => jiraRequest<JiraConnectionStatus>('GET', '/api/jira/status'),
   jiraConnect: () => jiraRequest<{ authUrl: string | null }>('POST', '/api/jira/connect'),
@@ -562,7 +583,9 @@ export interface ExecutionInfo {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work' | 'lifecycle_step';
+  /** Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start. */
+  label: string | null;
   phase: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;

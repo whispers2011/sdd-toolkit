@@ -7,8 +7,18 @@ import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
+import { FeatureLifecycleStepSelect } from './FeatureLifecycleStepSelect.js';
 import { FeatureDocumentsDialog } from './FeatureDocumentsDialog.js';
-import { CodeIcon, CopyIcon, DeleteIcon, DocumentIcon, FolderOpenIcon, KnowledgeIcon, ShieldIcon } from './icons.js';
+import {
+  CodeIcon,
+  CopyIcon,
+  DeleteIcon,
+  DocumentIcon,
+  FolderOpenIcon,
+  KnowledgeIcon,
+  ShieldIcon,
+  StepsIcon,
+} from './icons.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { FeatureDashboard } from './FeatureDashboard.js';
 
@@ -18,6 +28,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const [connected, setConnected] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
   const [showDocuments, setShowDocuments] = useState(false);
   // Einstieg nur zeigen, wenn es etwas zu zeigen gibt (FR-016).
@@ -118,6 +129,9 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
               <HeaderIcon title="Agents für dieses Feature" onClick={() => setShowAgents(true)}>
                 <ShieldIcon />
               </HeaderIcon>
+              <HeaderIcon title="Schritte für dieses Feature" onClick={() => setShowSteps(true)}>
+                <StepsIcon />
+              </HeaderIcon>
             </>
           )}
           <HeaderIcon
@@ -139,6 +153,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
       {showDocuments && <FeatureDocumentsDialog featureId={featureId} onClose={() => setShowDocuments(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
+      {showSteps && <FeatureLifecycleStepSelect featureId={featureId} onClose={() => setShowSteps(false)} />}
       {showDelete && (
         <ConfirmDialog
           title={merged ? 'Feature aus dem Toolkit entfernen?' : 'Feature löschen?'}

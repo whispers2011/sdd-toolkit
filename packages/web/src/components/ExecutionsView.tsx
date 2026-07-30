@@ -10,6 +10,7 @@ const KIND_LABELS: Record<ExecutionInfo['kind'], string> = {
   conflict_resolution: 'Konfliktauflösung',
   chat: 'Chat',
   chat_work: 'Arbeits-Chat',
+  lifecycle_step: 'Schritt',
 };
 
 const STEP_LABELS: Record<string, string> = {
@@ -26,6 +27,7 @@ const STEP_LABELS: Record<string, string> = {
   conflict_resolution: 'Konflikte',
   chat: 'Chat',
   chat_work: 'Arbeits-Chat',
+  lifecycle_step: 'Schritte',
 };
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -368,7 +370,38 @@ export function RunCard({
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.map((e) => (
+                  {detail.map((e) =>
+                    // Ein Lebenszyklus-Schritt ist ein Shell-Kommando: keine Tokens, kein
+                    // Betrag. Statt vier Strichen (oder gar einer 0, die eine Falschaussage
+                    // wäre — FR-020) steht in dieser Zeile der Exit-Code.
+                    e.kind === 'lifecycle_step' ? (
+                    <tr key={e.id} className="border-b border-zinc-900 hover:bg-zinc-900">
+                      <td className="whitespace-nowrap px-2 py-1 text-zinc-500">
+                        {new Date(e.startedAt).toLocaleString('de-CH')}
+                      </td>
+                      <td className="px-2 py-1 text-zinc-400">
+                        {KIND_LABELS.lifecycle_step}
+                        {e.label && <span className="text-zinc-300"> · {e.label}</span>}
+                      </td>
+                      <td className="px-2 py-1">
+                        <StatusBadge status={e.status} />
+                      </td>
+                      <td className="px-2 py-1 text-right text-zinc-500">
+                        {e.finishedAt ? formatDuration(e.finishedAt - e.startedAt) : '…'}
+                      </td>
+                      <td colSpan={4} className="px-2 py-1 text-zinc-500">
+                        {e.exitCode !== null ? `exit ${e.exitCode}` : ''}
+                      </td>
+                      <td className="px-2 py-1">
+                        <button
+                          onClick={() => onOpenLog(e.id)}
+                          className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-300 hover:bg-zinc-700"
+                        >
+                          Log
+                        </button>
+                      </td>
+                    </tr>
+                  ) : (
                     <tr key={e.id} className="border-b border-zinc-900 hover:bg-zinc-900">
                       <td className="whitespace-nowrap px-2 py-1 text-zinc-500">
                         {new Date(e.startedAt).toLocaleString('de-CH')}
@@ -409,7 +442,8 @@ export function RunCard({
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  ),
+                  )}
                 </tbody>
               </table>
             </div>

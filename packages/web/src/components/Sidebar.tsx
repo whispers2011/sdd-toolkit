@@ -6,7 +6,7 @@ import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
-import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon } from './icons.js';
+import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon, StepsIcon } from './icons.js';
 
 // ---- Projekt-Reihenfolge (gerätelokal, per Drag&Drop) ----
 const PROJECT_ORDER_KEY = 'sdd-project-order';
@@ -188,6 +188,17 @@ export function Sidebar() {
                 title="Agenten (Review- & Qualitäts-Gates)"
               >
                 ⚖
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  dispatch({ type: 'select_project', projectId: project.id });
+                  dispatch({ type: 'set_view', view: { kind: 'lifecycle_steps', projectId: project.id } });
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Lebenszyklus-Schritte (eigene Kommandos am Feature-Ablauf)"
+              >
+                <StepsIcon />
               </button>
               <button
                 onClick={(e) => {

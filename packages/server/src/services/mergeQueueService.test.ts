@@ -1,9 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ACTION_REASON } from '@sdd/shared';
+import type { LifecycleStageId } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import {
   AttentionRepo,
@@ -13,10 +14,12 @@ import {
   QueueRepo,
   SettingsRepo,
 } from '../db/repos.js';
+import { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
 import { WorktreeManager } from '../git/worktrees.js';
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import type { AgentGateService } from './agentGateService.js';
+import { LifecycleStepService } from './lifecycleStepService.js';
 import { MergeApprovalError, MergeQueueService } from './mergeQueueService.js';
 
 function sh(cwd: string, args: string[]): string {
@@ -31,6 +34,9 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   let features: FeatureRepo;
   let svc: MergeQueueService;
   let projectId: string;
+  let executions: ExecutionRepo;
+  let attention: AttentionRepo;
+  let steps: LifecycleStepRepo;
 
   /** Von Tests gesetzt, die eine lebende Agent-Session brauchen; sonst gibt es keine. */
   let aktiveSession: { exited: boolean; lastOutputAt: number } | undefined;
@@ -68,16 +74,23 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
       integrationMode: 'local',
     }).id;
 
+    executions = new ExecutionRepo(db);
+    attention = new AttentionRepo(db);
+    steps = new LifecycleStepRepo(db);
+    mkdirSync(join(dataDir, 'logs'), { recursive: true });
+
     svc = new MergeQueueService({
       projects,
       features,
       queue: new QueueRepo(db),
-      executions: new ExecutionRepo(db),
-      attention: new AttentionRepo(db),
+      executions,
+      attention,
       settings: new SettingsRepo(db),
       worktrees,
       ptys: ptysStub,
       agentGate: {} as unknown as AgentGateService,
+      // Echter Service: die Stufen-Auslöser laufen im Test über den Produktionspfad.
+      lifecycleSteps: new LifecycleStepService({ steps, executions, attention, dataDir }),
       dataDir,
     });
   });
@@ -458,5 +471,141 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     expect(features.get(feature.id)?.integrationTarget).toBe('integration/alt');
     features.setIntegrationTarget(feature.id, null);
     expect(features.get(feature.id)?.integrationTarget).toBeNull();
+  });
+
+  // ---------- US5: Lebenszyklus-Schritte an den Stufen der Pipeline ----------
+
+  /** Marker-Datei außerhalb des Worktrees — sie überlebt das Cleanup der letzten Stufe. */
+  function markerPath(): string {
+    return join(dataDir, 'ablauf.txt');
+  }
+
+  function trail(): string[] {
+    const p = markerPath();
+    return existsSync(p) ? readFileSync(p, 'utf8').trim().split('\n').filter(Boolean) : [];
+  }
+
+  /** Schritt, der beim Laufen seine Marke anhängt — daraus wird die Reihenfolge lesbar. */
+  function addMarkerStep(
+    kind: 'before_stage' | 'after_stage',
+    stage: LifecycleStageId,
+    mark: string,
+    opts: { blocking?: boolean; command?: string } = {},
+  ): void {
+    steps.upsert({
+      projectId,
+      name: `${kind}:${stage}`,
+      command: opts.command ?? `echo "${mark}" >> "${markerPath()}"`,
+      trigger: { kind, stage },
+      blocking: opts.blocking ?? true,
+      timeoutMs: 60_000,
+      enabled: true,
+      sortOrder: 0,
+    });
+  }
+
+  function stepRuns(featureId: string) {
+    return executions.list(featureId).filter((e) => e.kind === 'lifecycle_step');
+  }
+
+  function stepItems() {
+    return attention.listOpen(projectId).filter((i) => i.kind === 'lifecycle_step_failed');
+  }
+
+  /** Prüfbereites Feature mit ausgeschalteter Automation — der Weg endet im Human-Review. */
+  async function makeManualFeature(name: string) {
+    const { feature } = await makeReviewReadyFeature(name);
+    features.setIntegration(feature.id, 'none');
+    features.setAutomation(feature.id, { autoReviewAgents: false, autoMerge: false });
+    return features.get(feature.id)!;
+  }
+
+  it('führt je Stufe die Schritte vor der Arbeit und nach dem Erfolg aus', async () => {
+    const feature = await makeManualFeature('stufen');
+    addMarkerStep('before_stage', 'verify', 'vor-verify');
+    addMarkerStep('after_stage', 'verify', 'nach-verify');
+    addMarkerStep('before_stage', 'human_review', 'vor-human');
+
+    await svc.beginIntegration(feature.id);
+
+    // Reihenfolge ist die der Pipeline — nicht die der Konfiguration.
+    expect(trail()).toEqual(['vor-verify', 'nach-verify', 'vor-human']);
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    const runs = stepRuns(feature.id);
+    expect(runs).toHaveLength(3);
+    expect(runs.every((r) => r.status === 'succeeded' && r.exitCode === 0)).toBe(true);
+    expect(runs.map((r) => r.label).sort()).toEqual([
+      'after_stage:verify',
+      'before_stage:human_review',
+      'before_stage:verify',
+    ]);
+  });
+
+  it('ein blockierender Fehlschlag hält die Stufe an: kein Stufenwechsel, ein Inbox-Item', async () => {
+    const feature = await makeManualFeature('halt');
+    addMarkerStep('before_stage', 'verify', 'vor-verify');
+    addMarkerStep('before_stage', 'human_review', 'nie', { command: 'echo "zeile a"; exit 3' });
+    addMarkerStep('after_stage', 'human_review', 'auch-nie');
+
+    const result = await svc.beginIntegration(feature.id);
+
+    expect(result.started).toBe(true);
+    // Die Übergabe an den Menschen unterbleibt — und damit auch die Review-Meldung.
+    expect(features.get(feature.id)?.integration).toBe('verifying');
+    expect(trail()).toEqual(['vor-verify']);
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'review_due')).toBe(false);
+    const items = stepItems();
+    expect(items).toHaveLength(1);
+    expect(items[0]!.message).toContain('exit 3');
+    expect(items[0]!.message).toContain('zeile a');
+  });
+
+  it('ein beratender Fehlschlag hält nichts an und erzeugt kein Inbox-Item', async () => {
+    const feature = await makeManualFeature('beratend');
+    addMarkerStep('before_stage', 'human_review', 'egal', { command: 'exit 3', blocking: false });
+
+    await svc.beginIntegration(feature.id);
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    expect(stepRuns(feature.id)[0]?.status).toBe('failed');
+    expect(stepItems()).toHaveLength(0);
+  });
+
+  it('umschließt Merge und Cleanup: nach Merge-Queue, vor Abschluss (Worktree), nach Abschluss (Haupt-Checkout)', async () => {
+    const { feature } = await makeReviewReadyFeature('merge-stufen');
+    addMarkerStep('before_stage', 'merge_queue', 'vor-merge');
+    addMarkerStep('after_stage', 'merge_queue', 'nach-merge');
+    // Der Worktree steht hier noch — das ist die letzte Gelegenheit, in ihm zu arbeiten.
+    addMarkerStep('before_stage', 'merged', 'x', {
+      command: `test -d "$SDD_WORKTREE" && echo "vor-abschluss-im-worktree" >> "${markerPath()}"`,
+    });
+    // Nach dem Cleanup ist der Worktree weg — der Schritt läuft im Haupt-Checkout.
+    addMarkerStep('after_stage', 'merged', 'x', {
+      command: `echo "nach-abschluss:$PWD" >> "${markerPath()}"`,
+    });
+
+    await svc.approveForMerge(feature.id, { targetBranch: 'main' });
+    await waitFor(() => features.get(feature.id)?.integration === 'merged');
+
+    expect(trail()).toEqual([
+      'vor-merge',
+      'nach-merge',
+      'vor-abschluss-im-worktree',
+      `nach-abschluss:${realpathSync(repo)}`,
+    ]);
+  });
+
+  it('after_stage:merged mit exit 1 lässt den Merge bestehen, verhindert aber den Abschluss-Vermerk', async () => {
+    const { feature, wt } = await makeReviewReadyFeature('kein-vermerk');
+    addMarkerStep('after_stage', 'merged', 'x', { command: 'exit 1' });
+
+    await svc.approveForMerge(feature.id, { targetBranch: 'main' });
+    await waitFor(() => stepItems().length > 0);
+
+    // Der Merge ist erfolgt und das Cleanup gelaufen — nur der Abschluss fehlt.
+    expect(sh(repo, ['log', 'main', '--format=%s'])).toContain('feat kein-vermerk');
+    expect(existsSync(wt)).toBe(false);
+    expect(features.get(feature.id)?.integration).not.toBe('merged');
+    expect(stepItems()).toHaveLength(1);
   });
 });

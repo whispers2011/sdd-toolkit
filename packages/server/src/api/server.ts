@@ -10,9 +10,18 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
-import type { AgentDefinition, ApproveMergeRequest, FeaturePhase, SystemStatus } from '@sdd/shared';
+import type {
+  AgentDefinition,
+  ApproveMergeRequest,
+  FeaturePhase,
+  LifecycleStageId,
+  LifecycleStep,
+  SystemStatus,
+} from '@sdd/shared';
 import {
   FEATURE_PHASES,
+  INTEGRATION_STAGE_IDS,
+  LIFECYCLE_TRIGGER_KINDS,
   MAX_DOCUMENT_BYTES,
   aggregateBreakdown,
   buildRunSummaries,
@@ -34,7 +43,9 @@ import type {
   SettingsRepo,
 } from '../db/repos.js';
 import type { AgentRepo, AgentRunRepo } from '../db/agentRepo.js';
+import type { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
 import type { AgentGateService } from '../services/agentGateService.js';
+import type { LifecycleStepService } from '../services/lifecycleStepService.js';
 import type { KnowledgeRepo } from '../db/knowledgeRepo.js';
 import type { KnowledgeService } from '../services/knowledgeService.js';
 import type { Applicability, SelectionDecision } from '@sdd/shared';
@@ -86,6 +97,8 @@ export interface ApiDeps {
   agents: AgentRepo;
   agentRuns: AgentRunRepo;
   agentGate: AgentGateService;
+  lifecycleStepRepo: LifecycleStepRepo;
+  lifecycleSteps: LifecycleStepService;
   reviewComments: ReviewCommentRepo;
   knowledge: KnowledgeRepo;
   knowledgeService: KnowledgeService;
@@ -1143,6 +1156,101 @@ export async function buildServer(deps: ApiDeps) {
         .catch((err) => console.warn(`[agents] Manueller Lauf fehlgeschlagen: ${(err as Error).message}`));
       void reply.code(202);
       return { started: true };
+    },
+  );
+
+  // ---------- Lebenszyklus-Schritte (wörtlicher Zwilling der Agent-Routen) ----------
+
+  /**
+   * Validierung: Name und Kommando sind Pflicht, die Auslöser-Art muss bekannt sein,
+   * Phase bzw. Stufe sind je Art Pflicht oder verboten, und das Zeitlimit muss in
+   * einem plausiblen Bereich liegen (Schutz gegen Tippfehler wie `9e12`).
+   */
+  const validateLifecycleStep = (s: LifecycleStep): void => {
+    if (!s.name?.trim()) throw httpError(400, 'Name fehlt');
+    if (!s.command?.trim()) throw httpError(400, 'Kommando fehlt');
+    if (!LIFECYCLE_TRIGGER_KINDS.includes(s.trigger?.kind)) {
+      throw httpError(400, 'Unbekannte Auslöser-Art');
+    }
+    const needsPhase = s.trigger.kind === 'before_phase' || s.trigger.kind === 'after_phase';
+    const needsStage = s.trigger.kind === 'before_stage' || s.trigger.kind === 'after_stage';
+    if (needsPhase && !FEATURE_PHASES.includes(s.trigger.phase as FeaturePhase)) {
+      throw httpError(400, 'Phasen-Auslöser braucht eine gültige Phase');
+    }
+    if (needsStage && !INTEGRATION_STAGE_IDS.includes(s.trigger.stage as LifecycleStageId)) {
+      throw httpError(400, 'Stufen-Auslöser braucht eine gültige Stufe');
+    }
+    if (!needsPhase && s.trigger.phase) throw httpError(400, 'Auslöser-Art erlaubt keine Phase');
+    if (!needsStage && s.trigger.stage) throw httpError(400, 'Auslöser-Art erlaubt keine Stufe');
+    if (s.timeoutMs != null && (s.timeoutMs <= 0 || s.timeoutMs > 86_400_000)) {
+      throw httpError(400, 'Zeitlimit muss zwischen 1 ms und 24 h liegen');
+    }
+  };
+
+  app.get<{ Querystring: { projectId?: string } }>('/api/lifecycle-steps', (req) => {
+    const { projectId } = req.query;
+    if (projectId && projectId !== 'global') return deps.lifecycleStepRepo.forProject(projectId);
+    return deps.lifecycleStepRepo.list();
+  });
+
+  app.put<{ Body: LifecycleStep }>('/api/lifecycle-steps', (req) => {
+    validateLifecycleStep(req.body);
+    if (req.body.projectId && !deps.projects.get(req.body.projectId)) {
+      throw httpError(404, 'Projekt nicht gefunden');
+    }
+    return deps.lifecycleStepRepo.upsert(req.body);
+  });
+
+  /** Idempotent — ein unbekanntes id ist kein Fehler. Läufe bleiben über `label` lesbar. */
+  app.delete<{ Params: { id: string } }>('/api/lifecycle-steps/:id', (req) => {
+    deps.lifecycleStepRepo.remove(req.params.id);
+    return { ok: true };
+  });
+
+  /**
+   * Effektive Schritt-Sicht eines Features: Union (global ∪ Projekt) + Auswahl +
+   * jüngster Lauf. `lastRun` kommt über `executions` (kind='lifecycle_step',
+   * passendes Feature, `label` = Name) — kein eigener Lauf-Tabellen-Join nötig.
+   */
+  app.get<{ Params: { id: string } }>('/api/features/:id/lifecycle-steps', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    const selection = deps.lifecycleStepRepo.selectionFor(feature.id);
+    // Absteigend nach Startzeit (ExecutionRepo.list) ⇒ der erste Treffer je Name ist
+    // der jüngste Lauf.
+    const runs = deps.executions.list(feature.id).filter((e) => e.kind === 'lifecycle_step');
+    return deps.lifecycleStepRepo.forProject(feature.projectId).map((step) => {
+      const decision = selection.get(step.id) ?? 'auto';
+      const last = runs.find((e) => e.label === step.name);
+      return {
+        step,
+        decision,
+        effective: decision === 'include' ? true : decision === 'exclude' ? false : step.enabled,
+        lastRun: last
+          ? {
+              executionId: last.id,
+              startedAt: last.startedAt,
+              finishedAt: last.finishedAt,
+              status: last.status,
+              exitCode: last.exitCode,
+            }
+          : null,
+      };
+    });
+  });
+
+  app.put<{ Params: { id: string }; Body: { stepId: string; decision: 'include' | 'exclude' | 'auto' } }>(
+    '/api/features/:id/lifecycle-steps/selection',
+    (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const { stepId, decision } = req.body ?? ({} as never);
+      if (!deps.lifecycleStepRepo.get(stepId)) throw httpError(404, 'Schritt nicht gefunden');
+      if (decision !== 'include' && decision !== 'exclude' && decision !== 'auto') {
+        throw httpError(400, 'decision muss include|exclude|auto sein');
+      }
+      deps.lifecycleStepRepo.setDecision(feature.id, stepId, decision);
+      return { ok: true };
     },
   );
 

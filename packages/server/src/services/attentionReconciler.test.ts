@@ -198,3 +198,39 @@ describe('isAttentionValid — Datenbefunde (Plausibilitätsprüfung)', () => {
     for (const kind of BEFUNDE) expect(STAGE_FOR_KIND[kind]).toBeUndefined();
   });
 });
+
+/**
+ * Feature "eigene-schritte-an-den-lebenszyklus-haengen": ein fehlgeschlagener
+ * blockierender Schritt ist eine stehende Meldung. Ein `pnpm install`, das rot war,
+ * wird nicht dadurch grün, dass irgendeine Session desselben Features arbeitet oder
+ * die Integration eine Stufe weiterrückt — beides würde bei `phase_gate_failed`
+ * greifen und genau deshalb ist die Art eigen.
+ */
+describe('isAttentionValid — lifecycle_step_failed', () => {
+  const open = [item('lifecycle_step_failed', { id: 'step', featureId: 'f1' })];
+
+  it('überlebt eine laufende Session desselben Features', () => {
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+    expect(isAttentionValid(open[0]!, snap([working]))).toBe(true);
+    expect(findStaleRuntime(open, snap([working]))).toEqual([]);
+  });
+
+  it('überlebt jeden Stufenwechsel der Integration', () => {
+    for (const stage of ['none', 'verifying', 'awaiting_human_review', 'merged'] as IntegrationStage[]) {
+      expect(findStaleRuntime(open, snap([], [['f1', stage]]))).toEqual([]);
+    }
+  });
+
+  it('überlebt den Neustart (nicht stale beim Boot)', () => {
+    expect(findStaleOnBoot(open, new Map([['f1', 'none' as IntegrationStage]]))).toEqual([]);
+    // Auch ohne bekannten Stage-Eintrag — die Meldung hängt an keiner Stage.
+    expect(findStaleOnBoot(open, new Map())).toEqual([]);
+  });
+
+  it('Gegenprobe: phase_gate_failed wird von einer arbeitenden Session ungültig', () => {
+    const working: LiveSessionState = { sessionId: 's1', status: 'working', featureId: 'f1', conversationId: null };
+    const gate = [item('phase_gate_failed', { id: 'gate', featureId: 'f1' })];
+    expect(findStaleRuntime(gate, snap([working])).map((i) => i.id)).toEqual(['phase_gate_failed-gate']);
+    expect(findStaleRuntime(open, snap([working]))).toEqual([]);
+  });
+});

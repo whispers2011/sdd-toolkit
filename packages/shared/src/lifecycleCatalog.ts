@@ -38,7 +38,7 @@ export const LIFECYCLE_STAGES = [
   'merge',
 ] as const;
 
-export type LifecycleStageId = (typeof LIFECYCLE_STAGES)[number];
+export type LifecycleCatalogStageId = (typeof LIFECYCLE_STAGES)[number];
 
 /** Ort im Code — Datei plus benannte Stelle, bewusst ohne Zeilennummern. */
 export interface CodeLocation {
@@ -48,8 +48,14 @@ export interface CodeLocation {
   symbol: string;
 }
 
-/** Eine einzelne Handlung innerhalb einer Lebenszyklus-Stufe. */
-export interface LifecycleStep {
+/**
+ * Eine einzelne Handlung innerhalb einer Lebenszyklus-Stufe.
+ *
+ * `Catalog` im Namen, weil dies die BESCHREIBUNG fest verdrahteter Toolkit-Arbeit
+ * ist — nicht zu verwechseln mit {@link LifecycleStep} aus `types.ts`, dem vom
+ * Menschen konfigurierten Shell-Kommando.
+ */
+export interface LifecycleCatalogStep {
   /** kebab-case, eindeutig innerhalb der Stufe, stabil (React-Key). */
   id: string;
   /** Deutscher Name, ≤ 60 Zeichen. */
@@ -67,22 +73,22 @@ export interface LifecycleStep {
 
 /** Eine der fünf Stellen im Ablauf, an denen das Toolkit fest verdrahtet arbeitet. */
 export interface LifecycleStage {
-  id: LifecycleStageId;
+  id: LifecycleCatalogStageId;
   title: string;
   /** Einordnungssatz: wann in der Reihenfolge. */
   when: string;
   /** ≥ 1 Schritt; Array-Reihenfolge = Ausführungsreihenfolge. */
-  steps: readonly LifecycleStep[];
+  steps: readonly LifecycleCatalogStep[];
   /** Was das Toolkit hier bewusst NICHT tut (FR-004). */
   notDoneHere?: string;
 }
 
 /**
  * Einzige Quelle der Wahrheit für die Beschreibung dieser Schritte (FR-001).
- * Über `Record<LifecycleStageId, …>` getypt ⇒ eine neue Stufe erzwingt hier
+ * Über `Record<LifecycleCatalogStageId, …>` getypt ⇒ eine neue Stufe erzwingt hier
  * einen Eintrag (Compile-Fehler sonst).
  */
-export const LIFECYCLE_CATALOG: Record<LifecycleStageId, LifecycleStage> = {
+export const LIFECYCLE_CATALOG: Record<LifecycleCatalogStageId, LifecycleStage> = {
   // ---------- Worktree-Anlage ----------
   worktree_create: {
     id: 'worktree_create',
@@ -537,7 +543,7 @@ export const PHASE_LIFECYCLE_STAGES = {
   analyze: STANDARD_PHASE_STAGES,
   tasks: STANDARD_PHASE_STAGES,
   implement: STANDARD_PHASE_STAGES,
-} satisfies Record<FeaturePhase, readonly LifecycleStageId[]>;
+} satisfies Record<FeaturePhase, readonly LifecycleCatalogStageId[]>;
 
 /**
  * Welche Lebenszyklus-Stufe beschreibt den Ablauf, der zu dieser
@@ -559,12 +565,12 @@ export const INTEGRATION_STAGE_ORIGIN = {
   conflict_resolving: 'merge',
   conflict_escalated: 'merge',
   merged: 'merge',
-} satisfies Record<IntegrationStage, LifecycleStageId | null>;
+} satisfies Record<IntegrationStage, LifecycleCatalogStageId | null>;
 
 // ---------- Helfer (rein abgeleitet, kein Zustand) ----------
 
 /** Zugriff auf eine Stufe. Total-Funktion: wirft nie, liefert nie `undefined`. */
-export function lifecycleStage(id: LifecycleStageId): LifecycleStage {
+export function lifecycleStage(id: LifecycleCatalogStageId): LifecycleStage {
   return LIFECYCLE_CATALOG[id];
 }
 

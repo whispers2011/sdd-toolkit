@@ -11,6 +11,7 @@ import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { AgentsPanel } from './components/AgentsPanel.js';
+import { LifecycleStepsPanel } from './components/LifecycleStepsPanel.js';
 import { ReviewOverview } from './components/ReviewOverview.js';
 import { WorkflowOverview } from './components/WorkflowOverview.js';
 import { WorktreeOverview } from './components/WorktreeOverview.js';
@@ -161,6 +162,7 @@ export function App() {
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}
           {state.view.kind === 'knowledge' && <KnowledgePanel projectId={state.view.projectId} />}
           {state.view.kind === 'agents' && <AgentsPanel projectId={state.view.projectId} />}
+          {state.view.kind === 'lifecycle_steps' && <LifecycleStepsPanel projectId={state.view.projectId} />}
         </main>
       </div>
     </div>

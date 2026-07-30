@@ -20,19 +20,30 @@ export const RUN_CATEGORY_LABELS: Record<RunCategory, string> = {
 export function categorizeExecution(e: Pick<ExecutionRecord, 'kind' | 'phase'>): RunCategory {
   if (e.kind === 'phase') return e.phase === 'implement' ? 'coding' : 'spec';
   if (e.kind === 'chat' || e.kind === 'chat_work') return 'chat';
-  return 'overhead'; // verify, review, conflict_resolution
+  return 'overhead'; // verify, review, conflict_resolution, lifecycle_step
 }
 
 /** Anzeige-Reihenfolge der Steps eines Laufs: Workflow-Phasen, danach Integrations-Overhead. */
 const STEP_ORDER: readonly string[] = [
   'constitution',
   ...FEATURE_PHASES,
+  'lifecycle_step',
   'verify',
   'review',
   'conflict_resolution',
   'chat',
   'chat_work',
 ];
+
+/**
+ * Läufe, an denen es nichts zu messen gibt. Ein Lebenszyklus-Schritt ist ein
+ * Shell-Kommando — es verbraucht keine Tokens und meldet keine Herkunft. Im Nenner
+ * der Mess-Herkunft würde er als „ungemessen" zählen und damit den Messanteil eines
+ * Laufs künstlich drücken, obwohl nichts fehlt.
+ */
+function countsTowardSourceMix(e: ExecutionRecord): boolean {
+  return e.kind !== 'lifecycle_step';
+}
 
 export interface RunStep {
   /** Phase (specify, plan, …) oder Kind (verify, review, …). */
@@ -117,11 +128,13 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     if (!step) stepMap.set(key, (step = { key, category, rollup: emptyRollup() }));
     add(step.rollup, e);
 
-    // Nenner sind ALLE Läufe, nicht nur die bereits gemessenen: sonst meldet ein Lauf
-    // mit 1 gemessenen und 10 ungemessenen Executions „100 % gemessen". Der fehlende
-    // Rest zu 1 ist der ungemessene Anteil.
-    sourceTotal += 1;
-    if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
+    // Nenner sind ALLE Läufe, an denen es etwas zu messen gibt — nicht nur die bereits
+    // gemessenen: sonst meldet ein Lauf mit 1 gemessenen und 10 ungemessenen Executions
+    // „100 % gemessen". Der fehlende Rest zu 1 ist der ungemessene Anteil.
+    if (countsTowardSourceMix(e)) {
+      sourceTotal += 1;
+      if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
+    }
     if (startedAt === 0 || e.startedAt < startedAt) startedAt = e.startedAt;
     const activity = e.finishedAt ?? e.startedAt;
     if (activity > lastActivityAt) lastActivityAt = activity;

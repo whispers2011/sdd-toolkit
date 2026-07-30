@@ -23,7 +23,8 @@ export type View =
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }
-  | { kind: 'agents'; projectId: string };
+  | { kind: 'agents'; projectId: string }
+  | { kind: 'lifecycle_steps'; projectId: string };
 
 /** Laufender Antwort-Stream eines Chat-Turns (kumulierter Text, idempotent). */
 export interface ChatStreamState {
@@ -193,6 +194,8 @@ function reducer(state: UiState, action: Action): UiState {
         } else if (view.kind === 'knowledge' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
         } else if (view.kind === 'agents' && view.projectId !== action.projectId) {
+          view = { kind: 'board' };
+        } else if (view.kind === 'lifecycle_steps' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
         }
       }

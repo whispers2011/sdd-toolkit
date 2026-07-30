@@ -67,6 +67,14 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       const s = findSession(item, snap);
       return !(s && s.status === 'working');
     }
+    case 'lifecycle_step_failed':
+      // Ein fehlgeschlagener Lebenszyklus-Schritt (z. B. `pnpm install`) ist nicht
+      // dadurch behoben, dass irgendeine Session desselben Features arbeitet oder
+      // die Integration eine Stufe weiterrückt. Die Meldung bleibt gültig, bis ein
+      // erfolgreicher Wiederanlauf desselben Auslösers sie auflöst — oder der Mensch
+      // sie in der Inbox erledigt. Bewusst NICHT im Zweig der „Prozess"-Meldungen
+      // und bewusst ohne Eintrag in STAGE_FOR_KIND (sonst räumt jeder setStage() sie ab).
+      return true;
     case 'review_due':
     case 'verify_failed':
     case 'gate_failed':
@@ -115,6 +123,9 @@ export function findStaleOnBoot(
     // Ein Ausfall wird gerade BEIM Boot gemeldet — er darf im selben Boot nicht wieder
     // aufgelöst werden und auch nicht in den pauschalen Stale-Zweig unten geraten (C4.7).
     if (i.kind === 'server_outage') return false;
+    // Ein fehlgeschlagener Lebenszyklus-Schritt überlebt den Neustart: er hängt an
+    // keiner Session und ist ohne Wiederanlauf weiterhin offen.
+    if (i.kind === 'lifecycle_step_failed') return false;
     if (i.kind === 'awaiting_input' || i.kind === 'agent_errored') return true;
     return !isAttentionValid(i, snap);
   });
