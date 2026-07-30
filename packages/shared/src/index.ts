@@ -32,3 +32,4 @@ export * from './attentionList.js';
 export * from './jiraSprints.js';
 export * from './jiraContent.js';
 export * from './outage.js';
+export * from './resourcePressure.js';

@@ -46,6 +46,7 @@ import type {
   SavePhaseDefinitionRequest,
   SavePhaseDefinitionResult,
   SelectionDecision,
+  SystemStatus,
   WorktreeOverview,
 } from '@sdd/shared';
 
@@ -436,6 +437,13 @@ export const api = {
       'GET',
       `/api/features/${featureId}/agent-runs/${encodeURIComponent(runId)}/report`,
     ),
+
+  /**
+   * Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck samt fertiger
+   * Bewertung und der zuletzt registrierte Ausfall. Die Schwellen entscheidet der
+   * Server — hier wird nur gezeigt, was er urteilt.
+   */
+  systemStatus: () => request<SystemStatus>('GET', '/api/system/status'),
 
   // Worktree-Übersicht (tool-weit, projektübergreifend)
   worktrees: (refresh = false) =>

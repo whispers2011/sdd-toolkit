@@ -725,6 +725,51 @@ export interface OperationsEntry {
   pid?: number;
 }
 
+/**
+ * Momentaufnahme des Ressourcendrucks. Lebt nur im Arbeitsspeicher (10 s Cache),
+ * wird nie persistiert.
+ *
+ * Jede Kennzahl ist einzeln `null`-fähig: eine nicht ermittelbare Zahl darf die
+ * übrigen nicht unterdrücken und wird nirgends geraten (FR-022).
+ */
+export interface ResourceSnapshot {
+  /** Freier Plattenplatz des Datenverzeichnisses in Bytes; null = nicht ermittelbar. */
+  diskFreeBytes: number | null;
+  /** Gesamtgrösse des Datenträgers in Bytes; null = nicht ermittelbar. */
+  diskTotalBytes: number | null;
+  /** Auslastung des Auslagerungsspeichers 0..1; null = nicht ermittelbar. */
+  swapUsedRatio: number | null;
+  swapUsedBytes: number | null;
+  swapTotalBytes: number | null;
+  /** Zahl der Features, für die gerade mindestens ein Lauf läuft (D12). */
+  activeFeatures: number;
+  /** Erhebungszeitpunkt (ms) — NICHT der Antwortzeitpunkt; die Oberfläche prüft daran das Alter (FR-021). */
+  collectedAt: number;
+}
+
+/** Stufe des Ressourcendrucks; die Schwellen dazu stehen in `resourcePressure.ts`. */
+export type PressureLevel = 'ok' | 'notice' | 'warn';
+
+/**
+ * Bewertung einer {@link ResourceSnapshot}. Sie entsteht serverseitig aus einer reinen
+ * Funktion — die Oberfläche entscheidet keine Schwellen selbst, sie zeigt das Urteil (C3.5).
+ */
+export interface PressureVerdict {
+  level: PressureLevel;
+  /** Kurzform für die Kopfleiste, z. B. „813 MB · Swap 80 % · 3 parallel". */
+  summary: string;
+  /** Ausformulierter Hinweis, wenn Druck und Parallelität zusammentreffen (FR-020, US3-4); sonst null. */
+  notice: string | null;
+}
+
+/** Antwort von `GET /api/system/status` (Contract C3). */
+export interface SystemStatus {
+  resources: ResourceSnapshot;
+  pressure: PressureVerdict;
+  /** Zuletzt registrierter Ausfall — überlebt das Erledigen der Meldung (FR-023); null = keiner bekannt. */
+  lastOutage: OutageRecord | null;
+}
+
 export function resolveAutomation(
   global: AutomationSettings,
   project: Partial<AutomationSettings>,

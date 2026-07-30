@@ -15,6 +15,7 @@ import { ReviewOverview } from './components/ReviewOverview.js';
 import { WorkflowOverview } from './components/WorkflowOverview.js';
 import { WorktreeOverview } from './components/WorktreeOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
+import { SystemStatus } from './components/SystemStatus.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { TooltipLayer } from './components/Tooltip.js';
 import { InsightsIcon } from './components/icons.js';
@@ -119,6 +120,9 @@ export function App() {
             >
               <InsightsIcon className="h-5 w-5" />
             </button>
+            {/* Ressourcendruck vor den Werkzeugen: die Warnung muss im Blick sein,
+                BEVOR ein weiteres Feature gestartet wird (SC-007, D17). */}
+            <SystemStatus />
             <ThemeToggle />
             <AutomationDial />
           </div>

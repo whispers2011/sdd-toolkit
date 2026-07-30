@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
-import type { AgentDefinition, ApproveMergeRequest, FeaturePhase } from '@sdd/shared';
+import type { AgentDefinition, ApproveMergeRequest, FeaturePhase, SystemStatus } from '@sdd/shared';
 import {
   FEATURE_PHASES,
   MAX_DOCUMENT_BYTES,
@@ -18,6 +18,7 @@ import {
   buildRunSummaries,
   compileReviewPrompt,
   detectCycle,
+  evaluatePressure,
   orderedPhases,
   renderTranscriptLog,
   reopenLastPhase,
@@ -48,6 +49,8 @@ import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
 import type { WorktreeOverviewService } from '../services/worktreeOverviewService.js';
+import type { ResourceMonitor } from '../services/resourceMonitor.js';
+import type { OutageMonitor } from '../services/outageMonitor.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
@@ -96,6 +99,10 @@ export interface ApiDeps {
   jiraImport: JiraImportService;
   featureDocuments: FeatureDocumentsService;
   worktreeOverview: WorktreeOverviewService;
+  /** Ressourcendruck für die Kopfleiste (Feature „server-ausfaelle-sichtbar-machen", C3). */
+  resourceMonitor: ResourceMonitor;
+  /** Quelle des zuletzt registrierten Ausfalls (FR-023, D13). */
+  outageMonitor: OutageMonitor;
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   /** Puffer der Verbrauchsmeldungen (Feature "token-und-kostenmessung..."). */
@@ -144,6 +151,23 @@ export async function buildServer(deps: ApiDeps) {
 
   // Worktree-Übersicht (tool-weit: Bestand, geänderte Dateien, Warnungen, Aufräumen).
   registerWorktreeRoutes(app, { worktreeOverview: deps.worktreeOverview });
+
+  // Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck und der zuletzt
+  // registrierte Ausfall. Antwortet IMMER 200 — auch wenn jede einzelne Kennzahl
+  // fehlschlägt, dann stehen dort `null` (C3.1). Die Bewertung kommt aus derselben
+  // reinen Funktion, die auch getestet wird; die Oberfläche entscheidet keine
+  // Schwellen selbst (C3.5).
+  app.get('/api/system/status', async (): Promise<SystemStatus> => {
+    const resources = await deps.resourceMonitor.snapshot();
+    return {
+      resources,
+      pressure: evaluatePressure(resources),
+      // `null`, solange im Betriebsprotokoll kein Ausfall steht. Der Wert überlebt das
+      // Erledigen der Aufmerksamkeitsmeldung — die Attention-Tabelle wird geleert,
+      // das Protokoll nicht (FR-023, C3.4, D13).
+      lastOutage: deps.outageMonitor.lastOutage,
+    };
+  });
 
   // ---------- Bootstrap ----------
 

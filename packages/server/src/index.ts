@@ -33,6 +33,7 @@ import { ChangeGuard } from './services/changeGuard.js';
 import { HeartbeatStore } from './services/heartbeatStore.js';
 import { OperationsLog, describeError } from './services/operationsLog.js';
 import { OutageMonitor } from './services/outageMonitor.js';
+import { ResourceMonitor } from './services/resourceMonitor.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
 import { TelemetryStore } from './telemetry/telemetryStore.js';
@@ -83,6 +84,10 @@ async function main(): Promise<void> {
   });
   outageMonitor.detectOnBoot();
   outageMonitor.startHeartbeat();
+
+  // Ressourcendruck für die Kopfleiste (US3). Bewusst OHNE eigenen Timer: erhoben wird
+  // nur, wenn jemand hinschaut, mit 10 s Cache gegen das 20-s-Polling (D11).
+  const resourceMonitor = new ResourceMonitor({ dataDir: config.dataDir, executions });
 
   const knowledgeService = new KnowledgeService({ knowledge, projects, features });
 
@@ -259,6 +264,8 @@ async function main(): Promise<void> {
     jiraImport,
     featureDocuments,
     worktreeOverview,
+    resourceMonitor,
+    outageMonitor,
     worktrees,
     ptys,
     telemetry,
