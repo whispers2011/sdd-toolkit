@@ -3,6 +3,7 @@ import type { Feature } from '@sdd/shared';
 import { INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { isShowCompleted, useStore } from '../store.js';
+import { getPersonal } from '../personalSettings.js';
 import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
@@ -306,9 +307,11 @@ export function Sidebar() {
 }
 
 /**
- * Einheitlicher Einstieg „Neues Feature": prüft den Jira-Verbindungsstatus und öffnet
- * standardmäßig den Jira-Import (wenn verbunden) bzw. die manuelle Erfassung (sonst).
- * Im verbundenen Fall lässt sich im Dialog zwischen beiden Quellen umschalten.
+ * Einheitlicher Einstieg „Neues Feature" (in den Verträgen `FeatureSourceGate`):
+ * prüft den Jira-Verbindungsstatus und öffnet die eingestellte Vorauswahl (wenn
+ * verbunden) bzw. zwingend die manuelle Erfassung (sonst). Im verbundenen Fall
+ * lässt sich im Dialog weiterhin zwischen beiden Quellen umschalten — das
+ * verändert die gespeicherte Vorauswahl NICHT (U7.4, FR-031).
  */
 function NewFeatureFlow({
   projectId,
@@ -330,7 +333,10 @@ function NewFeatureFlow({
         if (!alive) return;
         const c = s.state === 'connected';
         setConnected(c);
-        setMode(c ? 'jira' : 'manual');
+        // Verbunden ⇒ die nutzerweite Vorauswahl entscheidet (U7.1, FR-029).
+        // Ohne Verbindung ⇒ zwingend manuell, ohne den gespeicherten Wert
+        // anzufassen (U7.2, FR-030).
+        setMode(c ? getPersonal().ticketSource : 'manual');
       })
       .catch(() => {
         if (alive) {
