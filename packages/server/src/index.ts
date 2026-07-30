@@ -31,7 +31,7 @@ import { OnboardingService } from './services/onboardingService.js';
 import { WorktreeOverviewService } from './services/worktreeOverviewService.js';
 import { ChangeGuard } from './services/changeGuard.js';
 import { HeartbeatStore } from './services/heartbeatStore.js';
-import { OperationsLog } from './services/operationsLog.js';
+import { OperationsLog, describeError } from './services/operationsLog.js';
 import { OutageMonitor } from './services/outageMonitor.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
@@ -271,7 +271,7 @@ async function main(): Promise<void> {
   console.log(`sdd-toolkit Server läuft auf http://${config.host}:${config.port}`);
   console.log(config.webDir ? `Web-Bundle wird ausgeliefert aus ${config.webDir}` : 'Web: Dev-Modus (Vite)');
 
-  const shutdown = async () => {
+  const shutdown = async (signal: string) => {
     console.log('Fahre herunter — beende Sessions …');
     clearInterval(guardInterval);
     clearInterval(chatIdleInterval);
@@ -286,21 +286,56 @@ async function main(): Promise<void> {
     // Takt anhalten und den geordneten Abgang im Lebenszeichen vermerken — danach ist
     // eine Lücke beliebiger Länge kein Ausfall mehr (FR-002).
     outageMonitor.stop();
+    // Abgang festhalten, bevor die Datenbank zugeht. Das Protokoll ist eine eigene
+    // Datei genau deshalb: hier ist die DB gleich weg, und `process.on('exit')` unten
+    // könnte ohnehin nur noch synchron schreiben (D6, C2.7).
+    operationsLog.appendFarewell({
+      ts: Date.now(),
+      instanceId,
+      kind: 'shutdown',
+      signal,
+      uptimeMs: Date.now() - startedAt,
+    });
     db.close();
     process.exit(0);
   };
-  process.on('SIGINT', () => void shutdown());
-  process.on('SIGTERM', () => void shutdown());
+  // SIGINT (Ctrl-C im Terminal) und SIGTERM (`kill`) laufen beide durch denselben
+  // geordneten Pfad — sie sind beide „geordnetes Herunterfahren". Unterscheidbar bleiben
+  // sie über das mitgeführte Signal, nicht über eine erfundene Wertung (D8).
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGHUP', () => void shutdown('SIGHUP'));
+
+  // Letzte Gelegenheit für den Abgangseintrag — etwa bei `process.exit()` aus einem
+  // anderen Pfad. `'exit'` verwirft asynchrone Arbeit, deshalb schreibt das Protokoll
+  // synchron (C2.7). Das Once-Flag verhindert die Dublette aus
+  // shutdown() → process.exit(0) → 'exit' (C2.2).
+  process.on('exit', (exitCode) => {
+    operationsLog.appendFarewell({
+      ts: Date.now(),
+      instanceId,
+      kind: 'exit',
+      exitCode,
+      uptimeMs: Date.now() - startedAt,
+    });
+  });
 
   // Letztes Sicherheitsnetz: ein Fehler in einem Hintergrund-Timer, PTY-Event
   // oder einer gevoideten Promise darf den Server NICHT beenden. Node 22 würde
   // sonst (Default „throw") den ganzen Prozess reißen — das Toolkit „beendet
   // sich selbst". Loggen und weiterlaufen.
+  //
+  // Der Vorfall wird zusätzlich protokolliert: er beantwortet beim Nachlesen die Frage
+  // „ist der Server an sich selbst gestorben?". Ein `uncaught`-Eintrag ist deshalb KEIN
+  // Abgang — der Guard beendet den Prozess nicht, und das Once-Flag des Abgangs bleibt
+  // unberührt (C2.3, FR-013).
   process.on('unhandledRejection', (reason) => {
     console.error('[fatal-guard] Unbehandelte Promise-Rejection (Server läuft weiter):', reason);
+    operationsLog.append({ ts: Date.now(), instanceId, kind: 'uncaught', error: describeError(reason) });
   });
   process.on('uncaughtException', (err) => {
     console.error('[fatal-guard] Unbehandelte Exception (Server läuft weiter):', err);
+    operationsLog.append({ ts: Date.now(), instanceId, kind: 'uncaught', error: describeError(err) });
   });
 }
 
