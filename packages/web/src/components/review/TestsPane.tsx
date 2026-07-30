@@ -45,13 +45,13 @@ export function TestsPane({
     };
   }, [executions]);
 
-  if (!executions) return <p className="p-4 text-sm text-zinc-600">Lade Verify-Läufe …</p>;
+  if (!executions) return <p className="p-4 text-sm text-zinc-400">Lade Verify-Läufe …</p>;
   if (executions.length === 0) {
     // Zwei verschiedene Sachverhalte, die vorher gleich aussahen: „konfiguriert, aber
     // noch nicht gelaufen" und „es gibt nichts, was laufen könnte" (FR-008). Der
     // zweite ist der gefährliche — hier wird er benannt.
     return verificationConfigured ? (
-      <p className="p-4 text-sm text-zinc-600">
+      <p className="p-4 text-sm text-zinc-400">
         Noch kein Verifikations-Lauf — die im Projekt hinterlegten Kommandos laufen mit der nächsten Integration.
       </p>
     ) : (
@@ -81,16 +81,16 @@ export function TestsPane({
                 {e.status === 'succeeded' ? '●' : e.status === 'running' ? '◐' : '●'}
               </span>
               <span className="text-zinc-300">{new Date(e.startedAt).toLocaleString('de-CH')}</span>
-              <span className="text-zinc-500">
+              <span className="text-zinc-400">
                 {e.finishedAt ? `${Math.round((e.finishedAt - e.startedAt) / 1000)}s` : 'läuft …'}
               </span>
-              {e.exitCode !== null && <span className="text-zinc-600">exit {e.exitCode}</span>}
-              <span className="ml-auto text-zinc-500">
+              {e.exitCode !== null && <span className="text-zinc-400">exit {e.exitCode}</span>}
+              <span className="ml-auto text-zinc-400">
                 {e.tokens ? `${fmtTokens(e.tokens)} tok` : ''}
               </span>
             </button>
             {selected === e.id && (
-              <pre className="mt-1 max-h-72 overflow-auto rounded border border-zinc-800 bg-[#0a0a0c] p-2 text-[11px] leading-4 whitespace-pre-wrap text-zinc-400">
+              <pre className="mt-1 max-h-72 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] leading-4 whitespace-pre-wrap text-zinc-400">
                 {log ?? 'Lade Log …'}
               </pre>
             )}
@@ -104,7 +104,7 @@ export function TestsPane({
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'bad' }) {
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
-      <div className="text-[10px] tracking-wide text-zinc-500 uppercase">{label}</div>
+      <div className="text-[10px] tracking-wide text-zinc-400 uppercase">{label}</div>
       <div className={`text-sm font-semibold ${tone === 'ok' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-zinc-200'}`}>
         {value}
       </div>

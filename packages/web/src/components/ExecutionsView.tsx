@@ -238,7 +238,7 @@ export function ExecutionsView() {
               ✕
             </button>
           </div>
-          <pre className="min-h-0 flex-1 overflow-auto bg-[#0a0a0c] p-3 font-mono text-xs whitespace-pre-wrap text-zinc-400">
+          <pre className="min-h-0 flex-1 overflow-auto bg-zinc-950 p-3 font-mono text-xs whitespace-pre-wrap text-zinc-400">
             {log === null
               ? 'Lade …'
               : log === ''

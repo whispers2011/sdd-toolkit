@@ -172,7 +172,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
           <h2 className="text-sm font-semibold text-zinc-100">
             Review: {project?.name} / {feature.name}
           </h2>
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-zinc-400">
             {feature.branch} → {feature.integrationTarget ?? project?.defaultBranch}
           </span>
           <div className="ml-auto flex items-center gap-4 text-xs">
@@ -273,15 +273,15 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                           <span className="truncate">{f.path}</span>
                           {fileCommentCount > 0 && <span title={`${fileCommentCount} offene(r) Kommentar(e)`}>💬</span>}
                           <span className="ml-auto whitespace-nowrap">
-                            <span className="text-emerald-500">+{f.additions}</span>{' '}
-                            <span className="text-red-500">−{f.deletions}</span>
+                            <span className="text-emerald-300">+{f.additions}</span>{' '}
+                            <span className="text-red-300">−{f.deletions}</span>
                           </span>
                         </button>
                       </li>
                     );
                   })}
                   {summary && summary.files.length === 0 && (
-                    <li className="px-2 py-4 text-xs text-zinc-600">
+                    <li className="px-2 py-4 text-xs text-zinc-400">
                       Keine Änderungen gegen {project?.defaultBranch}.
                     </li>
                   )}
@@ -324,9 +324,9 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               <ul className="h-full space-y-1 overflow-y-auto p-4">
                 {summary?.commits.map((c) => (
                   <li key={c.sha} className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900 px-3 py-2">
-                    <code className="text-xs text-zinc-500">{c.sha.slice(0, 8)}</code>
+                    <code className="text-xs text-zinc-400">{c.sha.slice(0, 8)}</code>
                     <span className="text-sm text-zinc-300">{c.subject}</span>
-                    <span className="ml-auto text-xs text-zinc-600">{new Date(c.date).toLocaleString('de-CH')}</span>
+                    <span className="ml-auto text-xs text-zinc-400">{new Date(c.date).toLocaleString('de-CH')}</span>
                   </li>
                 ))}
               </ul>
@@ -341,7 +341,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                   {treeSelected ? (
                     <FileEditor featureId={featureId} path={treeSelected} editable={!!reviewable} onError={fail} />
                   ) : (
-                    <p className="p-4 text-sm text-zinc-600">
+                    <p className="p-4 text-sm text-zinc-400">
                       Datei links auswählen. Gespeicherte Änderungen werden beim Freigeben als
                       Reviewer-Korrektur committet und erzwingen eine Re-Verifikation.
                     </p>
@@ -390,7 +390,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
             )}
             {/* Vorschau statt technischer Zustandsmeldung (FR-019). */}
             {approveV?.availability === 'hidden' && (
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-zinc-400">
                 {feature.integration === 'merged'
                   ? 'Bereits integriert.'
                   : feature.integration === 'none'
@@ -437,13 +437,13 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
         <Dialog title="Zurückweisen mit Feedback" onClose={() => setShowReject(false)}>
           {openComments.length > 0 && (
             <div className="mb-2 max-h-40 overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-2">
-              <p className="mb-1 text-[10px] tracking-wide text-zinc-500 uppercase">
+              <p className="mb-1 text-[10px] tracking-wide text-zinc-400 uppercase">
                 Geht mit — {openComments.length} offene(r) Kommentar(e):
               </p>
               <ul className="space-y-0.5 text-xs text-zinc-400">
                 {openComments.map((c) => (
                   <li key={c.id} className="truncate">
-                    <span className="font-mono text-[10px] text-sky-500">
+                    <span className="font-mono text-[10px] text-sky-300">
                       {c.filePath ? `${c.filePath}${c.line !== null ? `:${c.line}` : ''}` : 'Allgemein'}
                     </span>{' '}
                     {c.text}
@@ -504,7 +504,7 @@ function HeaderStat({
 }) {
   return (
     <span className="flex items-center gap-1">
-      <span className="text-zinc-600">{label}</span>
+      <span className="text-zinc-400">{label}</span>
       <span className={tone ? STAT_TONE[tone] : 'text-zinc-300'}>{value}</span>
     </span>
   );
@@ -525,9 +525,9 @@ function PortalTab({ active, onClick, children }: { active: boolean; onClick: ()
 
 /** Zeilenbasierter Roh-Diff (Konfliktauflösung pre/post). */
 export function DiffView({ diff }: { diff: string }) {
-  if (!diff) return <p className="p-4 text-sm text-zinc-600">Lade Diff …</p>;
+  if (!diff) return <p className="p-4 text-sm text-zinc-400">Lade Diff …</p>;
   return (
-    <pre className="overflow-x-auto rounded border border-zinc-800 bg-[#0a0a0c] p-3 font-mono text-xs leading-5">
+    <pre className="overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-5">
       {diff.split('\n').map((line, i) => {
         let cls = 'text-zinc-400';
         if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-zinc-500 font-semibold';
@@ -587,7 +587,7 @@ function ResolutionView({ resolutions }: { resolutions: ExecutionInfo[] }) {
         {diffs ? (
           <DiffView diff={(side === 'pre' ? diffs.pre : diffs.post) ?? 'Kein Diff aufgezeichnet.'} />
         ) : (
-          <p className="text-sm text-zinc-600">Lade …</p>
+          <p className="text-sm text-zinc-400">Lade …</p>
         )}
       </div>
     </div>
