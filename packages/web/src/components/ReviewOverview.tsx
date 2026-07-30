@@ -140,6 +140,7 @@ function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () =>
   const ctx = featureActionContext(state, f.id);
   const retryV = ctx ? evaluateAction('integration_retry', ctx) : null;
   const isPreview = item.stage === 'none';
+  const openTasks = Math.max(0, f.tasksTotal - f.tasksDone);
   // Die beiden Sonderfälle dieser Ansicht bleiben; alle übrigen Stufen holen ihren Ton
   // aus dem Katalog, statt pauschal rot zu sein. Für die Fehlerstufen ist das
   // unverändert rot — die neue Stufe „keine Verifikation konfiguriert" wird dagegen
@@ -174,6 +175,14 @@ function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () =>
               uncommittet
             </span>
           )}
+          {/* Der Aufgabenstand steht dort, wo über den Merge entschieden wird
+              (FR-012). Die Werte liegen in item.feature — keine zusätzliche Anfrage. */}
+          <span
+            className={openTasks > 0 ? 'text-amber-400' : undefined}
+            title="Erledigte Aufgaben aus tasks.md"
+          >
+            {f.tasksTotal === 0 ? 'keine Aufgabenliste' : `${f.tasksDone}/${f.tasksTotal} Aufgaben`}
+          </span>
           {item.openComments > 0 && <span>💬 {item.openComments}</span>}
         </div>
       </div>

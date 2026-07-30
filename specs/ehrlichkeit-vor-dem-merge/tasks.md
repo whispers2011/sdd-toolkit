@@ -133,14 +133,14 @@ Meldung „Feature gemergt" denselben Stand (quickstart.md §3).
 
 ### Tests for User Story 2
 
-- [ ] T027 [US2] `packages/shared/src/integrationMessages.test.ts` erweitern: `mergedNotificationBody` liefert `<name> → <target> · <taskProgressText>` für 68/76, für 76/76 und für ein Feature ohne Aufgabenliste (`keine Aufgabenliste vorhanden` statt `0/0`) — FR-012a, FR-013
+- [X] T027 [US2] `packages/shared/src/integrationMessages.test.ts` erweitern: `mergedNotificationBody` liefert `<name> → <target> · <taskProgressText>` für 68/76, für 76/76 und für ein Feature ohne Aufgabenliste (`keine Aufgabenliste vorhanden` statt `0/0`) — FR-012a, FR-013
 
 ### Implementation for User Story 2
 
-- [ ] T028 [US2] `packages/server/src/services/mergeQueueService.ts:564-569`: `body` der Meldung `kind: 'merged'` über `mergedNotificationBody(feature, target)` bauen (FR-012a, research.md D5)
-- [ ] T029 [US2] `packages/server/src/services/mergeQueueService.ts:618-623` (PR-Modus): den Aufgabenstand aus `taskProgressText(feature)` an den `body` anfügen, ohne die PR-URL zu verlieren — der PR-Pfad hat ebenfalls kein menschliches Review-Halt (FR-012a, research.md D5, Edge Case „Integration über Pull Request")
-- [ ] T030 [US2] `packages/web/src/components/ReviewPortal.tsx:163-181`: eine `HeaderStat`-Kennzahl `Aufgaben` mit `feature.tasksDone`/`feature.tasksTotal` ergänzen (bei `tasksTotal === 0` „keine Liste"), Ton `'warn'` sobald offene Aufgaben > 0 — sichtbar ohne Reiterwechsel und ohne Klick (FR-014, FR-015)
-- [ ] T031 [US2] `packages/web/src/components/ReviewOverview.tsx`: je Zeile den Aufgabenstand aus `item.feature.tasksDone`/`tasksTotal` neben den übrigen Kennzahlen zeigen, offene Aufgaben amber; keine zusätzliche Anfrage — die Werte liegen in `item.feature` (FR-012, contracts/http.md §4)
+- [X] T028 [US2] `packages/server/src/services/mergeQueueService.ts:564-569`: `body` der Meldung `kind: 'merged'` über `mergedNotificationBody(feature, target)` bauen (FR-012a, research.md D5)
+- [X] T029 [US2] `packages/server/src/services/mergeQueueService.ts:618-623` (PR-Modus): den Aufgabenstand aus `taskProgressText(feature)` an den `body` anfügen, ohne die PR-URL zu verlieren — der PR-Pfad hat ebenfalls kein menschliches Review-Halt (FR-012a, research.md D5, Edge Case „Integration über Pull Request")
+- [X] T030 [US2] `packages/web/src/components/ReviewPortal.tsx:163-181`: eine `HeaderStat`-Kennzahl `Aufgaben` mit `feature.tasksDone`/`feature.tasksTotal` ergänzen (bei `tasksTotal === 0` „keine Liste"), Ton `'warn'` sobald offene Aufgaben > 0 — sichtbar ohne Reiterwechsel und ohne Klick (FR-014, FR-015)
+- [X] T031 [US2] `packages/web/src/components/ReviewOverview.tsx`: je Zeile den Aufgabenstand aus `item.feature.tasksDone`/`tasksTotal` neben den übrigen Kennzahlen zeigen, offene Aufgaben amber; keine zusätzliche Anfrage — die Werte liegen in `item.feature` (FR-012, contracts/http.md §4)
 
 **Checkpoint**: US1 und US2 funktionieren unabhängig; Sichtprüfung B aus quickstart.md §3 vollständig
 durchführbar, die Freigabe ist nachweislich nicht gesperrt (FR-016, SC-005).

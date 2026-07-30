@@ -109,6 +109,8 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   }, [runs]);
   const auditsPassed = latestAudits.filter((r) => r.verdict === 'PASS').length;
   const openComments = comments.filter((c) => c.status === 'open');
+  // Rohwerte, nicht zurechtgebogen: bei widersprüchlicher Zählung nie negativ.
+  const openTasks = Math.max(0, (feature?.tasksTotal ?? 0) - (feature?.tasksDone ?? 0));
 
   const refreshComments = () => api.comments(featureId).then(setComments).catch(fail);
 
@@ -174,6 +176,14 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                   ? `+${summary.files.reduce((s, f) => s + f.additions, 0)} −${summary.files.reduce((s, f) => s + f.deletions, 0)}`
                   : '…'
               }
+            />
+            {/* Ohne Reiterwechsel und ohne Klick sichtbar (FR-014); offene Aufgaben
+                amber, weil dann etwas nicht fertig ist, was gemergt werden soll
+                (FR-015). Informiert — sperrt nicht (FR-016). */}
+            <HeaderStat
+              label="Aufgaben"
+              value={feature.tasksTotal === 0 ? 'keine Liste' : `${feature.tasksDone}/${feature.tasksTotal}`}
+              tone={openTasks > 0 ? 'warn' : undefined}
             />
             <HeaderStat
               label="Audits"

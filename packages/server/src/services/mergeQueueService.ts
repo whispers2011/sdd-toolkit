@@ -1,7 +1,14 @@
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { ACTION_REASON, alreadyIntegratingReason, isValidBranchName, reviewDueMessage } from '@sdd/shared';
+import {
+  ACTION_REASON,
+  alreadyIntegratingReason,
+  isValidBranchName,
+  mergedNotificationBody,
+  reviewDueMessage,
+  taskProgressText,
+} from '@sdd/shared';
 import type {
   ApproveMergeRequest,
   Feature,
@@ -674,8 +681,10 @@ export class MergeQueueService {
     this.deps.queue.remove(queueId);
     this.emitQueue(projectId);
     bus.emitEvent('notification', {
+      // Auf dem Auto-Merge-Pfad ist das die einzige Gelegenheit, den Aufgabenstand
+      // zu sehen — es gibt dort kein menschliches Review-Halt (FR-012a).
       title: 'Feature gemergt',
-      body: `${feature.name} → ${target}`,
+      body: mergedNotificationBody(feature, target),
       featureId,
       kind: 'merged',
     });
@@ -729,7 +738,9 @@ export class MergeQueueService {
     this.emitQueue(project.id);
     bus.emitEvent('notification', {
       title: 'PR erstellt',
-      body: `${feature.name}: ${pr.stdout.trim().split('\n').at(-1) ?? feature.branch}`,
+      // Der PR-Pfad hat ebenfalls kein menschliches Review-Halt — der Aufgabenstand
+      // gehört auch hierher (FR-012a). Die PR-URL bleibt am Anfang stehen.
+      body: `${feature.name}: ${pr.stdout.trim().split('\n').at(-1) ?? feature.branch} · ${taskProgressText(feature)}`,
       featureId: feature.id,
       kind: 'merged',
     });
