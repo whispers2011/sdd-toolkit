@@ -26,9 +26,14 @@ import {
   LEVEL2_DEFAULTS,
   OPTIMIZATION_DEFAULTS,
   OPTIMIZATION_OFF_DEFAULTS,
+  isTicketSource,
   meteringConflictFactor,
+  normalizeSoundSettings,
+  normalizeTicketSource,
   parseOptimizationPartial,
+  type PersonalSettings,
   type PhaseMap,
+  type SoundSettings,
 } from '@sdd/shared';
 import type { DB } from './database.js';
 
@@ -1246,5 +1251,58 @@ export class SettingsRepo {
       .prepare(`INSERT INTO settings (key, value) VALUES ('optimization', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(JSON.stringify(merged));
     return merged;
+  }
+
+  /**
+   * Wie `getJson`, aber ein defekter Wert liefert `null` statt zu werfen (A4.2).
+   * Eine kaputte Zeile in `settings` darf den Boot-Zustand nicht auf 500 legen.
+   */
+  private readJsonSafe(key: string): unknown {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as
+      | { value: string }
+      | undefined;
+    if (!r) return null;
+    try {
+      return JSON.parse(r.value) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Individuelle Einstellungen (Feature „persoenliche-einstellungen").
+   *
+   * Bewusst ZWEI Einträge (`sound`, `ticketSource`) statt eines Bündels: so
+   * bleibt die Vorauswahl der Ticket-Quelle getrennt von `jira.lastSelection`
+   * (E6). Die Regeln selbst leben ausschliesslich in `@sdd/shared` — der Server
+   * hält keine zweite Auslöser- oder Tonliste (A4.3).
+   */
+  getPersonal(): PersonalSettings {
+    return {
+      sound: normalizeSoundSettings(this.readJsonSafe('sound')),
+      ticketSource: normalizeTicketSource(this.readJsonSafe('ticketSource')),
+    };
+  }
+
+  /** Teilmengen-Semantik: nur mitgesandte Felder ändern sich (A2.1). */
+  setPersonal(patch: { sound?: unknown; ticketSource?: unknown }): PersonalSettings {
+    const sound = patch?.sound;
+    if (typeof sound === 'object' && sound !== null && !Array.isArray(sound)) {
+      const p = sound as Record<string, unknown>;
+      const cur = normalizeSoundSettings(this.readJsonSafe('sound'));
+      // `reactions` wird als GANZE Karte ersetzt, nicht je Schlüssel gemischt
+      // (A2.2) — nur so lässt sich ein Auslöser zurück auf Stille bringen.
+      const next: SoundSettings = normalizeSoundSettings({
+        enabled: 'enabled' in p ? p.enabled : cur.enabled,
+        volume: 'volume' in p ? p.volume : cur.volume,
+        reactions: 'reactions' in p ? p.reactions : cur.reactions,
+      });
+      this.setJson('sound', next);
+    }
+
+    // Ungültige Werte werden ignoriert, der Bestand bleibt stehen (A2.5).
+    if (isTicketSource(patch?.ticketSource)) this.setJson('ticketSource', patch.ticketSource);
+
+    return this.getPersonal();
   }
 }

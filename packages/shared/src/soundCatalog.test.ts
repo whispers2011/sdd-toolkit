@@ -14,8 +14,15 @@ import {
   tone,
   toneDurationMs,
   toneFingerprint,
+  type SoundEvent,
 } from './soundCatalog.js';
-import { FEATURE_PHASES, type SoundSettings, type SoundTriggerId } from './types.js';
+import {
+  FEATURE_PHASES,
+  type AttentionKind,
+  type FeaturePhase,
+  type SoundSettings,
+  type SoundTriggerId,
+} from './types.js';
 
 // ---------- S1: Auslöser-Katalog ----------
 
@@ -150,13 +157,13 @@ describe('Standardbelegung (S3)', () => {
 });
 
 /** Hilfsbrücke: aus einer Auslöser-ID das Ereignis bauen, das sie auslöst. */
-function eventFor(id: SoundTriggerId) {
+function eventFor(id: SoundTriggerId): SoundEvent {
   const [group, rest] = id.split(':') as [string, string];
-  if (group === 'attention') return { kind: 'attention', attention: rest } as const;
-  if (group === 'flow') return { kind: 'flow', flow: rest } as const;
+  if (group === 'attention') return { kind: 'attention', attention: rest as AttentionKind };
+  if (group === 'flow') return { kind: 'flow', flow: rest as 'turn_completed' | 'merged' };
   // `phase:changed` ist kein Ereignis, sondern die Ausweichregel — für den
   // Stumm-Nachweis genügt eine beliebige konkrete Phase.
-  return { kind: 'phase', phase: rest === 'changed' ? 'specify' : rest } as const;
+  return { kind: 'phase', phase: (rest === 'changed' ? 'specify' : rest) as FeaturePhase };
 }
 
 // ---------- S4: Normalisierung ----------

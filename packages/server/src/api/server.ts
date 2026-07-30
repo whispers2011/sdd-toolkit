@@ -208,6 +208,10 @@ export async function buildServer(deps: ApiDeps) {
       queues: Object.fromEntries(projects.map((p) => [p.id, deps.queue.listByProject(p.id)])),
       automation: deps.settings.getAutomation(),
       optimization: deps.settings.getOptimization(),
+      // Individuelle Einstellungen fahren im Boot-Zustand mit (research D8):
+      // sonst käme das erste WS-Ereignis womöglich vor ihnen an und würde mit
+      // Standardwerten vertont. Immer vollständig, nie null (A1.1).
+      personal: deps.settings.getPersonal(),
     };
   });
 
@@ -1537,6 +1541,18 @@ export async function buildServer(deps: ApiDeps) {
   app.patch<{ Body: Record<string, unknown> }>('/api/settings/optimization', (req) => ({
     optimization: deps.settings.setOptimization(req.body),
   }));
+
+  /**
+   * Individuelle Einstellungen (Feature "persoenliche-einstellungen"): Signaltöne
+   * und Vorauswahl der Ticket-Quelle. Teilmengen-Semantik wie bei `optimization`.
+   *
+   * Kein WS-Broadcast (A2.8): die schreibende Oberfläche kennt das Ergebnis aus
+   * der Antwort, weitere Tabs ziehen beim nächsten Boot nach. Gelesen wird über
+   * `GET /api/state` — eine eigene GET-Route wäre eine zweite Quelle.
+   */
+  app.patch<{ Body: Record<string, unknown> }>('/api/settings/personal', (req) =>
+    deps.settings.setPersonal(req.body ?? {}),
+  );
 
   app.get<{ Querystring: { featureId?: string } }>('/api/executions', (req) =>
     deps.executions.list(req.query.featureId),

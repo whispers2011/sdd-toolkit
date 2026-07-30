@@ -1316,3 +1316,167 @@ describe('Lebenszyklus-Schritt-Routen', () => {
     expect(res.statusCode).toBe(404);
   });
 });
+
+// ---------- Individuelle Einstellungen (Feature "persoenliche-einstellungen") ----------
+
+describe('Individuelle Einstellungen: Ablage und Routen', () => {
+  let app: FastifyInstance;
+  let db: DB;
+  let settings: SettingsRepo;
+
+  beforeEach(async () => {
+    db = openMemoryDatabase();
+    settings = new SettingsRepo(db);
+    app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
+      projects: new ProjectRepo(db),
+      features: new FeatureRepo(db),
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      queue: new QueueRepo(db),
+      settings,
+      reviewComments: new ReviewCommentRepo(db),
+      orchestrator: { reconcileOpenAttention: () => {} },
+      ptys: { list: () => [] },
+      telemetry: new TelemetryStore({ autoSweep: false }),
+      dataDir: mkdtempSync(join(tmpdir(), 'sdd-personal-')),
+      webDir: null,
+      port: 4899,
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  const state = async () =>
+    (JSON.parse((await app.inject({ method: 'GET', url: '/api/state' })).payload) as {
+      personal: { sound: { enabled: boolean; volume: number; reactions: Record<string, unknown> }; ticketSource: string };
+    }).personal;
+
+  const patch = (payload: unknown) =>
+    app.inject({ method: 'PATCH', url: '/api/settings/personal', payload });
+
+  const patched = async (payload: unknown) => {
+    const res = await patch(payload);
+    expect(res.statusCode).toBe(200);
+    return JSON.parse(res.payload) as {
+      sound: { enabled: boolean; volume: number; reactions: Record<string, unknown> };
+      ticketSource: string;
+    };
+  };
+
+  it('liefert bei leerer Ablage vollständige Standardwerte, nie null (A1.1)', async () => {
+    expect(await state()).toEqual({
+      sound: {
+        enabled: true,
+        volume: 0.06,
+        reactions: {
+          'flow:turn_completed': { kind: 'tone', toneId: 'two-tone-rise' },
+          'flow:merged': { kind: 'tone', toneId: 'two-tone-rise' },
+        },
+      },
+      ticketSource: 'jira',
+    });
+  });
+
+  it('ändert nur mitgesandte Felder (A2.1)', async () => {
+    await patched({ ticketSource: 'manual' });
+    let p = await state();
+    expect(p.ticketSource).toBe('manual');
+    // Der Ton-Bestand ist unberührt geblieben.
+    expect(p.sound.enabled).toBe(true);
+    expect(Object.keys(p.sound.reactions)).toHaveLength(2);
+
+    await patched({ sound: { enabled: false } });
+    p = await state();
+    expect(p.sound.enabled).toBe(false);
+    expect(p.ticketSource).toBe('manual'); // unabhängig setzbar
+    // Hauptschalter lässt die Zuordnungen unangetastet (FR-010).
+    expect(Object.keys(p.sound.reactions)).toHaveLength(2);
+  });
+
+  it('ersetzt `reactions` als ganze Karte statt je Schlüssel zu mischen (A2.2)', async () => {
+    const r = await patched({
+      sound: { reactions: { 'attention:review_due': { kind: 'tone', toneId: 'chime-soft' } } },
+    });
+    // Die zwei Standard-Zuordnungen sind weg — nur so ist „zurück auf Stille" ausdrückbar.
+    expect(r.sound.reactions).toEqual({
+      'attention:review_due': { kind: 'tone', toneId: 'chime-soft' },
+    });
+    expect((await state()).sound.reactions).toEqual(r.sound.reactions);
+  });
+
+  it('kann alle Auslöser stummschalten (leere Karte, FR-005)', async () => {
+    const r = await patched({ sound: { reactions: {} } });
+    expect(r.sound.reactions).toEqual({});
+  });
+
+  it('verwirft unbekannte Auslöser und Töne, statt abzulehnen (A2.3, FR-020)', async () => {
+    const r = await patched({
+      sound: {
+        reactions: {
+          'attention:review_due': { kind: 'tone', toneId: 'ping' },
+          'attention:gibtsnichtmehr': { kind: 'tone', toneId: 'ping' },
+          'attention:gate_failed': { kind: 'tone', toneId: 'gibtsnicht' },
+        },
+      },
+    });
+    // 200, nicht 400 — und die Antwort zeigt den bereinigten Stand.
+    expect(r.sound.reactions).toEqual({ 'attention:review_due': { kind: 'tone', toneId: 'ping' } });
+  });
+
+  it('klemmt die Lautstärke auf [0,1] (A2.4, FR-013)', async () => {
+    expect((await patched({ sound: { volume: 7 } })).sound.volume).toBe(1);
+    expect((await patched({ sound: { volume: -3 } })).sound.volume).toBe(0);
+    expect((await patched({ sound: { volume: 0.25 } })).sound.volume).toBe(0.25);
+  });
+
+  it('ignoriert eine ungültige Ticket-Quelle und behält den Bestand (A2.5)', async () => {
+    await patched({ ticketSource: 'manual' });
+    const r = await patched({ ticketSource: 'confluence' });
+    expect(r.ticketSource).toBe('manual');
+  });
+
+  it('lässt jira.lastSelection unberührt (A2.6, SC-011)', async () => {
+    const sel = { siteId: 'site-1', projectKey: 'ABC', sprintId: 42 };
+    const put = await app.inject({ method: 'PUT', url: '/api/settings/jira', payload: sel });
+    expect(put.statusCode).toBe(200);
+
+    await patched({ ticketSource: 'manual' });
+    await patched({ sound: { enabled: false } });
+
+    const nachher = await app.inject({ method: 'GET', url: '/api/settings/jira' });
+    expect(JSON.parse(nachher.payload)).toEqual(sel);
+  });
+
+  it('lässt umgekehrt die Vorauswahl unberührt, wenn die Jira-Auswahl gespeichert wird (A2.7, SC-011)', async () => {
+    await patched({ ticketSource: 'manual' });
+    await app.inject({
+      method: 'PUT',
+      url: '/api/settings/jira',
+      payload: { siteId: 'site-2', projectKey: 'XYZ' },
+    });
+    expect((await state()).ticketSource).toBe('manual');
+  });
+
+  it('liefert bei defektem JSON Standardwerte statt eines 500ers (A4.2, FR-003)', async () => {
+    db.prepare(`INSERT INTO settings (key, value) VALUES ('sound', '{kaputt')`).run();
+
+    const res = await app.inject({ method: 'GET', url: '/api/state' });
+    expect(res.statusCode).toBe(200);
+    expect((JSON.parse(res.payload) as { personal: { sound: { volume: number } } }).personal.sound.volume).toBe(0.06);
+
+    // Und der defekte Wert wird nicht stillschweigend überschrieben, solange
+    // niemand speichert — erst ein PATCH schreibt einen sauberen Stand.
+    expect((db.prepare(`SELECT value FROM settings WHERE key='sound'`).get() as { value: string }).value).toBe('{kaputt');
+  });
+
+  it('schreibt genau zwei Einträge, nicht ein Bündel (Spec-Dependency, E6)', async () => {
+    await patched({ sound: { enabled: false }, ticketSource: 'manual' });
+    const keys = (db.prepare('SELECT key FROM settings ORDER BY key').all() as { key: string }[]).map((r) => r.key);
+    expect(keys).toEqual(['sound', 'ticketSource']);
+  });
+});
