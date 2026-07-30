@@ -51,7 +51,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
     <div className="flex min-h-0 flex-1">
       <div className={`${logFor ? 'w-1/2' : 'w-full'} min-h-0 space-y-6 overflow-auto p-4`}>
         <section>
-          <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">Artefakte</h2>
+          <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Artefakte</h2>
           {available.length === 0 ? (
             <p className="text-xs text-zinc-400">Keine Artefakte erzeugt.</p>
           ) : (
@@ -76,7 +76,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
         {/* Ausgangsmaterial des Features — auch nach dem Merge nachvollziehbar (SC-007). */}
         {documents.length > 0 && (
           <section>
-            <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">Dokumente</h2>
+            <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Dokumente</h2>
             <div className="flex flex-wrap gap-2">
               {documents.map((doc) => (
                 <button
@@ -98,7 +98,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
         )}
 
         <section>
-          <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-400 uppercase">
+          <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
             Token-Verbrauch &amp; Statistik
           </h2>
           {run ? (

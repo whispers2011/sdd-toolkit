@@ -63,8 +63,11 @@ export function HBarChart({ items }: { items: { label: string; value: number; to
         <div key={i.label} className="flex items-center gap-2 text-xs">
           <span className="w-28 shrink-0 truncate text-right text-zinc-400">{i.label}</span>
           <div className={`h-4 flex-1 rounded-sm ${CHART_TONES.track.bg}`}>
+            {/* Untergrenze in px statt in Prozent: 1.5 % der Spurbreite ergaben je nach
+                Fensterbreite einen 7-px-Splitter. Ein Balken ist auch in seiner Länge ein
+                Marker und bleibt damit >= 10 px (FR-021). */}
             <div
-              className={`h-4 rounded-sm ${i.tone.bg}`}
+              className={`h-4 min-w-2.5 rounded-sm ${i.tone.bg}`}
               style={{ width: `${Math.max(1.5, (i.value / max) * 100)}%` }}
             />
           </div>
