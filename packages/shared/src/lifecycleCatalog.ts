@@ -119,7 +119,7 @@ export const LIFECYCLE_CATALOG: Record<LifecycleStageId, LifecycleStage> = {
         id: 'reuse-existing-worktree',
         name: 'Bestehenden Worktree idempotent wiederverwenden',
         description:
-          'Liegt am Zielverzeichnis schon ein Worktree, wird seine Git-Verknüpfung geprüft: gesund oder reparierbar → er wird unverändert weiterverwendet. Eine unrettbare Hülle wird entfernt und neu angelegt.',
+          'Liegt am Zielverzeichnis schon ein Worktree, wird seine Git-Verknüpfung geprüft: gesund oder reparierbar → er wird weiterverwendet, ohne neu auszuchecken. Eine unrettbare Hülle wird entfernt und neu angelegt.',
         trigger: 'Zielverzeichnis existiert bereits',
         location: {
           file: 'packages/server/src/git/worktrees.ts',

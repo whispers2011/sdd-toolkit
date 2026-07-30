@@ -44,3 +44,39 @@
 - **Nicht-Ziele** sind in FR-016 und im Input festgehalten: keine Editierbarkeit, keine neuen
   Auslöser, keine Stack-Verwaltung, keine Statusanzeige pro Schritt.
 - Iterationen bis alle Punkte erfüllt: 1.
+
+## Prosa-Review des Katalogs (T034, 30.07.2026)
+
+Kein Test kann prüfen, ob eine Beschreibung *stimmt* (plan.md, Risiko-Tabelle) — die
+Genauigkeit der 32 Schritt-Texte in `packages/shared/src/lifecycleCatalog.ts` wurde deshalb
+einzeln gegen den Quelltext der referenzierten Symbole gegengelesen. Ergebnis:
+
+- [x] Alle 32 Schritte gegen ihr Symbol gelesen: `worktrees.ts` (6), `orchestrator.ts` +
+      `contextOptimizer.ts` + `featureDocuments.ts` + `commandBuilder.ts` (7),
+      `orchestrator.ts` + `artifacts.ts` (6), `mergeQueueService.ts` + `verifyService.ts` +
+      `agentGateService.ts` (7), `mergeQueueService.ts` + `mergeEngine.ts` +
+      `conflictResolver.ts` (6).
+- [x] Reihenfolge der Integrations-Schritte deckt sich mit dem Kontrollfluss in
+      `MergeQueueService.beginIntegration` (Vorprüfungen → `commitWorktree` → `reconcile` →
+      Verify → Review-Gate → Berichte-Commit → `enqueue`/`awaiting_human_review`).
+- [x] Reihenfolge der Merge-Schritte deckt sich mit `MergeQueueService.processItem`
+      (`reconcile` → `rebaseOnto` → `resolveConflicts` ≤ 3 → Re-Verify → `mergeIntoTarget`
+      bzw. PR-Modus → `cleanupMerged`).
+- [x] Zahlen und Grenzen aus dem Code übernommen, nicht geschätzt: höchstens 3
+      Auflösungsversuche (`MAX_RESOLUTION_ATTEMPTS`), Nachtrag nach 8 s und am Ende des
+      Nachlauffensters (`scheduleLateReconcile`), gespiegelt werden genau `.claude`,
+      `CLAUDE.md`, `AGENTS.md` (`AGENT_CONFIG_PATHS`).
+- [x] Die drei `orderNote`-Begründungen stehen so im Quelltext-Kommentar der jeweiligen
+      Stelle (Serialisierung in `WorktreeManager.create`, Startmarke in `launchPhase`,
+      Reset-Turn in `handleTurnCompleted`) bzw. in `beginIntegration` (Festschreiben vor
+      Abgleich).
+- [x] `notDoneHere` der Worktree-Anlage gegengeprüft: in `worktrees.ts` existiert kein
+      Installations- oder Build-Schritt; `mirrorAgentConfig` kopiert ausschließlich die
+      Agent-Konfiguration.
+- [x] Eine Korrektur aus dem Review übernommen: „wird unverändert weiterverwendet" beim
+      idempotenten Wiederverwenden war zu stark — auf diesem Pfad läuft `mirrorAgentConfig`
+      mit. Formulierung geändert zu „wird weiterverwendet, ohne neu auszuchecken".
+
+Nicht durch Tests gedeckt bleibt damit ausschließlich die inhaltliche Treffsicherheit der
+Formulierungen; Existenz von Datei und Symbol sichert
+`packages/server/src/services/lifecycleCatalogPaths.test.ts` bei jedem Lauf.
