@@ -1,18 +1,36 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { ReviewOverviewItem } from '@sdd/shared';
-import { evaluateAction } from '@sdd/shared';
+import type { IntegrationStage, ReviewOverviewItem } from '@sdd/shared';
+import { evaluateAction, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api } from '../api.js';
 import { featureActionContext, useStore } from '../store.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { VerdictPill } from './review/AuditSidebar.js';
 import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 
-const STAGE_LABEL: Record<string, string> = {
+/**
+ * Abweichende Beschriftungen dieser Ansicht. Über `Partial<Record<IntegrationStage, …>>`
+ * getypt statt `Record<string, …>`: ein Tippfehler ist damit ein Compile-Fehler, und
+ * alle übrigen Stufen kommen aus dem geteilten Katalog — kein Rohbezeichner mehr in
+ * der Zeile (D9).
+ */
+const STAGE_LABEL: Partial<Record<IntegrationStage, string>> = {
   awaiting_human_review: 'Bereit zum Review',
   verify_failed: 'Verifikation fehlgeschlagen',
   gate_failed: 'Review-Gate FAIL',
   conflict_escalated: 'Konflikt eskaliert',
   none: 'Vorschau — in Entwicklung',
+};
+
+/**
+ * Beschriftung der Verifikations-Anzeige. Vollständige Tabelle statt Ternär-Kette:
+ * ein weiterer Zustand fällt damit nicht stumm in den Rest-Zweig, sondern bricht den
+ * Typecheck. „nicht konfiguriert" und „kein Lauf" müssen unterscheidbar sein (FR-009).
+ */
+const VERIFY_META: Record<ReviewOverviewItem['verify']['status'], { text: string; className: string }> = {
+  passed: { text: 'Verify ✓', className: 'text-emerald-400' },
+  failed: { text: 'Verify ✗', className: 'text-red-400' },
+  none: { text: 'Verify – (kein Lauf)', className: 'text-zinc-600' },
+  unconfigured: { text: 'Verify nicht konfiguriert', className: 'text-amber-400' },
 };
 
 /**
@@ -122,12 +140,16 @@ function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () =>
   const ctx = featureActionContext(state, f.id);
   const retryV = ctx ? evaluateAction('integration_retry', ctx) : null;
   const isPreview = item.stage === 'none';
+  // Die beiden Sonderfälle dieser Ansicht bleiben; alle übrigen Stufen holen ihren Ton
+  // aus dem Katalog, statt pauschal rot zu sein. Für die Fehlerstufen ist das
+  // unverändert rot — die neue Stufe „keine Verifikation konfiguriert" wird dagegen
+  // amber, denn sie eskaliert nichts (FR-010).
   const stageTone =
     item.stage === 'awaiting_human_review'
       ? 'text-sky-400'
       : item.stage === 'none'
         ? 'text-zinc-400'
-        : 'text-red-400';
+        : INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[item.stage].tone];
   return (
     <li className="flex items-center gap-4 rounded border border-zinc-800 bg-zinc-900/60 px-4 py-3">
       <div className="min-w-0 flex-1">
@@ -141,7 +163,7 @@ function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () =>
               Vorschau
             </span>
           )}
-          <span className={stageTone}>{STAGE_LABEL[item.stage] ?? item.stage}</span>
+          <span className={stageTone}>{STAGE_LABEL[item.stage] ?? INTEGRATION_STAGE_META[item.stage].label}</span>
           {f.reviewRejectedAt !== null && <span className="text-amber-300">↩ im Review zurückgewiesen</span>}
           <span>
             {item.filesChanged} Dateien · <span className="text-emerald-500">+{item.additions}</span>{' '}
@@ -166,17 +188,8 @@ function OverviewRow({ item, onOpen }: { item: ReviewOverviewItem; onOpen: () =>
             'keine Audits'
           )}
         </span>
-        <span
-          className={
-            item.verify.status === 'passed'
-              ? 'text-emerald-400'
-              : item.verify.status === 'failed'
-                ? 'text-red-400'
-                : 'text-zinc-600'
-          }
-          title="Verifikationsstatus"
-        >
-          {item.verify.status === 'passed' ? 'Verify ✓' : item.verify.status === 'failed' ? 'Verify ✗' : 'Verify –'}
+        <span className={VERIFY_META[item.verify.status].className} title="Verifikationsstatus">
+          {VERIFY_META[item.verify.status].text}
         </span>
         <ActionGroup reason={blockedReason(retryV)} actionsClassName="flex items-center gap-3">
           {retryV && (

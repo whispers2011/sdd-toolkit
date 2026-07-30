@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { INTEGRATION_STAGE_META } from '@sdd/shared';
 import { api, type ExecutionInfo, type RunSummary } from '../api.js';
 import { useStore } from '../store.js';
 import { Donut, HBarChart, StackedBar, fmtTokens, fmtCost, type Segment } from './charts.js';
@@ -80,7 +81,12 @@ function IntegrationBadge({ run }: { run: RunSummary }) {
         : s === 'none'
           ? 'bg-zinc-800 text-zinc-500'
           : 'bg-amber-950 text-amber-400';
-  return <span className={`rounded px-1.5 py-0.5 ${cls}`}>{s === 'none' ? 'offen' : s}</span>;
+  // Beschriftung aus dem geteilten Katalog statt des Rohbezeichners: der Rückblick
+  // muss die Stufe benennen können — auch die neue „keine Verifikation konfiguriert"
+  // (FR-001a, D9). 'none' behält seine kürzere Fassung für diese Ansicht.
+  return (
+    <span className={`rounded px-1.5 py-0.5 ${cls}`}>{s === 'none' ? 'offen' : INTEGRATION_STAGE_META[s].label}</span>
+  );
 }
 
 /** Läufe-View: ein Lauf = ein Worktree/Feature; pro Lauf Token-Dashboard pro Step. */

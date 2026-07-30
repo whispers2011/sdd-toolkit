@@ -6,7 +6,16 @@ import { fmtTokens } from '../charts.js';
  * Verify-Dashboard (aufbereitete Verify-Executions, keine Report-Parser):
  * Status/Dauer/Exit-Code pro Lauf, aggregierte Tokens, Log-Viewer.
  */
-export function TestsPane({ featureId, onError }: { featureId: string; onError: (e: Error) => void }) {
+export function TestsPane({
+  featureId,
+  verificationConfigured,
+  onError,
+}: {
+  featureId: string;
+  /** Hat das Projekt Verifikationskommandos? Entscheidet den Leerfall (FR-008). */
+  verificationConfigured: boolean;
+  onError: (e: Error) => void;
+}) {
   const [executions, setExecutions] = useState<ExecutionInfo[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
@@ -38,9 +47,16 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
 
   if (!executions) return <p className="p-4 text-sm text-zinc-600">Lade Verify-Läufe …</p>;
   if (executions.length === 0) {
-    return (
+    // Zwei verschiedene Sachverhalte, die vorher gleich aussahen: „konfiguriert, aber
+    // noch nicht gelaufen" und „es gibt nichts, was laufen könnte" (FR-008). Der
+    // zweite ist der gefährliche — hier wird er benannt.
+    return verificationConfigured ? (
       <p className="p-4 text-sm text-zinc-600">
-        Keine Verifikations-Läufe — verifyCommands im Projekt konfigurieren, um Tests/Build vor dem Merge zu prüfen.
+        Noch kein Verifikations-Lauf — die im Projekt hinterlegten Kommandos laufen mit der nächsten Integration.
+      </p>
+    ) : (
+      <p className="p-4 text-sm text-amber-400">
+        Für dieses Projekt ist keine Verifikation konfiguriert — es wurde nichts geprüft.
       </p>
     );
   }

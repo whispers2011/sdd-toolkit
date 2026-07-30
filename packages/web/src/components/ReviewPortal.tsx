@@ -52,6 +52,12 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
    * Aktionen des Portals ist ausschließlich die Policy zuständig.
    */
   const reviewable = feature?.integration === 'awaiting_human_review';
+  /**
+   * Die Verifikationslücke kommt aus dem bereits geladenen Projekt — keine
+   * zusätzliche Anfrage (FR-022). Solange das Projekt noch nicht im Store ist,
+   * wird nichts behauptet: `true` heißt „kein Hinweis", nicht „geprüft".
+   */
+  const verificationConfigured = (project?.verifyCommands.length ?? 1) > 0;
 
   const fail = useCallback(
     (e: Error) => dispatch({ type: 'error', message: e.message }),
@@ -174,10 +180,23 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               value={runs ? `${auditsPassed}/${latestAudits.length}` : '…'}
               tone={latestAudits.length === 0 ? undefined : auditsPassed === latestAudits.length ? 'ok' : 'bad'}
             />
+            {/* Ohne Lauf UND ohne Konfiguration ist das kein „–", sondern eine
+                benannte Lücke (FR-008). Ein stattgefundener Lauf schlägt die
+                Konfiguration — er hat stattgefunden. */}
             <HeaderStat
               label="Verify"
-              value={lastVerify ? (lastVerify.status === 'succeeded' ? '✓' : '✗') : '–'}
-              tone={lastVerify ? (lastVerify.status === 'succeeded' ? 'ok' : 'bad') : undefined}
+              value={
+                lastVerify
+                  ? lastVerify.status === 'succeeded'
+                    ? '✓'
+                    : '✗'
+                  : verificationConfigured
+                    ? '–'
+                    : 'nicht konfiguriert'
+              }
+              tone={
+                lastVerify ? (lastVerify.status === 'succeeded' ? 'ok' : 'bad') : verificationConfigured ? undefined : 'warn'
+              }
             />
           </div>
           <button onClick={onClose} className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800">
@@ -295,7 +314,9 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               </div>
             )}
 
-            {tab === 'tests' && <TestsPane featureId={featureId} onError={fail} />}
+            {tab === 'tests' && (
+              <TestsPane featureId={featureId} verificationConfigured={verificationConfigured} onError={fail} />
+            )}
             {tab === 'resolution' && <ResolutionView resolutions={resolutions} />}
           </div>
 
@@ -429,13 +450,26 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   );
 }
 
-function HeaderStat({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'bad' | undefined }) {
+/** `warn` (amber) für Sachverhalte, die Aufmerksamkeit brauchen, ohne rot zu sein. */
+const STAT_TONE = {
+  ok: 'text-emerald-400',
+  bad: 'text-red-400',
+  warn: 'text-amber-400',
+} as const;
+
+function HeaderStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: keyof typeof STAT_TONE | undefined;
+}) {
   return (
     <span className="flex items-center gap-1">
       <span className="text-zinc-600">{label}</span>
-      <span className={tone === 'ok' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-zinc-300'}>
-        {value}
-      </span>
+      <span className={tone ? STAT_TONE[tone] : 'text-zinc-300'}>{value}</span>
     </span>
   );
 }

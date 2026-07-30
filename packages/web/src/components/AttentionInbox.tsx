@@ -12,6 +12,9 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   gate_failed: { label: 'Review-Gate FAIL', icon: '⛔', tone: 'text-red-400' },
   merge_conflict_escalated: { label: 'Merge-Konflikt', icon: '⚡', tone: 'text-red-400' },
   review_due: { label: 'Review fällig', icon: '👀', tone: 'text-sky-400' },
+  // Projektbezogen (featureId === null): keine Eskalation, aber nur ein Mensch
+  // kann die Konfiguration nachholen — daher Amber.
+  verification_unconfigured: { label: 'Verifikation fehlt', icon: '⚠', tone: 'text-amber-400' },
   agent_errored: { label: 'Agent-Fehler', icon: '💥', tone: 'text-red-400' },
   run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
   phase_gate_failed: { label: 'Phasen-Gate FAIL', icon: '🚧', tone: 'text-red-400' },
