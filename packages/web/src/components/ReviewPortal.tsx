@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentRunSummary, ReviewComment } from '@sdd/shared';
-import { evaluateAction } from '@sdd/shared';
+import { buildChangeOverview, evaluateAction } from '@sdd/shared';
 import { api, type DiffSummary, type ExecutionInfo } from '../api.js';
 import { featureActionContext, useStore } from '../store.js';
 import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { Dialog } from './Sidebar.js';
 import { VoiceButton } from './VoiceButton.js';
 import { DiffViewer } from './review/DiffViewer.js';
+import { ChangeOverview } from './review/ChangeOverview.js';
 import { CommentsPanel } from './review/CommentsPanel.js';
 import { FileTreePane } from './review/FileTreePane.js';
 import { FileEditor } from './review/FileEditor.js';
@@ -111,6 +112,13 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const openComments = comments.filter((c) => c.status === 'open');
   // Rohwerte, nicht zurechtgebogen: bei widersprüchlicher Zählung nie negativ.
   const openTasks = Math.max(0, (feature?.tasksTotal ?? 0) - (feature?.tasksDone ?? 0));
+  /**
+   * Änderungsübersicht aus dem Diff, den das Portal ohnehin lädt — kein
+   * zusätzlicher Abruf und kein eigener Ladezustand (FR-006, SC-009).
+   */
+  const overview = useMemo(() => (summary ? buildChangeOverview(summary) : null), [summary]);
+  const overviewTargetBranch =
+    target?.targetBranch ?? feature?.integrationTarget ?? project?.defaultBranch ?? 'main';
 
   const refreshComments = () => api.comments(featureId).then(setComments).catch(fail);
 
@@ -240,6 +248,18 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
             {tab === 'files' && (
               <div className="flex h-full">
                 <ul className="w-72 shrink-0 overflow-y-auto border-r border-zinc-800 p-2">
+                  {/* Rückweg zur Übersicht — ohne ihn wäre sie nach dem ersten Klick
+                      auf eine Datei nur noch über ein Neuladen erreichbar (FR-004). */}
+                  <li>
+                    <button
+                      onClick={() => setSelectedFile(null)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                        selectedFile === null ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-900'
+                      }`}
+                    >
+                      Übersicht
+                    </button>
+                  </li>
                   {summary?.files.map((f) => {
                     const fileCommentCount = comments.filter((c) => c.filePath === f.path && c.status === 'open').length;
                     return (
@@ -287,8 +307,14 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                           .catch(fail)
                       }
                     />
+                  ) : overview === null ? (
+                    <p className="p-4 text-sm text-zinc-400">Lade Änderungen …</p>
                   ) : (
-                    <p className="p-4 text-sm text-zinc-600">Datei links auswählen.</p>
+                    <ChangeOverview
+                      overview={overview}
+                      targetBranch={overviewTargetBranch}
+                      onSelectFile={setSelectedFile}
+                    />
                   )}
                 </div>
               </div>
