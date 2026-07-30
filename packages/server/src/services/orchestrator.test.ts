@@ -966,7 +966,10 @@ describe('Orchestrator — Worktree-Auslöser (Lebenszyklus-Schritte)', () => {
           enabledPhases: ['specify', 'plan'],
         }),
       },
-      attention: { raise: vi.fn((a: { kind: string }) => ({ id: 'a1', ...a })), resolveFor: vi.fn(), listOpen: () => [] },
+      // `resolveFor` liefert seit F5 die IDs der aufgelösten Meldungen (vorher `void`) — das
+      // Double muss ein Array zurückgeben, sonst bricht `emitAttentionResolved` mit
+      // „ids is not iterable" (aufgefallen bei der Zusammenführung am 30.07.2026).
+      attention: { raise: vi.fn((a: { kind: string }) => ({ id: 'a1', ...a })), resolveFor: vi.fn(() => []), listOpen: () => [] },
       executions: { start: vi.fn(() => 'e1'), finish: vi.fn(), finishWithUsage: vi.fn(), reapOrphans: () => 0 },
       sessions: { latestForFeature: () => undefined, create: vi.fn(), listOpen: () => [] },
       settings: {

@@ -120,6 +120,10 @@ describe('MergeQueueService — Auflösewege senden pro Meldung genau ein Ereign
       worktrees: { remove: async () => {} },
       ptys: { forFeature: () => undefined, snapshots: { remove: vi.fn() } },
       reviewGate: {} as unknown,
+      // Lebenszyklus-Schritte (F1b) sind hier nicht Gegenstand: kein Schritt konfiguriert, damit
+      // der Stufen-Auslöser sofort durchlässt. Ohne dieses Double schlägt der Zugriff auf
+      // `hasStepsFor` fehl — aufgefallen bei der Zusammenführung von F1b und F5 am 30.07.2026.
+      lifecycleSteps: { hasStepsFor: () => false, runTrigger: async () => ({ ok: true }) },
       dataDir: '/tmp',
     } as unknown as MergeQueueDeps);
     // Der Merge-Engine-Aufruf im Cleanup würde echtes git anfassen.
