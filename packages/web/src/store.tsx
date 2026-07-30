@@ -8,9 +8,10 @@ import {
   type ReactNode,
 } from 'react';
 import type { AttentionItem, Feature, FeatureActionContext, MergeQueueItem } from '@sdd/shared';
-import { applyAttentionResolved, isFeatureComplete } from '@sdd/shared';
+import { applyAttentionResolved, enteredPhase, isFeatureComplete } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
 import { primePersonal, setPersonalErrorSink } from './personalSettings.js';
+import { handleSoundEvent } from './sound.js';
 
 export type View =
   | { kind: 'board' }
@@ -366,38 +367,6 @@ function resolveSelectedProject(projects: AppState['projects'], current: string 
   return projects[0]?.id ?? null;
 }
 
-export function soundEnabled(): boolean {
-  return localStorage.getItem('sdd-sound') !== 'off';
-}
-
-export function setSoundEnabled(on: boolean): void {
-  localStorage.setItem('sdd-sound', on ? 'on' : 'off');
-}
-
-/** Dezenter Zwei-Ton-Beep via WebAudio — kein Asset nötig. */
-function playCompletionSound(): void {
-  try {
-    const ctx = new AudioContext();
-    const gain = ctx.createGain();
-    gain.gain.value = 0.06;
-    gain.connect(ctx.destination);
-    for (const [freq, start] of [
-      [880, 0],
-      [1174, 0.12],
-    ] as const) {
-      const osc = ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      osc.connect(gain);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + 0.15);
-    }
-    setTimeout(() => void ctx.close(), 600);
-  } catch {
-    /* Audio blockiert → egal */
-  }
-}
-
 const StoreContext = createContext<{ state: UiState; dispatch: Dispatch<Action> } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -418,6 +387,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     integrationReadiness: {},
   });
   const wsRef = useRef<WebSocket | null>(null);
+  /**
+   * Letzter bekannter Phasenstand je Feature — die Grundlage für „Phase
+   * erreicht" (research D2). Bewusst eine Ref und NICHT Reducer-Zustand: der
+   * Vergleich ist ein Seiteneffekt der Ton-Ebene, kein Teil dessen, was die
+   * Oberfläche darstellt.
+   */
+  const phasesRef = useRef(new Map<string, Feature['phases']>());
 
   // Bereitschafts-Abruf (FR-027): genau einmal je fertigem, nicht integriertem
   // Feature. 'pending' im Zustand verhindert Doppelabrufe; ein Fehler lässt den
@@ -450,6 +426,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // Vor dem Reducer: die Ton-Ebene liest synchron aus dem Modulzustand
           // und muss beim ersten Ereignis den echten Stand sehen (U3.2).
           primePersonal(s.personal);
+          // Grundstand der Phasen OHNE Ausgabe übernehmen (U5.4/S6.2): beim
+          // Verbinden und Wiederverbinden darf nichts klingen.
+          phasesRef.current = new Map(s.features.map((f) => [f.id, f.phases]));
           dispatch({ type: 'bootstrap', state: s });
         })
         .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
@@ -465,24 +444,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           const msg = JSON.parse(ev.data as string) as { type: string; payload: unknown };
           switch (msg.type) {
-            case 'feature_updated':
-              dispatch({ type: 'feature_updated', feature: msg.payload as Feature });
+            case 'feature_updated': {
+              const feature = msg.payload as Feature;
+              // „Phase erreicht" entsteht ausschliesslich per Diff gegen den
+              // letzten Stand — kein neues Server-Ereignis (research D2).
+              const erreicht = enteredPhase(phasesRef.current.get(feature.id), feature.phases);
+              phasesRef.current.set(feature.id, feature.phases);
+              if (erreicht) handleSoundEvent({ kind: 'phase', phase: erreicht });
+              dispatch({ type: 'feature_updated', feature });
               break;
-            case 'feature_deleted':
-              dispatch({
-                type: 'feature_deleted',
-                payload: msg.payload as Extract<Action, { type: 'feature_deleted' }>['payload'],
-              });
+            }
+            case 'feature_deleted': {
+              const payload = msg.payload as Extract<Action, { type: 'feature_deleted' }>['payload'];
+              phasesRef.current.delete(payload.featureId);
+              dispatch({ type: 'feature_deleted', payload });
               break;
+            }
             case 'session_status':
               dispatch({
                 type: 'session_status',
                 payload: msg.payload as Extract<Action, { type: 'session_status' }>['payload'],
               });
               break;
-            case 'attention_raised':
-              dispatch({ type: 'attention_raised', item: msg.payload as AttentionItem });
+            case 'attention_raised': {
+              const item = msg.payload as AttentionItem;
+              // Die zehn Aufmerksamkeitsereignisse sind die einzige Quelle der
+              // `attention:*`-Auslöser (research D1). Die sichtbare Behandlung
+              // im Eingang bleibt davon unberührt (A3.2).
+              handleSoundEvent({ kind: 'attention', attention: item.kind });
+              dispatch({ type: 'attention_raised', item });
               break;
+            }
             case 'attention_resolved':
               dispatch({ type: 'attention_resolved', id: msg.payload as string });
               break;
@@ -536,9 +528,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   }
                 };
               }
-              // Sound nur bei „fertig"/„gemergt" — Rückfragen bewusst lautlos (WhisperM8-Regel).
-              if ((n.kind === 'turn_completed' || n.kind === 'merged') && soundEnabled()) {
-                playCompletionSound();
+              // Nur „fertig"/„gemergt" erzeugen Ton. `input_requested` und
+              // `escalation` sind Duplikate zu Aufmerksamkeitsereignissen und
+              // klängen sonst doppelt zum selben Vorfall (research D1, FR-017).
+              if (n.kind === 'turn_completed' || n.kind === 'merged') {
+                handleSoundEvent({ kind: 'flow', flow: n.kind });
               }
               break;
             }

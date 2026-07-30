@@ -7,7 +7,7 @@ import {
   type OptimizationSettings,
 } from '@sdd/shared';
 import { api } from '../api.js';
-import { setSoundEnabled, soundEnabled, useStore } from '../store.js';
+import { useStore } from '../store.js';
 import { setVoiceLang, setVoiceProvider, voiceLang, voiceProvider } from './VoiceButton.js';
 
 /** Automation-Dial: Level 2 ↔ Level 3, jede Automation einzeln schaltbar. */
@@ -129,7 +129,6 @@ export function AutomationDial() {
             </p>
           </div>
           <div className="mt-2 border-t border-zinc-800 pt-2">
-            <SoundToggle />
             <VoiceSettings />
           </div>
           <p className="mt-2 text-xs text-zinc-600">
@@ -245,20 +244,6 @@ function VoiceSettings() {
         </div>
       )}
     </div>
-  );
-}
-
-function SoundToggle() {
-  const [on, setOn] = useState(soundEnabled());
-  return (
-    <Toggle
-      label="Sound wenn ein Agent fertig ist"
-      checked={on}
-      onChange={(v) => {
-        setSoundEnabled(v);
-        setOn(v);
-      }}
-    />
   );
 }
 
