@@ -36,6 +36,11 @@ function run(over: Partial<ExecutionRecord> = {}): ExecutionRecord {
     projectId: 'p1',
     featureId: 'f1',
     kind: 'phase',
+    // `label` trägt bei kind='lifecycle_step' den Schrittnamen; für Phasenläufe ist es null.
+    // Bei der Zusammenführung von F1b (eigene Schritte) mit F3 (Plausibilitätsprüfung) am
+    // 30.07.2026 fehlte das Feld hier und brach den Typecheck — das Feld ist absichtlich
+    // Pflicht, damit jede Lauf-Zeile es trägt.
+    label: null,
     phase: 'implement',
     status: 'succeeded',
     startedAt: NOW - 3_600_000,
