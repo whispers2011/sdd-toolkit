@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRunSummaries, categorizeExecution } from './runSummary.js';
+import { buildRunSummaries, categorizeExecution, costPerTask } from './runSummary.js';
 import { initialPhases } from './phaseMachine.js';
 import type { ExecutionRecord, Feature } from './types.js';
 
@@ -279,5 +279,63 @@ describe('buildRunSummaries — Lebenszyklus-Schritte', () => {
       ],
     );
     expect(run!.sourceMix.transcript).toBeCloseTo(0.5);
+  });
+});
+
+describe('Aufgabenstand und Kosten pro Aufgabe (Story 3)', () => {
+  it('reicht tasksDone/tasksTotal unverändert vom Feature durch (FR-017)', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 68, tasksTotal: 76 })], [exec({})]);
+    expect(runs[0]!.tasksDone).toBe(68);
+    expect(runs[0]!.tasksTotal).toBe(76);
+  });
+
+  it('reicht auch eine widersprüchliche Zählung als Rohwert durch', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 80, tasksTotal: 76 })], [exec({})]);
+    expect(runs[0]!.tasksDone).toBe(80);
+    expect(runs[0]!.tasksTotal).toBe(76);
+  });
+
+  /** Bezugsgrösse aus einem Lauf bauen, ohne die ganze Aggregation zu brauchen. */
+  function run(costMicros: number, tasksDone: number, runsWithoutCost = 0) {
+    return { total: { ...emptyTotal(), costMicros, runsWithoutCost }, tasksDone };
+  }
+  function emptyTotal() {
+    const runs = buildRunSummaries([feature({})], [exec({})]);
+    return runs[0]!.total;
+  }
+
+  it('teilt den gemeldeten Betrag auf die erledigten Aufgaben', () => {
+    expect(costPerTask(run(6_800_000, 68)).micros).toBe(100_000);
+  });
+
+  it('rundet auf ganze Mikro-Beträge', () => {
+    expect(costPerTask(run(1_000_000, 3)).micros).toBe(333_333);
+  });
+
+  it('liefert einen Strich statt einer Division durch null (INV-5, FR-020)', () => {
+    expect(costPerTask(run(4_200_000, 0)).micros).toBeNull();
+  });
+
+  it('liefert einen Strich, wenn kein Betrag gemeldet wurde — nie 0 (INV-6)', () => {
+    expect(costPerTask(run(0, 68)).micros).toBeNull();
+  });
+
+  it('kennzeichnet den Wert als unvollständig, sobald eine Ausführung keinen Betrag meldete (FR-021)', () => {
+    expect(costPerTask(run(6_800_000, 68, 2)).incomplete).toBe(true);
+    expect(costPerTask(run(6_800_000, 68, 0)).incomplete).toBe(false);
+  });
+
+  it('kennzeichnet die Unvollständigkeit auch dort, wo kein Wert bestimmbar ist', () => {
+    expect(costPerTask(run(0, 0, 3))).toEqual({ micros: null, incomplete: true });
+  });
+
+  it('rechnet bei widersprüchlicher Zählung mit den Rohwerten weiter', () => {
+    expect(costPerTask(run(8_000_000, 80)).micros).toBe(100_000);
+  });
+
+  it('Läufe-Liste und Lauf-Dashboard bekommen denselben Wert (INV-7)', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 4, tasksTotal: 4 })], [exec({ costMicros: 400_000 })]);
+    expect(costPerTask(runs[0]!)).toEqual(costPerTask(runs[0]!));
+    expect(costPerTask(runs[0]!).micros).toBe(100_000);
   });
 });

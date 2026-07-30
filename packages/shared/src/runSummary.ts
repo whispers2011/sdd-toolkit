@@ -70,6 +70,36 @@ export interface RunSummary {
   byCategory: Record<RunCategory, CostRollup>;
   /** Anteil je Mess-Herkunft (transcript = autoritativ). */
   sourceMix: Record<TokensSource, number>;
+  /**
+   * Aufgabenstand des zugehörigen Features — Durchreichung, keine neue Erhebung
+   * (FR-017). Steht im Objekt, weil die Läufe-Ansicht das Feature nicht mitliefert.
+   */
+  tasksDone: number;
+  /** `0` = keine Aufgabenliste vorhanden (nie als „0 von 0 erledigt" anzeigen). */
+  tasksTotal: number;
+}
+
+export interface CostPerTask {
+  /** Mikro-USD je erledigter Aufgabe; `null` = nicht bestimmbar ⇒ Strich (FR-020/FR-021). */
+  micros: number | null;
+  /** Mindestens eine Ausführung des Laufs hat keinen Betrag gemeldet (FR-021). */
+  incomplete: boolean;
+}
+
+/**
+ * Bezugsgrösse eines Laufs: gemeldeter Betrag je ERLEDIGTER Aufgabe. Nie geschätzt.
+ *
+ * Eine Funktion statt eines Feldes, damit Läufe-Liste und Lauf-Dashboard nicht
+ * auseinanderlaufen können (FR-019) und keine weitere Kennzahl gespeichert wird.
+ *
+ * Zwei Fälle liefern bewusst `null` statt einer Zahl: ohne erledigte Aufgabe gibt
+ * es keinen Nenner, und ohne gemeldeten Betrag wäre `0` eine Behauptung über
+ * Kosten, die niemand gemessen hat.
+ */
+export function costPerTask(run: Pick<RunSummary, 'total' | 'tasksDone'>): CostPerTask {
+  const incomplete = run.total.runsWithoutCost > 0;
+  if (run.tasksDone <= 0 || run.total.costMicros <= 0) return { micros: null, incomplete };
+  return { micros: Math.round(run.total.costMicros / run.tasksDone), incomplete };
 }
 
 function emptyRollup(): CostRollup {
@@ -169,6 +199,8 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     byStep,
     byCategory,
     sourceMix,
+    tasksDone: feature.tasksDone,
+    tasksTotal: feature.tasksTotal,
   };
 }
 

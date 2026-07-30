@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { INTEGRATION_STAGE_META } from '@sdd/shared';
+import { costPerTask, INTEGRATION_STAGE_META } from '@sdd/shared';
 import { api, type ExecutionInfo, type RunSummary } from '../api.js';
 import { useStore } from '../store.js';
 import { Donut, HBarChart, StackedBar, fmtTokens, fmtCost, type Segment } from './charts.js';
@@ -295,6 +295,8 @@ export function RunCard({
           </div>
           <div className="mt-0.5 truncate text-[10px] text-zinc-600">
             {run.branch} · gestartet {run.startedAt ? new Date(run.startedAt).toLocaleString('de-CH') : '—'}
+            {/* Bezugsgrösse ohne Aufklappen sichtbar (FR-018). */}
+            <span className="text-zinc-500"> · {taskLabel(run)}</span>
           </div>
         </div>
         <div className="w-44 shrink-0">
@@ -317,6 +319,9 @@ export function RunCard({
               )}
             </span>
           )}
+          {/* Kosten pro Aufgabe ohne Aufklappen (FR-018/FR-019): ein Gesamtbetrag allein
+              sagt nichts darüber, wie viel Arbeit dafür entstanden ist. */}
+          <CostPerTask run={run} className="block" />
           {/* Kein Subagenten-Anteil → gar keine Zeile, kein Null-Platzhalter (FR-010). */}
           {run.total.subagentTokens > 0 && (
             <span className="block text-[10px] text-violet-300">
@@ -328,6 +333,16 @@ export function RunCard({
 
       {expanded && (
         <div className="border-t border-zinc-800 px-4 py-3">
+          {/* Dieselbe Funktion wie in der Liste (FR-019, R5.2) — das Dashboard kann
+              damit keinen anderen Wert zeigen als die Zeile darüber. */}
+          <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 text-[11px]">
+            <span className="text-zinc-500">
+              Aufgaben <span className="text-zinc-300">{taskLabel(run)}</span>
+            </span>
+            <span className="text-zinc-500">
+              Kosten <CostPerTask run={run} />
+            </span>
+          </div>
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <div>
               <h3 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">
@@ -461,6 +476,28 @@ export function RunCard({
 }
 
 /** Token-Komposition des Laufs: frischer Input/Output vs. Cache (nur bei gemessener Usage). */
+/** Aufgabenstand eines Laufs — „keine Aufgabenliste" statt „0/0" (R5.1). */
+function taskLabel(run: RunSummary): string {
+  return run.tasksTotal === 0 ? 'keine Aufgabenliste' : `${run.tasksDone}/${run.tasksTotal} Aufgaben`;
+}
+
+/**
+ * Kosten pro erledigter Aufgabe — die Bezugsgrösse, ohne die zwei Läufe nicht
+ * vergleichbar sind. Liste und aufgeklapptes Dashboard rendern dieselbe Komponente,
+ * damit sie nicht auseinanderlaufen (FR-019, INV-7).
+ *
+ * Ein Strich heißt „nicht bestimmbar" — nie eine Schätzung, nie eine 0 (FR-020).
+ */
+function CostPerTask({ run, className = '' }: { run: RunSummary; className?: string }) {
+  const { micros, incomplete } = costPerTask(run);
+  return (
+    <span className={`text-[10px] ${micros === null ? 'text-zinc-600' : 'text-teal-300'} ${className}`}>
+      {micros === null ? '—' : fmtCost(micros)} <span className="text-zinc-600">/ Aufgabe</span>
+      {incomplete && <span className="text-zinc-600"> · unvollständig</span>}
+    </span>
+  );
+}
+
 function Composition({ run }: { run: RunSummary }) {
   const t = run.total;
   const has = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreationTokens > 0;
