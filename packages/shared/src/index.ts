@@ -23,6 +23,7 @@ export * from './featureArtifacts.js';
 export * from './featureDocuments.js';
 export * from './gridAutoSelect.js';
 export * from './diffParse.js';
+export * from './changeOverview.js';
 export * from './branchSuggest.js';
 export * from './reviewPrompt.js';
 export * from './agentSelect.js';
