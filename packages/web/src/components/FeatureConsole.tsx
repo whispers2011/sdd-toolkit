@@ -8,6 +8,7 @@ import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
 import { FeatureLifecycleStepSelect } from './FeatureLifecycleStepSelect.js';
+import { StackPanel } from './StackPanel.js';
 import { FeatureDocumentsDialog } from './FeatureDocumentsDialog.js';
 import {
   CodeIcon,
@@ -62,6 +63,10 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   // nur die Toolkit-Spuren, NICHT die gemergten Projektdateien. Nur bei ungemergter
   // Arbeit gehen Worktree/Branch (und damit Code) verloren.
   const merged = feature.integration === 'merged';
+  // Ab `implement` gibt es einen Stack zu bedienen; auf der Abnahme-Stufe steht
+  // das Feld offen, weil dort genau damit gearbeitet wird.
+  const stackRelevant = feature.phases.implement?.status !== 'idle' || feature.integration !== 'none';
+  const stackOpen = feature.integration === 'awaiting_manual_test';
 
   return (
     <div className="flex h-full flex-col">
@@ -150,6 +155,16 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           {completed ? 'abgeschlossen ✓' : connected ? 'verbunden' : 'getrennt …'}
         </span>
       </div>
+      {/* Stack-Feld: dieselbe Darstellung wie in der Lane, kompakt. Sichtbar ab
+          Beginn von `implement` — davor gibt es nichts zu bedienen (ui-contract §3). */}
+      {stackRelevant && (
+        <details className="border-b border-zinc-800 px-3 py-2" open={stackOpen}>
+          <summary className="cursor-pointer text-xs font-medium text-zinc-300">Stack</summary>
+          <div className="pt-2">
+            <StackPanel featureId={featureId} compact />
+          </div>
+        </details>
+      )}
       {showDocuments && <FeatureDocumentsDialog featureId={featureId} onClose={() => setShowDocuments(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}

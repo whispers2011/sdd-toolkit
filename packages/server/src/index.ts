@@ -38,6 +38,11 @@ import { OutageMonitor } from './services/outageMonitor.js';
 import { ResourceMonitor } from './services/resourceMonitor.js';
 import { bus } from './events.js';
 import { buildServer } from './api/server.js';
+import { PortRepo } from './db/portRepo.js';
+import { StackRepo } from './db/stackRepo.js';
+import { PortAllocator } from './services/portAllocator.js';
+import { StackService } from './services/stackService.js';
+import { TestingLaneService } from './services/testingLaneService.js';
 import { TelemetryStore } from './telemetry/telemetryStore.js';
 import { nanoid } from 'nanoid';
 
@@ -62,7 +67,22 @@ async function main(): Promise<void> {
   const lifecycleStepRepo = new LifecycleStepRepo(db);
   const reviewComments = new ReviewCommentRepo(db);
   const knowledge = new KnowledgeRepo(db);
-  const worktrees = new WorktreeManager(config.dataDir);
+  const portRepo = new PortRepo(db);
+  const stackRepo = new StackRepo(db);
+
+  // DIE Portvergabe. Sie wird in den WorktreeManager injiziert und ausschließlich
+  // aus dessen create()/remove() aufgerufen — beide Anlagepfade (Feature und Chat)
+  // laufen dort durch, ein zweiter Weg entsteht nicht (FR-001, research E1).
+  const portAllocator = new PortAllocator({
+    ports: portRepo,
+    attention,
+    range: {
+      start: config.portRangeStart,
+      end: config.portRangeEnd,
+      blockSize: config.portBlockSize,
+    },
+  });
+  const worktrees = new WorktreeManager(config.dataDir, portAllocator);
 
   // Betriebsspuren (Feature „server-ausfaelle-sichtbar-machen"): Lebenszeichen und
   // Betriebsprotokoll neben der Datenbank. Der Ausfall vom 30.07.2026 stand in keinem
@@ -124,6 +144,19 @@ async function main(): Promise<void> {
     executions,
     attention,
     dataDir: config.dataDir,
+    // $SDD_PORT_BASE kommt aus DER einen Buchführung — kein zweiter Weg (FR-007).
+    portBaseFor: (worktreePath) => portAllocator.baseForWorktree(worktreePath),
+  });
+
+  // Stack-Profile als ersetzbare Kernschritte: derselbe Runner wie die
+  // Lebenszyklus-Schritte, dieselbe Umgebung, dieselbe „Braucht dich"-Meldung
+  // (research E6).
+  const stackService = new StackService({
+    stacks: stackRepo,
+    executions,
+    attention,
+    ports: portAllocator,
+    dataDir: config.dataDir,
   });
 
   // Feature-Dokumente (Ablage + Manifest); vor dem Orchestrator, der den
@@ -157,6 +190,7 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
     telemetry,
     plausibility,
+    stacks: stackService,
   });
 
   const mergeQueue = new MergeQueueService({
@@ -172,8 +206,20 @@ async function main(): Promise<void> {
     lifecycleSteps,
     dataDir: config.dataDir,
     port: config.port,
+    stacks: stackService,
+    stackRepo,
   });
   orchestrator.attachMergeQueue(mergeQueue);
+
+  // Testing-Lane: liest zusammen, entscheidet nichts selbst — die Übergänge der
+  // Stufe liegen im MergeQueueService (FR-028/FR-029).
+  const testingLane = new TestingLaneService({
+    projects,
+    features,
+    stacks: stackRepo,
+    stackService,
+    mergeQueue,
+  });
 
   // Projekt-Chat (Ask-a-Question): Q&A-Turns, persistente Unterhaltung pro Projekt.
   const chatRepo = new ChatRepo(db);
@@ -251,7 +297,23 @@ async function main(): Promise<void> {
   const onboarding = new OnboardingService(projects, features);
 
   // Worktree-Übersicht: tool-weite Sicht auf Git-Realität + Feature-Zuordnung.
-  const worktreeOverview = new WorktreeOverviewService({ projects, features, ptys, worktrees, bus });
+  const worktreeOverview = new WorktreeOverviewService({
+    projects,
+    features,
+    ptys,
+    worktrees,
+    bus,
+    ports: portAllocator,
+    attention,
+    diskFreeBytes: async () => (await resourceMonitor.snapshot()).diskFreeBytes,
+    diskWarnBytes: config.diskWarnBytes,
+    stacks: stackService,
+  });
+
+  // Verwaiste Blöcke beim Start freigeben (Edge Case „Worktree von außen
+  // gelöscht, Portbereich noch vergeben"). Läuft danach in jeder Erhebung mit.
+  const freedBlocks = portAllocator.reconcile();
+  if (freedBlocks > 0) console.log(`[ports] ${freedBlocks} verwaiste(r) Portblock/-blöcke freigegeben`);
 
   const app = await buildServer({
     allowedOrigins: config.allowedOrigins,
@@ -280,6 +342,8 @@ async function main(): Promise<void> {
     jiraImport,
     featureDocuments,
     worktreeOverview,
+    stackService,
+    testingLane,
     resourceMonitor,
     outageMonitor,
     worktrees,
@@ -288,6 +352,7 @@ async function main(): Promise<void> {
     dataDir: config.dataDir,
     webDir: config.webDir,
     port: config.port,
+    portBlockSize: config.portBlockSize,
   });
 
   await app.listen({ port: config.port, host: config.host });

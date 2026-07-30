@@ -521,3 +521,29 @@ export function LogoMark({ className }: { className?: string }) {
     </svg>
   );
 }
+
+/**
+ * Testing-Lane: manuelle Abnahme der laufenden Anwendung (Erlenmeyerkolben).
+ * Ersetzt das 🧪 aus dem Stufen-Katalog in der Oberfläche — Symbole liegen in
+ * diesem Projekt ausschließlich als SVG vor.
+ */
+export function FlaskIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M9 3h6" />
+      <path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.7 3h11a2 2 0 0 0 1.7-3L14 9.5V3" />
+      <line x1="7" y1="15" x2="17" y2="15" />
+    </Base>
+  );
+}
+
+/** Stack eines Features: gestapelte Dienste. */
+export function StackIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polygon points="12 2 22 7 12 12 2 7 12 2" />
+      <polyline points="2 12 12 17 22 12" />
+      <polyline points="2 17 12 22 22 17" />
+    </Base>
+  );
+}

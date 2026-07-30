@@ -7,8 +7,8 @@ import {
   type Dispatch,
   type ReactNode,
 } from 'react';
-import type { AttentionItem, Feature, FeatureActionContext, MergeQueueItem } from '@sdd/shared';
-import { applyAttentionResolved, enteredPhase, isFeatureComplete } from '@sdd/shared';
+import type { AttentionItem, Feature, FeatureActionContext, FeatureStackView, MergeQueueItem } from '@sdd/shared';
+import { applyAttentionResolved, enteredPhase, isFeatureComplete, isStackConfigured } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
 import { primePersonal, setPersonalErrorSink } from './personalSettings.js';
 import { handleSoundEvent } from './sound.js';
@@ -22,6 +22,8 @@ export type View =
   | { kind: 'workflow' }
   /** Tool-weite Worktree-Übersicht (projektübergreifend, Einstieg über Einstellungen). */
   | { kind: 'worktrees' }
+  /** Testing-Lane: manuelle Abnahme der laufenden Anwendung vor dem Merge. */
+  | { kind: 'testing' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }
@@ -58,6 +60,12 @@ export interface UiState {
   reviewCommentsVersion: Record<string, number>;
   /** Laufende before/after-Gates pro Feature (gateRunning-Badge). */
   gateRunning: Record<string, boolean>;
+  /**
+   * Zuletzt ERHOBENER Stack-Zustand je Feature. Nur ein Zwischenspeicher für die
+   * Aktions-Policy — die Wahrheit steht im Server, der bei jedem Abruf frisch
+   * probt (FR-023). Wird von StackPanel/TestingLane befüllt.
+   */
+  featureStacks: Record<string, FeatureStackView>;
   /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
   agentGateVersion: number;
   /** Zähler: hochgesetzt, wenn ein Lauf nachträglich verrechnet wurde (Telemetrie-Nachtrag). */
@@ -91,7 +99,8 @@ export type Action =
   | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } }
   | { type: 'execution_updated' }
   | { type: 'readiness_requested'; featureId: string }
-  | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } };
+  | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } }
+  | { type: 'stack_probed'; payload: { featureId: string; stack: FeatureStackView } };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -256,6 +265,11 @@ function reducer(state: UiState, action: Action): UiState {
       // die Läufe-Ansicht lädt neu, ohne dass der Nutzer etwas tun muss (FR-011).
       return { ...state, executionsVersion: state.executionsVersion + 1 };
     }
+    case 'stack_probed':
+      return {
+        ...state,
+        featureStacks: { ...state.featureStacks, [action.payload.featureId]: action.payload.stack },
+      };
     case 'readiness_requested': {
       return {
         ...state,
@@ -286,6 +300,7 @@ export function featureActionContext(state: UiState, featureId: string): Feature
   if (!feature) return null;
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
   const readiness = state.integrationReadiness[featureId];
+  const stack = state.app?.projects.find((p) => p.id === feature.projectId)?.stack ?? null;
   return {
     phases: feature.phases,
     integration: feature.integration,
@@ -294,6 +309,12 @@ export function featureActionContext(state: UiState, featureId: string): Feature
     session: session?.status ?? null,
     gateRunning: state.gateRunning[featureId] === true,
     hasChanges: typeof readiness === 'boolean' ? readiness : 'unknown',
+    // Die Stack-Bedingungen kommen aus der Projekt-Konfiguration und dem erhobenen
+    // Zustand. Die Oberfläche rechnet nichts selbst — sie rendert nur den Befund
+    // (FR-032/FR-033); serverseitig setzt der ActionGuard dieselbe Policy durch.
+    stackConfigured: stack !== null && isStackConfigured(stack),
+    stackRunning: state.featureStacks[featureId]?.profile != null,
+    stackCanStop: (stack?.stopCommand ?? '').trim() !== '',
   };
 }
 
@@ -382,6 +403,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     openChat: null,
     reviewCommentsVersion: {},
     gateRunning: {},
+    featureStacks: {},
     agentGateVersion: 0,
     executionsVersion: 0,
     integrationReadiness: {},

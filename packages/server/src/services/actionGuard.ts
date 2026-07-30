@@ -1,5 +1,12 @@
-import { displayStatus, evaluateAction, type FeatureActionContext, type FeatureActionId, type FeaturePhase } from '@sdd/shared';
-import type { FeatureRepo } from '../db/repos.js';
+import {
+  displayStatus,
+  evaluateAction,
+  isStackConfigured,
+  type FeatureActionContext,
+  type FeatureActionId,
+  type FeaturePhase,
+} from '@sdd/shared';
+import type { FeatureRepo, ProjectRepo } from '../db/repos.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
 
@@ -29,6 +36,10 @@ export interface ActionGuardDeps {
   features: FeatureRepo;
   ptys: PtySessionManager;
   orchestrator: Orchestrator;
+  /** Für die Stack-Konfiguration des Projekts (FR-032/FR-033). */
+  projects?: ProjectRepo;
+  /** Wird für dieses Feature ein Profil betrieben? (Absicht, nicht erhobener Status.) */
+  stackRunning?: (featureId: string) => boolean;
 }
 
 /**
@@ -49,6 +60,7 @@ export class ActionGuard {
     const feature = this.deps.features.get(featureId);
     if (!feature) throw new FeatureNotFoundError();
     const session = this.deps.ptys.forFeature(featureId);
+    const stack = this.deps.projects?.get(feature.projectId)?.stack;
     return {
       phases: feature.phases,
       integration: feature.integration,
@@ -57,6 +69,9 @@ export class ActionGuard {
       session: session ? displayStatus(session.machine.state) : null,
       gateRunning: this.deps.orchestrator.isGateRunning(featureId),
       hasChanges: opts.hasChanges ?? 'unknown',
+      stackConfigured: stack ? isStackConfigured(stack) : false,
+      stackRunning: this.deps.stackRunning?.(featureId) ?? false,
+      stackCanStop: (stack?.stopCommand ?? '').trim() !== '',
     };
   }
 

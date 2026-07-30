@@ -18,6 +18,7 @@ import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridg
 import { telemetryEnvFor } from '../telemetry/telemetryEnv.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
+import { killProcessGroup } from '../services/stepRunner.js';
 import {
   bracketedPaste,
   KILL_LINE,
@@ -530,7 +531,25 @@ export class PtySessionManager {
     if (s.exited) return;
     safe(() => s.pty.write('\x03'));
     await delay(1200);
-    safe(() => s.pty.kill());
+
+    // Die eigene PROZESSGRUPPE beenden, nicht nur das PTY-Handle (FR-040/FR-041).
+    //
+    // node-pty startet das Kind über forkpty(); es wird damit Sessionführer UND
+    // Gruppenführer. `kill(-pid)` trifft deshalb genau die Prozesse DIESER Session
+    // — einschließlich eines darin gestarteten Dev-Servers. `pty.kill()` allein
+    // beendete nur die Shell: der Enkel überlebte und hielt das Arbeitsverzeichnis,
+    // woran anschließend das Entfernen des Worktrees scheiterte (research E11/E12).
+    //
+    // Ein Beenden über Namensmuster (`pkill`/`killall`) findet NICHT statt: es träfe
+    // gleichnamige Prozesse anderer Features und Sitzungen — und im SDD-Toolkit den
+    // Server, dessen Kindprozess die eigene Arbeit ist.
+    const pid = s.pty.pid;
+    if (!killProcessGroup(pid, 'SIGTERM')) safe(() => s.pty.kill());
+    await delay(300);
+    if (s.exited) return;
+    // Nach der Gnadenfrist hart — SIGTERM zuerst gab dem Dev-Server die Gelegenheit,
+    // seine eigenen Kinder abzuräumen.
+    if (!killProcessGroup(pid, 'SIGKILL')) safe(() => s.pty.kill());
   }
 
   displayStatusOf(id: string): ReturnType<typeof displayStatus> | null {

@@ -182,3 +182,65 @@ describe('PtySessionManager.sendPrompt — bereitschaftsgesteuertes, bestätigte
     expect(pastes(s)).toEqual([bracketedPaste('first'), bracketedPaste('second')]);
   });
 });
+
+
+// ---------- Session-Ende über die Prozessgruppe (US4, FR-040/FR-041, SC-008) ----------
+
+describe('PtySessionManager.terminate — Prozessgruppe statt PTY-Handle', () => {
+  /**
+   * node-pty macht das Kind über forkpty() zum Gruppenführer. `kill(-pid)`
+   * trifft deshalb genau die Prozesse DIESER Session — einschließlich eines darin
+   * gestarteten Dev-Servers. `pty.kill()` allein beendete nur die Shell: der Enkel
+   * überlebte und hielt das Arbeitsverzeichnis, woran anschließend das Entfernen
+   * des Worktrees scheiterte (research E11/E12).
+   */
+  function fakeWithPid(pid: number) {
+    const s = fakeSession('idle');
+    const kill = vi.fn();
+    s.pty = { write: s.pty.write, kill, pid } as unknown as LiveSession['pty'];
+    return { s, kill };
+  }
+
+  it('sendet das Signal an die NEGATIVE pid — also an die Gruppe', async () => {
+    const { mgr } = makeManager();
+    const { s } = fakeWithPid(4242);
+    inject(mgr, s);
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    await mgr.terminate(s.id);
+
+    const gruppenSignale = spy.mock.calls.filter(([pid]) => pid === -4242);
+    expect(gruppenSignale.length).toBeGreaterThan(0);
+    expect(gruppenSignale[0]?.[1]).toBe('SIGTERM');
+    // Kein Signal an eine fremde oder an die eigene (0) Gruppe.
+    expect(spy.mock.calls.every(([pid]) => pid === -4242)).toBe(true);
+    spy.mockRestore();
+  }, 15_000);
+
+  it('fällt auf das eigene PTY-Handle zurück, wenn die Gruppe nicht erreichbar ist', async () => {
+    const { mgr } = makeManager();
+    const { s, kill } = fakeWithPid(4243);
+    inject(mgr, s);
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw new Error('ESRCH');
+    });
+
+    await mgr.terminate(s.id);
+
+    expect(kill).toHaveBeenCalled();
+    spy.mockRestore();
+  }, 15_000);
+
+  /** `kill(-0, …)` wäre die EIGENE Gruppe — also der Toolkit-Server selbst. */
+  it('sendet niemals an Gruppe 0', async () => {
+    const { mgr } = makeManager();
+    const { s } = fakeWithPid(0);
+    inject(mgr, s);
+    const spy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+
+    await mgr.terminate(s.id);
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  }, 15_000);
+});

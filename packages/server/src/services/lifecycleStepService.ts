@@ -1,19 +1,19 @@
-import { spawn } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   DEFAULT_STEP_TIMEOUT_MS,
   buildLifecycleEnv,
   lifecycleCwdKind,
   lifecycleTriggerTitle,
   resolveLifecycleSteps,
-  tailLines,
 } from '@sdd/shared';
 import type { Feature, LifecycleStep, LifecycleTrigger, Project } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo } from '../db/repos.js';
 import type { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
-import { loginShellEnv } from '../pty/loginShellEnv.js';
 import { bus } from '../events.js';
+import { defaultStepRunner, type StepRunner } from './stepRunner.js';
+
+export type { StepRunner };
 
 /** Ergebnis eines einzelnen Schritt-Laufs (Buchführung + Kette). */
 export interface StepOutcome {
@@ -37,24 +37,18 @@ export interface LifecycleTriggerOutcome {
   skipped?: boolean;
 }
 
-/** Prozess-Ausführung, injizierbar für Tests (Muster: HeadlessRunner). */
-export type StepRunner = (opts: {
-  command: string;
-  cwd: string;
-  logPath: string;
-  /** Erste Zeile der Log-Datei: `=== <name>: <command> ===` */
-  header: string;
-  timeoutMs: number;
-  /** Die sechs Kontext-Variablen; der Runner mischt sie in die Login-Shell-Umgebung. */
-  extraEnv: Record<string, string>;
-}) => Promise<{ exitCode: number; tail: string; timedOut: boolean }>;
-
 export interface LifecycleStepDeps {
   steps: LifecycleStepRepo;
   executions: ExecutionRepo;
   attention: AttentionRepo;
   dataDir: string;
   runner?: StepRunner;
+  /**
+   * Anfang des Portblocks des eigenen Worktrees; null = keiner bekannt. Kommt aus
+   * dem PortAllocator und wird über `buildLifecycleEnv()` als `$SDD_PORT_BASE`
+   * gereicht — es gibt keinen zweiten Weg zur Portvergabe (FR-007).
+   */
+  portBaseFor?: (worktreePath: string) => number | null;
 }
 
 /** Kontext-Ergänzungen, die nicht am Feature stehen. */
@@ -85,7 +79,7 @@ export class LifecycleStepService {
   private runningTriggers = new Set<string>();
 
   constructor(private deps: LifecycleStepDeps) {
-    this.runner = deps.runner ?? defaultRunner;
+    this.runner = deps.runner ?? defaultStepRunner;
   }
 
   /**
@@ -138,6 +132,10 @@ export class LifecycleStepService {
       branch: feature.branch,
       phase: trigger.phase ?? null,
       stage: trigger.stage ?? null,
+      // Der Block des EIGENEN Worktrees — nie der eines Nachbar-Features (US1 Szenario 2).
+      portBase: worktreePath ? (this.deps.portBaseFor?.(worktreePath) ?? null) : null,
+      // Ein gewöhnlicher Schritt ist kein Profillauf: `[ -z "$SDD_PROFILE" ]`.
+      profile: null,
     });
 
     const ran: StepOutcome[] = [];
@@ -284,67 +282,3 @@ function triggerKey(t: LifecycleTrigger): string {
   return `${t.kind}:${t.phase ?? t.stage ?? ''}`;
 }
 
-/**
- * Rohpuffer für den Tail: mehr als genug für die letzten 20 Zeilen / 2000 Zeichen
- * und trotzdem hart begrenzt. Der Schnitt auf Zeilen passiert erst am Ende —
- * inkrementell angewandt würde `tailLines` Zeilengrenzen zwischen zwei Chunks
- * verkleben.
- */
-const TAIL_RAW_MAX = 16_384;
-
-/**
- * Produktions-Runner: `$SHELL -l -c "<command>"` im Zielverzeichnis.
- *
- * Login-Shell (`-l`), weil Version-Manager (nvm, mise) in `.zprofile` hängen —
- * ohne sie findet ein `pnpm`-Kommando sein Node nicht (dieselbe Begründung wie in
- * verifyService/agentGateService).
- *
- * Die Ausgabe wird GESTREAMT in die Log-Datei geschrieben und nie vollständig im
- * Speicher gehalten; nur ein begrenzter Rest bleibt für den Tail des Inbox-Items
- * stehen (Edge Case „sehr viel Ausgabe").
- *
- * Bei Zeitlimit wird ausschließlich das EIGENE Child-Handle beendet — nie über ein
- * generisches Muster (`pkill`/`killall`): die laufende Toolkit-Instanz ist der
- * Elternprozess dieser Arbeit.
- */
-const defaultRunner: StepRunner = async ({ command, cwd, logPath, header, timeoutMs, extraEnv }) => {
-  const env = { ...(await loginShellEnv()), ...extraEnv };
-  mkdirSync(dirname(logPath), { recursive: true });
-  const log = createWriteStream(logPath, { flags: 'a' });
-  log.write(`=== ${header} ===\n`);
-
-  let raw = '';
-  const capture = (chunk: Buffer): void => {
-    raw += chunk.toString('utf8');
-    if (raw.length > TAIL_RAW_MAX) raw = raw.slice(raw.length - TAIL_RAW_MAX);
-  };
-
-  return new Promise((resolve) => {
-    const child = spawn(env.SHELL ?? '/bin/zsh', ['-l', '-c', command], {
-      cwd,
-      env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGKILL');
-    }, timeoutMs);
-
-    child.stdout.on('data', capture);
-    child.stderr.on('data', capture);
-    child.stdout.pipe(log, { end: false });
-    child.stderr.pipe(log, { end: false });
-
-    const done = (exitCode: number): void => {
-      clearTimeout(timer);
-      if (timedOut) log.write(`\n=== Zeitlimit überschritten — Kommando beendet (exit 137) ===\n`);
-      log.end();
-      resolve({ exitCode, tail: tailLines(raw), timedOut });
-    };
-    child.on('close', (code) => done(timedOut ? 137 : (code ?? 1)));
-    // Kommando existiert nicht / Shell nicht startbar ⇒ regulärer Fehlschlag,
-    // nie ein stiller Erfolg.
-    child.on('error', () => done(127));
-  });
-};

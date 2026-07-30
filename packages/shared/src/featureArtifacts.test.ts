@@ -30,6 +30,7 @@ function makeFeature(overrides: Partial<Record<FeaturePhase, PhaseStatus>> = {})
     tasksDone: 0,
     tasksTotal: 0,
     reviewRejectedAt: null,
+    cleanupError: null,
     createdAt: 0,
     archivedAt: null,
   };

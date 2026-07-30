@@ -95,6 +95,8 @@ describe('buildLifecycleEnv', () => {
     branch: 'feature/demo-eins',
     phase: 'implement',
     stage: null,
+    portBase: null,
+    profile: null,
   };
 
   /**
@@ -102,21 +104,62 @@ describe('buildLifecycleEnv', () => {
    * hier festgenagelt. Setzt jemand Variablen anderswo — oder ergänzt hier welche,
    * die nicht zum Vertrag gehören — schlägt dieser Test an.
    */
-  it('liefert genau die sechs vertraglich zugesicherten Schlüssel', () => {
+  it('liefert genau die acht vertraglich zugesicherten Schlüssel', () => {
     expect(Object.keys(buildLifecycleEnv(ctx)).sort()).toEqual([
       'SDD_BRANCH',
       'SDD_FEATURE',
       'SDD_PHASE',
+      'SDD_PORT_BASE',
+      'SDD_PROFILE',
       'SDD_PROJECT',
       'SDD_STAGE',
       'SDD_WORKTREE',
     ]);
   });
 
-  it('setzt SDD_PORT_BASE und SDD_PROFILE NICHT (FR-013/FR-014 — kommen mit der Portvergabe)', () => {
-    const env = buildLifecycleEnv(ctx);
-    expect('SDD_PORT_BASE' in env).toBe(false);
-    expect('SDD_PROFILE' in env).toBe(false);
+  it('trägt SDD_PORT_BASE als Dezimalzahl des Blockanfangs (FR-007)', () => {
+    const env = buildLifecycleEnv({ ...ctx, portBase: 21040 });
+    expect(env.SDD_PORT_BASE).toBe('21040');
+  });
+
+  it('lässt SDD_PORT_BASE leer, solange kein Block bekannt ist', () => {
+    expect(buildLifecycleEnv({ ...ctx, portBase: null }).SDD_PORT_BASE).toBe('');
+  });
+
+  /**
+   * `[ -z "$SDD_PROFILE" ]` ist die vertraglich zugesicherte Unterscheidung
+   * zwischen einem gewöhnlichen Schritt und einem Profillauf (FR-018).
+   */
+  it('setzt SDD_PROFILE nur bei einem Profillauf', () => {
+    expect(buildLifecycleEnv(ctx).SDD_PROFILE).toBe('');
+    expect(buildLifecycleEnv({ ...ctx, profile: 'test' }).SDD_PROFILE).toBe('test');
+    expect(buildLifecycleEnv({ ...ctx, profile: 'full' }).SDD_PROFILE).toBe('full');
+    expect(buildLifecycleEnv({ ...ctx, profile: 'down' }).SDD_PROFILE).toBe('down');
+  });
+
+  /**
+   * FR-008 / SC-007: eine Schritt-Konfiguration aus F1b, die die zwei neuen
+   * Variablen nicht verwendet, darf keine Verhaltensänderung sehen. Der Nachweis
+   * ist, dass KEIN bestehender Schlüssel Name oder Bedeutung geändert hat — es
+   * wurde ausschließlich hinzugefügt.
+   */
+  it('lässt die sechs Schlüssel aus F1b unverändert (FR-008, SC-007)', () => {
+    const env = buildLifecycleEnv({ ...ctx, portBase: 21040, profile: 'test' });
+    expect({
+      SDD_WORKTREE: env.SDD_WORKTREE,
+      SDD_PROJECT: env.SDD_PROJECT,
+      SDD_FEATURE: env.SDD_FEATURE,
+      SDD_BRANCH: env.SDD_BRANCH,
+      SDD_PHASE: env.SDD_PHASE,
+      SDD_STAGE: env.SDD_STAGE,
+    }).toEqual({
+      SDD_WORKTREE: '/wt/demo-eins',
+      SDD_PROJECT: 'Demo',
+      SDD_FEATURE: 'demo-eins',
+      SDD_BRANCH: 'feature/demo-eins',
+      SDD_PHASE: 'implement',
+      SDD_STAGE: '',
+    });
   });
 
   it('trägt Worktree, Projekt, Feature und Branch an jedem Auslöser', () => {
@@ -131,8 +174,10 @@ describe('buildLifecycleEnv', () => {
     const env = buildLifecycleEnv({ ...ctx, phase: null, stage: null });
     expect(env.SDD_PHASE).toBe('');
     expect(env.SDD_STAGE).toBe('');
-    // Alle sechs Schlüssel bleiben vorhanden — `set -u` ist damit gefahrlos.
-    expect(Object.keys(env)).toHaveLength(6);
+    expect(env.SDD_PORT_BASE).toBe('');
+    expect(env.SDD_PROFILE).toBe('');
+    // Alle acht Schlüssel bleiben vorhanden — `set -u` ist damit gefahrlos.
+    expect(Object.keys(env)).toHaveLength(8);
   });
 
   it('setzt Phase und Stufe nie gleichzeitig aus einem anderen Vorgang', () => {

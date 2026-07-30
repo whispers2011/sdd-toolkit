@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { existsSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { detectOverlaps } from '@sdd/shared';
@@ -6,6 +7,7 @@ import type {
   MainCheckoutInfo,
   Project,
   WorktreeDirState,
+  WorktreeDiskInfo,
   WorktreeEntry,
   WorktreeEntryKind,
   WorktreeFileChange,
@@ -32,12 +34,38 @@ export interface WorktreeOverviewBus {
   emitEvent(event: 'feature_updated', feature: Feature): void;
 }
 
+/** Der Portblock je Worktree — so viel, wie die Übersicht davon braucht. */
+export interface WorktreePortSource {
+  baseForWorktree(worktreePath: string): number | null;
+  /** Blöcke verschwundener Verzeichnisse freigeben; liefert deren Anzahl. */
+  reconcile(): number;
+}
+
+/** Meldungen der Übersicht (verwaiste Worktrees) — so viel, wie hier gebraucht wird. */
+export interface WorktreeAttentionSink {
+  raise(a: { kind: 'orphan_worktree'; projectId: string; message: string }): { id: string };
+  listOpen(): { id: string; kind: string; message: string }[];
+  resolve(id: string): boolean;
+}
+
 export interface WorktreeOverviewDeps {
   projects: ProjectRepo;
   features: FeatureRepo;
   ptys: WorktreeSessionSource;
   worktrees: WorktreeManager;
   bus: WorktreeOverviewBus;
+  /** Portblöcke; fehlt sie, bleibt `portBase` überall null. */
+  ports?: WorktreePortSource;
+  /** Inbox für verwaiste Worktrees (FR-039). */
+  attention?: WorktreeAttentionSink;
+  /** Größe eines Verzeichnisses in Bytes; null = nicht ermittelbar. Injizierbar für Tests. */
+  readDirSize?: (path: string) => Promise<number | null>;
+  /** Freier Platz des Datenträgers; null = nicht ermittelbar (Quelle: ResourceMonitor). */
+  diskFreeBytes?: () => Promise<number | null>;
+  /** Dokumentierte Warnschwelle in Bytes (config.diskWarnBytes). */
+  diskWarnBytes?: number;
+  /** Stack-Abbau vor dem Entfernen eines Worktrees (FR-017). */
+  stacks?: { down(feature: Feature, project: Project): Promise<void> };
 }
 
 /** Anzeigereihenfolge der Eintragsarten: erst die Arbeit, dann Chats, dann Verwaistes. */
@@ -62,6 +90,40 @@ const MAX_WARNING_FILES = 20;
  * älter ist als das, was `collectedAt` behauptet (FR-028).
  */
 const CACHE_TTL_MS = 2000;
+
+/** Zeitlimit der Größenerhebung je Eintrag; danach gilt die Größe als unbekannt (FR-044). */
+const SIZE_TIMEOUT_MS = 3000;
+
+/** Warnschwelle, wenn keine konfigurierte durchgereicht wurde: 10 GiB. */
+const DISK_WARN_BYTES_FALLBACK = 10 * 1024 ** 3;
+
+/**
+ * Größe eines Verzeichnisses über `du -sk` (Kilobyte-Blöcke × 1024).
+ *
+ * Systemwerkzeug statt eigenem `readdir`+`stat`: ein rekursiver Durchlauf über
+ * ein `node_modules` mit 100 000 Einträgen ist in Node deutlich langsamer und
+ * liefert dieselbe Zahl. Die Spec erlaubt die Größe ausdrücklich als Schätzung
+ * (research E15).
+ */
+function duDirSize(path: string): Promise<number | null> {
+  return new Promise((resolveSize) => {
+    execFile('du', ['-sk', path], { timeout: SIZE_TIMEOUT_MS }, (err, stdout) => {
+      // `du` meldet auch bei Teilfehlern (fehlende Rechte) einen Exit ≠ 0, gibt
+      // aber trotzdem eine brauchbare Summe aus — deshalb zuerst die Ausgabe.
+      const kb = Number(stdout.trim().split(/\s+/)[0]);
+      if (Number.isFinite(kb) && kb >= 0) return resolveSize(kb * 1024);
+      resolveSize(err ? null : null);
+    });
+  });
+}
+
+/** „ (1,4 GB)" bzw. leer, wenn die Größe unbekannt ist — für Meldungstexte. */
+function sizeSuffix(sizeBytes: number | null): string {
+  if (sizeBytes === null) return '';
+  const gb = sizeBytes / 1024 ** 3;
+  const text = gb >= 1 ? `${gb.toFixed(1).replace('.', ',')} GB` : `${Math.round(sizeBytes / 1024 ** 2)} MB`;
+  return ` (${text})`;
+}
 
 /** Erhobene, noch UNGEKÜRZTE Dateiliste eines Eintrags — Datenbasis der Warnungen. */
 interface EntryChanges {
@@ -199,11 +261,62 @@ export class WorktreeOverviewService {
   }
 
   private async collect(): Promise<WorktreeOverview> {
+    // Derselbe Durchlauf gibt die Blöcke verschwundener Verzeichnisse frei —
+    // eine zweite Erkennung wäre eine zweite Wahrheit (research E14).
+    this.deps.ports?.reconcile();
+
     const groups: WorktreeProjectGroup[] = [];
     for (const project of this.deps.projects.list()) {
       groups.push(await this.buildGroup(project));
     }
-    return { groups, collectedAt: Date.now() };
+    this.reportOrphans(groups);
+    return { groups, collectedAt: Date.now(), disk: await this.readDisk() };
+  }
+
+  /**
+   * Freier Plattenplatz und Warnschwelle (FR-043). Quelle ist dieselbe wie beim
+   * ResourceMonitor — sie zweimal zu messen wäre eine zweite Wahrheit über
+   * denselben Datenträger.
+   */
+  private async readDisk(): Promise<WorktreeDiskInfo> {
+    const warnBelowBytes = this.deps.diskWarnBytes ?? DISK_WARN_BYTES_FALLBACK;
+    const freeBytes = (await this.deps.diskFreeBytes?.().catch(() => null)) ?? null;
+    return { freeBytes, warnBelowBytes, warn: freeBytes !== null && freeBytes < warnBelowBytes };
+  }
+
+  /**
+   * Jeder verwaiste Eintrag wird AKTIV gemeldet, nicht nur in einer Liste geführt
+   * (FR-039, SC-011). Die Erhebung ist der einzige Ort, der Verwaistheit
+   * überhaupt bestimmt; `AttentionRepo.raise()` dedupliziert gegen offene
+   * Meldungen, deshalb entsteht je Erhebung keine Dublette (research E14).
+   */
+  private reportOrphans(groups: WorktreeProjectGroup[]): void {
+    const attention = this.deps.attention;
+    if (!attention) return;
+
+    const paths = new Set<string>();
+    for (const group of groups) {
+      // Ein Block mit Fehler hat gar nicht erhoben — daraus darf nicht folgen,
+      // dass seine Meldungen erledigt sind.
+      if (group.error !== null) return;
+      for (const entry of group.worktrees) {
+        if (entry.kind !== 'orphan') continue;
+        paths.add(entry.path);
+        attention.raise({
+          kind: 'orphan_worktree',
+          projectId: group.projectId,
+          message: `Verwaister Worktree ohne Feature: ${entry.path}${sizeSuffix(entry.sizeBytes)}`,
+        });
+      }
+    }
+
+    // Verschwundene Einträge auflösen: die Erhebung ist der einzige Ort, der
+    // Verwaistheit bestimmt — also auch der einzige, der ihr Ende feststellt
+    // (research E14).
+    for (const item of attention.listOpen()) {
+      if (item.kind !== 'orphan_worktree') continue;
+      if (![...paths].some((p) => item.message.includes(p))) attention.resolve(item.id);
+    }
   }
 
   /**
@@ -273,6 +386,17 @@ export class WorktreeOverviewService {
       features.find((f) => f.worktreePath !== null && canonical(f.worktreePath) === target) ??
       (known.branch === null ? undefined : features.find((f) => f.branch === known.branch));
 
+    // Stack ZUERST abbauen (FR-017, research E9): ein laufender Dienst hält das
+    // Verzeichnis. Scheitert der Abbau, wird das Entfernen ABGELEHNT und der Grund
+    // genannt — statt halb aufzuräumen und Erfolg zu melden.
+    if (feature && this.deps.stacks) {
+      try {
+        await this.deps.stacks.down(feature, project);
+      } catch (err) {
+        throw new WorktreeRemoveError('remove_failed', `Stack-Abbau fehlgeschlagen: ${errorText(err)}`);
+      }
+    }
+
     try {
       await this.deps.worktrees.remove(project.path, target, { force: req.force === true });
     } catch (err) {
@@ -313,11 +437,26 @@ export class WorktreeOverviewService {
       const worktrees = await this.collectEntries(project, main.path);
       const changes = await this.collectChanges(worktrees);
       await this.applyWarnings(project, worktrees, changes);
+      await this.collectSizes(worktrees);
       finalizeFiles(worktrees, changes);
       return { ...base, main, worktrees, worktreeCount: worktrees.length, error: null };
     } catch (err) {
       return { ...base, main: null, worktrees: [], worktreeCount: 0, error: errorText(err) };
     }
+  }
+
+  /**
+   * Größe je Eintrag (FR-042). Läuft in derselben Nebenläufigkeitsbremse wie die
+   * übrige Erhebung und darf die Übersicht nicht blockieren: ist eine Größe nicht
+   * ermittelbar, bleibt `sizeBytes` null („unbekannt") und der Eintrag vollständig
+   * sichtbar (FR-044).
+   */
+  private async collectSizes(entries: WorktreeEntry[]): Promise<void> {
+    const readDirSize = this.deps.readDirSize ?? duDirSize;
+    await forEachLimit(entries, CONCURRENCY, async (entry) => {
+      if (entry.dirState !== 'present') return;
+      entry.sizeBytes = await readDirSize(entry.path).catch(() => null);
+    });
   }
 
   /** Haupt-Checkout: schlanke Sicht ohne Dateiliste, ohne Warnungen (FR-003, D7). */
@@ -397,6 +536,8 @@ export class WorktreeOverviewService {
         files: [],
         filesTruncated: false,
         warnings: [],
+        sizeBytes: null,
+        portBase: this.deps.ports?.baseForWorktree(path) ?? null,
         error: null,
       });
     }
@@ -424,6 +565,8 @@ export class WorktreeOverviewService {
         files: [],
         filesTruncated: false,
         warnings: [],
+        sizeBytes: null,
+        portBase: this.deps.ports?.baseForWorktree(path) ?? null,
         error: null,
       });
     }

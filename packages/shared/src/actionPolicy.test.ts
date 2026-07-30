@@ -4,6 +4,7 @@ import {
   BUSY_REASON,
   DECISION_REASON,
   FEATURE_ACTIONS,
+  STACK_ACTIONS,
   STAGE_CLASS,
   alreadyIntegratingReason,
   busyReason,
@@ -46,6 +47,9 @@ function ctx(overrides: Partial<FeatureActionContext> = {}): FeatureActionContex
     session: null,
     gateRunning: false,
     hasChanges: 'unknown',
+    stackConfigured: true,
+    stackRunning: true,
+    stackCanStop: true,
     ...overrides,
   };
 }
@@ -428,7 +432,20 @@ function generatedContexts(): FeatureActionContext[] {
           for (const hasChanges of [true, false, 'unknown'] as (boolean | 'unknown')[]) {
             for (const archived of [false, true]) {
               for (const hasWorktree of [false, true]) {
-                out.push({ phases, integration, archived, hasWorktree, session, gateRunning, hasChanges });
+                for (const stackConfigured of [false, true]) {
+                  out.push({
+                    phases,
+                    integration,
+                    archived,
+                    hasWorktree,
+                    session,
+                    gateRunning,
+                    hasChanges,
+                    stackConfigured,
+                    stackRunning: stackConfigured,
+                    stackCanStop: stackConfigured,
+                  });
+                }
               }
             }
           }
@@ -442,16 +459,25 @@ function generatedContexts(): FeatureActionContext[] {
 describe('Invariante über die gesamte Zustandsmenge', () => {
   const CONTEXTS = generatedContexts();
 
-  it('reason === null ⟺ availability === available', () => {
-    for (const c of CONTEXTS) {
-      for (const action of FEATURE_ACTIONS) {
-        for (const phase of [undefined, ...ENABLED] as (FeaturePhase | undefined)[]) {
-          const v = evaluateAction(action, c, phase === undefined ? undefined : { phase });
-          expect(v.reason === null, `${action}/${phase ?? '–'}`).toBe(v.availability === 'available');
+  /**
+   * Erschöpfende Prüfung über die volle Zustandsmenge — mit der Stack-Dimension
+   * und den sechs neuen Aktionen sind das über eine Million Auswertungen. Das
+   * Zeitlimit ist bewusst großzügig: die Vollständigkeit ist hier der Zweck.
+   */
+  it(
+    'reason === null ⟺ availability === available',
+    () => {
+      for (const c of CONTEXTS) {
+        for (const action of FEATURE_ACTIONS) {
+          for (const phase of [undefined, ...ENABLED] as (FeaturePhase | undefined)[]) {
+            const v = evaluateAction(action, c, phase === undefined ? undefined : { phase });
+            expect(v.reason === null, `${action}/${phase ?? '–'}`).toBe(v.availability === 'available');
+          }
         }
       }
-    }
-  });
+    },
+    30_000,
+  );
 
   it('liefert für jede Aktion immer einen der drei Befunde', () => {
     for (const c of CONTEXTS.slice(0, 200)) {
@@ -630,6 +656,38 @@ describe('Darstellungsregeln — jede Aktion kennt hidden UND blocked', () => {
     // Aufräum-Aktionen werden nach FR-017 bewusst NIE gesperrt.
     archive: { hidden: [ctx({ archived: true }), undefined, ACTION_REASON.alreadyArchived], blocked: null },
     delete: { hidden: [ctx(), undefined, ''], blocked: null },
+    manual_test_confirm: {
+      hidden: [ctx(), undefined, ACTION_REASON.notAwaitingManualTest],
+      blocked: [
+        ctx({ integration: 'awaiting_manual_test', session: 'working' }),
+        undefined,
+        BUSY_REASON.sessionWorking,
+      ],
+    },
+    manual_test_reject: {
+      hidden: [ctx({ integration: 'awaiting_human_review' }), undefined, ACTION_REASON.notAwaitingManualTest],
+      blocked: [
+        ctx({ integration: 'awaiting_manual_test', gateRunning: true }),
+        undefined,
+        BUSY_REASON.gateRunning,
+      ],
+    },
+    stack_up: {
+      hidden: [ctx({ archived: true }), undefined, ACTION_REASON.archived],
+      blocked: [ctx({ stackConfigured: false }), undefined, ACTION_REASON.stackUnconfigured],
+    },
+    stack_stop: {
+      hidden: [ctx({ archived: true }), undefined, ACTION_REASON.archived],
+      blocked: [ctx({ stackCanStop: false }), undefined, ACTION_REASON.stackNoStopCommand],
+    },
+    stack_restart: {
+      hidden: [ctx({ archived: true }), undefined, ACTION_REASON.archived],
+      blocked: [ctx({ hasWorktree: false }), undefined, ACTION_REASON.noWorktree],
+    },
+    stack_down: {
+      hidden: [ctx({ archived: true }), undefined, ACTION_REASON.archived],
+      blocked: [ctx({ stackRunning: false }), undefined, ACTION_REASON.stackNotRunning],
+    },
   };
 
   it.each(FEATURE_ACTIONS.filter((a) => a !== 'delete'))('%s: hidden-Fall trägt den erwarteten Grund', (action) => {
@@ -663,6 +721,103 @@ describe('Darstellungsregeln — jede Aktion kennt hidden UND blocked', () => {
         expect(v.availability).toBe('blocked');
         expect(v.reason).toBe(busyReason(c));
       }
+    }
+  });
+});
+
+// ---------- Manuelle Abnahme und Stack-Aktionen ----------
+
+describe('Manuelle Abnahme (FR-028)', () => {
+  it('bietet Bestätigen und Ablehnen genau auf der Stufe an', () => {
+    const c = ctx({ integration: 'awaiting_manual_test' });
+    expect(evaluateAction('manual_test_confirm', c)).toEqual({ availability: 'available', reason: null });
+    expect(evaluateAction('manual_test_reject', c)).toEqual({ availability: 'available', reason: null });
+  });
+
+  it('versteckt beide Aktionen auf JEDER anderen Stufe', () => {
+    for (const stage of ALL_STAGES.filter((s) => s !== 'awaiting_manual_test')) {
+      for (const action of ['manual_test_confirm', 'manual_test_reject'] as const) {
+        const v = evaluateAction(action, ctx({ integration: stage }));
+        expect(v.availability, `${action} auf ${stage}`).toBe('hidden');
+        expect(v.reason).toBe(ACTION_REASON.notAwaitingManualTest);
+      }
+    }
+  });
+
+  /** Solange ein Agent schreibt, ist der abgenommene Stand nicht der gemergte. */
+  it('sperrt die Abnahme, solange gearbeitet wird', () => {
+    const v = evaluateAction('manual_test_confirm', ctx({ integration: 'awaiting_manual_test', session: 'working' }));
+    expect(v).toEqual({ availability: 'blocked', reason: BUSY_REASON.sessionWorking });
+  });
+
+  it('sperrt die Stufe selbst nicht — sie ist eine Entscheidung, keine Arbeit', () => {
+    expect(STAGE_CLASS.awaiting_manual_test).toBe('decision');
+    expect(busyReason(ctx({ integration: 'awaiting_manual_test' }))).toBeNull();
+  });
+
+  it('nennt an anderen Aktionen den Entscheidungsgrund der Stufe', () => {
+    const v = evaluateAction('phase_approve', ctx({
+      phases: phasesWith({ specify: 'awaiting_review' }),
+      integration: 'awaiting_manual_test',
+    }), { phase: 'specify' });
+    expect(v).toEqual({ availability: 'blocked', reason: DECISION_REASON.awaiting_manual_test });
+  });
+});
+
+describe('Stack-Aktionen (FR-032/FR-033)', () => {
+  const laufend = ctx({ integration: 'awaiting_manual_test' });
+
+  it('gibt alle vier Aktionen bei vollständiger Konfiguration frei', () => {
+    for (const action of STACK_ACTIONS) {
+      expect(evaluateAction(action, laufend), action).toEqual({ availability: 'available', reason: null });
+    }
+  });
+
+  /**
+   * research E13: die Lücke wird dort benannt, wo man sie beheben will — als
+   * sichtbar gesperrte Schaltfläche, nicht als verschwundene.
+   */
+  it('sperrt alle vier Aktionen ohne Stack-Konfiguration MIT sichtbarem Grund', () => {
+    for (const action of STACK_ACTIONS) {
+      const v = evaluateAction(action, ctx({ stackConfigured: false }));
+      expect(v.availability, action).toBe('blocked');
+      expect(v.reason).toBe(ACTION_REASON.stackUnconfigured);
+    }
+  });
+
+  it('sperrt alle vier Aktionen ohne Arbeitsverzeichnis', () => {
+    for (const action of STACK_ACTIONS) {
+      expect(evaluateAction(action, ctx({ hasWorktree: false })).reason, action).toBe(ACTION_REASON.noWorktree);
+    }
+  });
+
+  it('sperrt nur „Stoppen", wenn kein Anhalte-Kommando hinterlegt ist', () => {
+    const c = ctx({ stackCanStop: false });
+    expect(evaluateAction('stack_stop', c).reason).toBe(ACTION_REASON.stackNoStopCommand);
+    expect(evaluateAction('stack_up', c).availability).toBe('available');
+    expect(evaluateAction('stack_restart', c).availability).toBe('available');
+    expect(evaluateAction('stack_down', c).availability).toBe('available');
+  });
+
+  it('lässt Starten und Neustarten auch aus dem Ruhezustand zu', () => {
+    const c = ctx({ stackRunning: false });
+    expect(evaluateAction('stack_up', c).availability).toBe('available');
+    expect(evaluateAction('stack_restart', c).availability).toBe('available');
+    expect(evaluateAction('stack_stop', c).reason).toBe(ACTION_REASON.stackNotRunning);
+    expect(evaluateAction('stack_down', c).reason).toBe(ACTION_REASON.stackNotRunning);
+  });
+
+  it('sperrt jede Stack-Aktion, solange gearbeitet wird', () => {
+    for (const action of STACK_ACTIONS) {
+      expect(evaluateAction(action, ctx({ session: 'working' })).reason, action).toBe(
+        BUSY_REASON.sessionWorking,
+      );
+    }
+  });
+
+  it('versteckt jede Stack-Aktion an einem archivierten Feature', () => {
+    for (const action of STACK_ACTIONS) {
+      expect(evaluateAction(action, ctx({ archived: true })).availability, action).toBe('hidden');
     }
   });
 });

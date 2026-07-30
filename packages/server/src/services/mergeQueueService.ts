@@ -5,7 +5,9 @@ import {
   ACTION_REASON,
   alreadyIntegratingReason,
   isValidBranchName,
+  manualTestDueMessage,
   mergedNotificationBody,
+  reopenLastPhase,
   reviewDueMessage,
   taskProgressText,
 } from '@sdd/shared';
@@ -26,11 +28,16 @@ import { hasUnmergedChanges } from './unmergedChanges.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
 import type { LifecycleStepService } from './lifecycleStepService.js';
+import type { StackRepo } from '../db/stackRepo.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
 import { raiseVerificationGap } from './verificationGap.js';
 import { bus, emitAttentionResolved } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /** Validierungsfehler der Review-Freigabe (API antwortet 400/409 statt 500). */
 export class MergeApprovalError extends Error {
@@ -54,6 +61,19 @@ export interface MergeQueueDeps {
   dataDir: string;
   /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
   port: number;
+  /**
+   * Stack-Profile. Optional, damit bestehende Tests ohne Stack laufen; im Betrieb
+   * immer gesetzt. `down` läuft VOR dem Entfernen des Worktrees, weil ein
+   * laufender Dienst genau das Verzeichnis hält, dessen Entfernen scheiterte
+   * (research E9/E11).
+   */
+  stacks?: {
+    down(feature: Feature, project: Project, opts?: { quiet?: boolean }): Promise<void>;
+    probe(feature: Feature, project: Project, opts?: { refresh?: boolean }): Promise<{ url: string | null }>;
+    isConfigured(project: Project): boolean;
+  };
+  /** Entscheidungen der manuellen Abnahme (FR-028/FR-029). */
+  stackRepo?: StackRepo;
 }
 
 /**
@@ -157,23 +177,167 @@ export class MergeQueueService {
       }
     }
 
+    // Stack ZUERST abbauen (FR-017, research E9): ein laufender Dienst hält das
+    // Arbeitsverzeichnis — genau daran scheiterte das Entfernen, und danach wuchs
+    // ein 10-GB-Verzeichnis unauffindbar weiter. Scheitert der Abbau, wird der
+    // Pfad NICHT geleert; die Meldung steht in der Inbox, der Merge bleibt.
+    if (this.deps.stacks) {
+      try {
+        await this.deps.stacks.down(feature, project);
+      } catch (err) {
+        this.markCleanupFailed(feature, `Stack-Abbau fehlgeschlagen: ${errText(err)}`);
+        return false;
+      }
+    }
+
     const session = this.deps.ptys.forFeature(feature.id);
     if (session) await this.deps.ptys.terminate(session.id);
 
+    // Das Entfernen wird GEPRÜFT, nicht angenommen (FR-034). Bis 31.07.2026 stand
+    // hier `catch { prune }` und danach bedingungslos `setWorktree(id, null)` —
+    // ein fehlgeschlagenes Entfernen machte das Verzeichnis damit für das Toolkit
+    // unauffindbar (research E11, SC-004).
     if (feature.worktreePath) {
       try {
         await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true });
-      } catch {
+      } catch (err) {
         await git(project.path, ['worktree', 'prune']).catch(() => {});
+        if (existsSync(feature.worktreePath)) {
+          this.markCleanupFailed(feature, errText(err));
+          return false;
+        }
       }
     }
     if (branchExists) await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
 
+    // Erst nach nachgewiesenem Entfernen (FR-036).
     this.deps.features.setWorktree(feature.id, null);
+    this.deps.features.setCleanupError(feature.id, null);
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({ featureId: feature.id, kinds: ['worktree_cleanup_failed'] }),
+    );
     this.deps.ptys.snapshots.remove(feature.id);
     const fresh = this.deps.features.get(feature.id);
     if (fresh) bus.emitEvent('feature_updated', fresh);
     return true;
+  }
+
+  /**
+   * Fehlgeschlagenes Aufräumen sichtbar machen (FR-035): der Worktree-Pfad BLEIBT
+   * gesetzt, der Grund steht am Feature und als „Braucht dich"-Meldung. Der
+   * Vorgang ist über `retryCleanup()` wiederholbar (FR-037).
+   */
+  private markCleanupFailed(feature: Feature, reason: string): void {
+    this.deps.features.setCleanupError(feature.id, reason);
+    this.escalate(
+      feature,
+      'worktree_cleanup_failed',
+      [
+        `${feature.name}: Worktree konnte nach dem Merge nicht entfernt werden`,
+        reason,
+        `Ordner bleibt: ${feature.worktreePath ?? '—'}`,
+      ].join('\n'),
+    );
+    const fresh = this.deps.features.get(feature.id);
+    if (fresh) bus.emitEvent('feature_updated', fresh);
+  }
+
+  /**
+   * Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037) — über DENSELBEN Pfad,
+   * kein zweiter Weg. Kein Wurf bei erneutem Scheitern: der Aufruf hat korrekt
+   * funktioniert, das Ergebnis ist „geht nicht".
+   */
+  async retryCleanup(featureId: string): Promise<{ cleaned: boolean; worktreePath: string | null; cleanupError: string | null }> {
+    const feature = this.mustFeature(featureId);
+    const project = this.mustProject(feature.projectId);
+    const cleaned = await this.cleanupMerged(feature, project).catch((err: unknown) => {
+      this.markCleanupFailed(feature, errText(err));
+      return false;
+    });
+    const fresh = this.deps.features.get(featureId);
+    return {
+      cleaned,
+      worktreePath: fresh?.worktreePath ?? null,
+      cleanupError: fresh?.cleanupError ?? null,
+    };
+  }
+
+  // ---------- Manuelle Abnahme ----------
+
+  /** Adresse des Features für die Meldung; null, wenn nicht erreichbar (FR-033). */
+  private async stackUrlFor(feature: Feature, project: Project): Promise<string | null> {
+    if (!this.deps.stacks) return null;
+    return await this.deps.stacks
+      .probe(feature, project, { refresh: true })
+      .then((v) => v.url)
+      .catch(() => null);
+  }
+
+  /**
+   * Manuelle Abnahme bestätigen (FR-028). Der Weg aus der Stufe heraus ist
+   * IMMER menschlich — es gibt keinen automatischen Übergang.
+   */
+  async confirmManualTest(featureId: string): Promise<void> {
+    const feature = this.mustFeature(featureId);
+    const project = this.mustProject(feature.projectId);
+    if (feature.integration !== 'awaiting_manual_test') {
+      throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
+    }
+
+    this.deps.stackRepo?.addDecision({
+      featureId,
+      decision: 'confirmed',
+      reason: null,
+      decidedAt: Date.now(),
+    });
+
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'manual_test'))) return;
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
+
+    // Ab hier wie ohne Gate: entweder direkt in die Queue oder zum Review.
+    const automation = this.automationFor(feature);
+    if (automation.autoMerge) {
+      this.enqueue(this.mustFeature(featureId));
+      return;
+    }
+    if (!(await this.runStageSteps(this.mustFeature(featureId), project, 'before_stage', 'human_review'))) {
+      return;
+    }
+    this.setStage(feature, 'awaiting_human_review');
+    this.escalate(
+      feature,
+      'review_due',
+      reviewDueMessage(feature, { verificationConfigured: project.verifyCommands.length > 0 }),
+    );
+  }
+
+  /**
+   * Manuelle Abnahme ablehnen (FR-029): zurück in die Nacharbeit der
+   * Implementierung, NICHT an den Anfang des Lebenszyklus (Assumption der Spec).
+   * Derselbe Zurückweisungs-Pfad wie beim Review — kein zweiter Weg.
+   */
+  async rejectManualTest(featureId: string, reason: string): Promise<void> {
+    const feature = this.mustFeature(featureId);
+    if (feature.integration !== 'awaiting_manual_test') {
+      throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
+    }
+    const text = reason.trim();
+    if (text === '') throw new MergeApprovalError('Ein Grund ist erforderlich.');
+
+    this.deps.stackRepo?.addDecision({
+      featureId,
+      decision: 'rejected',
+      reason: text,
+      decidedAt: Date.now(),
+    });
+
+    this.deps.features.setIntegration(featureId, 'none');
+    this.deps.features.setIntegrationTarget(featureId, null);
+    this.deps.features.savePhases(featureId, reopenLastPhase(feature.phases).phases);
+    this.deps.features.setReviewRejected(featureId, Date.now());
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
+    const fresh = this.deps.features.get(featureId);
+    if (fresh) bus.emitEvent('feature_updated', fresh);
   }
 
   /**
@@ -337,6 +501,23 @@ export class MergeQueueService {
         if (!(await this.runStageSteps(feature, project, 'after_stage', 'review_gate'))) {
           return { started: true };
         }
+      }
+
+      // Manuelles Test-Gate (FR-024): der Halt liegt VOR dem menschlichen Review
+      // und vor der Merge-Queue — ein Mensch klickt die laufende Anwendung durch.
+      // Der Schalter wird BEIM DURCHLAUF gelesen und nie rückwirkend angewandt;
+      // es gibt keinen Übergang zurück aus `awaiting_human_review` (Edge Case).
+      if (automation.manualTestGate) {
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'manual_test'))) {
+          return { started: true };
+        }
+        this.setStage(feature, 'awaiting_manual_test');
+        this.escalate(
+          feature,
+          'manual_test_due',
+          manualTestDueMessage(feature, await this.stackUrlFor(feature, project)),
+        );
+        return { started: true };
       }
 
       if (automation.autoMerge) {

@@ -63,8 +63,12 @@ export function ReviewOverview() {
   if (!items) return <p className="p-6 text-sm text-zinc-600">Lade Review-Übersicht …</p>;
 
   const ready = items.filter((i) => i.stage === 'awaiting_human_review');
+  // Reihenfolge des Ablaufs: die Abnahme liegt VOR dem Review (FR-024).
+  const awaitingTest = items.filter((i) => i.stage === 'awaiting_manual_test');
   const inProgress = items.filter((i) => i.stage === 'none');
-  const blocked = items.filter((i) => i.stage !== 'awaiting_human_review' && i.stage !== 'none');
+  const blocked = items.filter(
+    (i) => i.stage !== 'awaiting_human_review' && i.stage !== 'awaiting_manual_test' && i.stage !== 'none',
+  );
 
   return (
     <div className="mx-auto max-w-5xl space-y-6 p-6">
@@ -78,6 +82,35 @@ export function ReviewOverview() {
           ↻ Aktualisieren
         </button>
       </div>
+
+      {awaitingTest.length > 0 && (
+        <section>
+          <h2 className="mb-2 text-sm font-semibold text-zinc-200">
+            Wartet auf manuelle Abnahme <span className="text-zinc-500">({awaitingTest.length})</span>
+          </h2>
+          <ul className="space-y-2">
+            {awaitingTest.map((item) => (
+              <li
+                key={item.feature.id}
+                className="flex items-center gap-3 rounded border border-zinc-800 px-4 py-3 text-sm"
+              >
+                <span className="font-medium text-zinc-100">{item.feature.name}</span>
+                <span className={INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META.awaiting_manual_test.tone]}>
+                  {INTEGRATION_STAGE_META.awaiting_manual_test.label}
+                </span>
+                {/* Kein Freigeben/Ablehnen hier: die Entscheidung fällt dort, wo
+                    die laufende Anwendung geprüft wird. */}
+                <button
+                  className="ml-auto rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+                  onClick={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+                >
+                  In der Testing-Lane prüfen
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section>
         <h2 className="mb-2 text-sm font-semibold text-zinc-200">

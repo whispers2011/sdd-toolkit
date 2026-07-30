@@ -29,8 +29,10 @@ import {
   detectCycle,
   evaluatePressure,
   orderedPhases,
+  parseStackConfig,
   renderTranscriptLog,
   reopenLastPhase,
+  validateStackConfig,
 } from '@sdd/shared';
 import type {
   AttentionRepo,
@@ -85,6 +87,9 @@ import { bus, BUS_EVENT_NAMES, emitAttentionResolved } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 import { registerReviewRoutes } from './reviewRoutes.js';
 import { registerWorktreeRoutes } from './worktreeRoutes.js';
+import { registerTestingLaneRoutes } from './testingLaneRoutes.js';
+import { StackRunError, type StackService } from '../services/stackService.js';
+import type { TestingLaneService } from '../services/testingLaneService.js';
 
 export interface ApiDeps {
   projects: ProjectRepo;
@@ -112,6 +117,10 @@ export interface ApiDeps {
   jiraImport: JiraImportService;
   featureDocuments: FeatureDocumentsService;
   worktreeOverview: WorktreeOverviewService;
+  /** Stack-Profile eines Features (Testing-Lane, Feature-Konsole). */
+  stackService: StackService;
+  /** Zusammenstellung der Testing-Lane und die manuelle Abnahme. */
+  testingLane: TestingLaneService;
   /** Ressourcendruck für die Kopfleiste (Feature „server-ausfaelle-sichtbar-machen", C3). */
   resourceMonitor: ResourceMonitor;
   /** Quelle des zuletzt registrierten Ausfalls (FR-023, D13). */
@@ -123,6 +132,8 @@ export interface ApiDeps {
   dataDir: string;
   /** Port, unter dem der Server erreichbar ist — Ziel der Telemetrie-Meldungen. */
   port: number;
+  /** Breite eines Portblocks — Obergrenze der Dienst-Abstände (config.portBlockSize). */
+  portBlockSize: number;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
   webDir?: string | null;
   /** Browser-Origins, die HTTP-API und WebSockets nutzen dürfen (api/originGuard.ts). */
@@ -151,6 +162,10 @@ export async function buildServer(deps: ApiDeps) {
     features: deps.features,
     ptys: deps.ptys,
     orchestrator: deps.orchestrator,
+    // Die Stack-Bedingungen werden serverseitig durchgesetzt, nicht nur in der
+    // Oberfläche (FR-032/FR-033).
+    projects: deps.projects,
+    stackRunning: (featureId) => deps.stackService.isRunning(featureId),
   });
 
   // Review-Portal-Routen (Übersicht, Branches, Dateibaum/Editor, Kommentare, Audits).
@@ -164,6 +179,9 @@ export async function buildServer(deps: ApiDeps) {
 
   // Worktree-Übersicht (tool-weit: Bestand, geänderte Dateien, Warnungen, Aufräumen).
   registerWorktreeRoutes(app, { worktreeOverview: deps.worktreeOverview });
+
+  // Testing-Lane: die Zusammenstellung für die manuelle Abnahme vor dem Merge.
+  registerTestingLaneRoutes(app, { testingLane: deps.testingLane });
 
   // Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck und der zuletzt
   // registrierte Ausfall. Antwortet IMMER 200 — auch wenn jede einzelne Kennzahl
@@ -293,6 +311,15 @@ export async function buildServer(deps: ApiDeps) {
     const b = req.body;
     for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'optimization', 'mergeMode', 'editorCmd', 'integrationMode'] as const) {
       if (key in b) allowed[key] = b[key];
+    }
+    // Stack-Konfiguration serverseitig prüfen — mit DENSELBEN Sätzen, die die
+    // Oberfläche am Feld zeigt (FR-011, contracts/http-api.md). Eine leere
+    // Konfiguration ist gültig und bedeutet „kein Stack" (FR-013).
+    if ('stack' in b) {
+      const stack = parseStackConfig(b.stack);
+      const errors = validateStackConfig(stack, deps.portBlockSize);
+      if (errors.length > 0) throw httpError(400, errors[0]!);
+      allowed.stack = stack;
     }
     deps.projects.update(req.params.id, allowed);
     return deps.projects.get(req.params.id);
@@ -820,11 +847,105 @@ export async function buildServer(deps: ApiDeps) {
     actionGuard.assertAllowed('archive', req.params.id);
     const feature = deps.features.get(req.params.id);
     if (feature) {
+      // Auch ohne Merge wird der Stack abgebaut und der Portblock frei — sonst
+      // belegt ein abgebrochenes Feature dauerhaft Dienste und Ports (Edge Case
+      // „archiviert oder abgebrochen, ohne je gemergt zu werden", FR-017).
+      await deps.orchestrator.tearDownStack(feature.id);
       const session = deps.ptys.forFeature(feature.id);
       if (session) await deps.ptys.terminate(session.id);
       deps.features.archive(feature.id);
     }
     return { ok: true };
+  });
+
+  // ---------- Stack-Profile und manuelle Abnahme ----------
+
+  /**
+   * Erhobener Stack-Zustand eines Features (FR-023). Lesen ist immer erlaubt —
+   * kein 409. Ohne Portblock oder ohne Konfiguration antwortet die Route mit der
+   * leeren Sicht, statt eine Adresse zu behaupten (FR-013/FR-033).
+   */
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    '/api/features/:id/stack',
+    async (req) => {
+      const { feature, project } = featureCwd(req.params.id);
+      return deps.stackService.probe(feature, project, { refresh: req.query.refresh === '1' });
+    },
+  );
+
+  /**
+   * Die vier Lane-Aktionen (FR-032). Jede wirkt AUSSCHLIESSLICH auf den Stack
+   * dieses Features — Nachbar-Features bleiben unberührt (US3 Szenario 5).
+   *
+   * Der Guard läuft VOR jeder Wirkung und antwortet 409 mit demselben Satz, den
+   * die Oberfläche anzeigt.
+   */
+  app.post<{ Params: { id: string; action: string }; Body?: { profile?: string } }>(
+    '/api/features/:id/stack/:action',
+    async (req, reply) => {
+      const action = req.params.action;
+      if (action !== 'up' && action !== 'stop' && action !== 'restart' && action !== 'down') {
+        throw httpError(400, `Unbekannte Stack-Aktion: ${action}`);
+      }
+      actionGuard.assertAllowed(`stack_${action}` as const, req.params.id);
+      const { feature, project } = featureCwd(req.params.id);
+      // Vorgabe `full`: die Lane fährt den vollen Stack. `test` wird intern beim
+      // Beginn von `implement` verwendet (FR-016).
+      const profile = req.body?.profile === 'test' ? 'test' : 'full';
+      try {
+        if (action === 'up') await deps.stackService.up(feature, project, profile);
+        else if (action === 'stop') await deps.stackService.stop(feature, project);
+        else if (action === 'restart') await deps.stackService.restart(feature, project);
+        else await deps.stackService.down(feature, project);
+      } catch (err) {
+        if (!(err instanceof StackRunError)) throw err;
+        // Der Ausschnitt steht auch in der Antwort, damit der Bedienende ihn ohne
+        // Umweg über die Inbox sieht (contracts/http-api.md).
+        void reply.code(500);
+        return { message: err.message, exitCode: err.exitCode, tail: err.tail };
+      }
+      return deps.stackService.probe(feature, project, { refresh: true });
+    },
+  );
+
+  /**
+   * Manuelle Abnahme bestätigen (FR-028). Es gibt KEINEN automatischen Weg aus
+   * der Stufe heraus — nur diese Route.
+   */
+  app.post<{ Params: { id: string } }>('/api/features/:id/manual-test/confirm', async (req) => {
+    actionGuard.assertAllowed('manual_test_confirm', req.params.id);
+    await deps.testingLane.confirm(req.params.id);
+    return deps.features.get(req.params.id);
+  });
+
+  /** Manuelle Abnahme ablehnen (FR-029) — Grund ist Pflicht. */
+  app.post<{ Params: { id: string }; Body?: { reason?: string } }>(
+    '/api/features/:id/manual-test/reject',
+    async (req) => {
+      const reason = (req.body?.reason ?? '').trim();
+      if (reason === '') throw httpError(400, 'Ein Grund ist erforderlich.');
+      actionGuard.assertAllowed('manual_test_reject', req.params.id);
+      await deps.testingLane.reject(req.params.id, reason);
+
+      // Der Grund geht als Prompt in die Feature-Konsole — derselbe Weg wie bei
+      // einer Zurückweisung im Review.
+      const session = await deps.orchestrator.ensureSession(req.params.id);
+      deps.ptys.sendPrompt(session.id, `Die manuelle Abnahme wurde abgelehnt:\n\n${reason}`);
+      return deps.features.get(req.params.id);
+    },
+  );
+
+  /**
+   * Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037).
+   *
+   * Erneutes Scheitern ist bewusst **200 mit `cleaned: false`**, kein 500: der
+   * Aufruf hat korrekt funktioniert, das Ergebnis ist „geht nicht". Der Pfad
+   * bleibt gesetzt und die Meldung stehen (FR-035/FR-036).
+   */
+  app.post<{ Params: { id: string } }>('/api/features/:id/cleanup', async (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    return deps.mergeQueue.retryCleanup(req.params.id);
   });
 
   /**

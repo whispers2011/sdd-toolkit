@@ -15,11 +15,12 @@ import { LifecycleStepsPanel } from './components/LifecycleStepsPanel.js';
 import { ReviewOverview } from './components/ReviewOverview.js';
 import { WorkflowOverview } from './components/WorkflowOverview.js';
 import { WorktreeOverview } from './components/WorktreeOverview.js';
+import { TestingLane } from './components/TestingLane.js';
 import { ChatBubble } from './components/ChatBubble.js';
 import { SystemStatus } from './components/SystemStatus.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { TooltipLayer } from './components/Tooltip.js';
-import { InsightsIcon } from './components/icons.js';
+import { FlaskIcon, InsightsIcon } from './components/icons.js';
 import { api } from './api.js';
 
 export function App() {
@@ -38,6 +39,13 @@ export function App() {
   const openAttention =
     state.app?.attention.filter(
       (a) => a.kind !== 'permission_request' && a.projectId === state.selectedProjectId,
+    ).length ?? 0;
+
+  // Zähler der Testing-Lane: Features des gewählten Projekts, die auf eine
+  // manuelle Abnahme warten (FR-030).
+  const awaitingManualTest =
+    state.app?.features.filter(
+      (f) => f.projectId === state.selectedProjectId && f.integration === 'awaiting_manual_test',
     ).length ?? 0;
 
   // Titel-Badge (WP9): offene Attention-Items im Browser-Tab sichtbar.
@@ -89,6 +97,22 @@ export function App() {
               {reviewReady > 0 && (
                 <span className="ml-1.5 rounded-full bg-sky-500 px-1.5 py-0.5 text-xs font-semibold text-black">
                   {reviewReady}
+                </span>
+              )}
+            </TabButton>
+            {/* Die Testing-Lane steht bei den Arbeitsmodi, nicht bei den
+                Übersichten: sie ist der Ort, an dem eine Entscheidung fällt. */}
+            <TabButton
+              active={state.view.kind === 'testing'}
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <FlaskIcon />
+                Testing-Lane
+              </span>
+              {awaitingManualTest > 0 && (
+                <span className="ml-1.5 rounded-full bg-amber-500 px-1.5 py-0.5 text-xs font-semibold text-black">
+                  {awaitingManualTest}
                 </span>
               )}
             </TabButton>
@@ -157,6 +181,7 @@ export function App() {
           {state.view.kind === 'review' && <ReviewOverview />}
           {state.view.kind === 'workflow' && <WorkflowOverview />}
           {state.view.kind === 'worktrees' && <WorktreeOverview />}
+          {state.view.kind === 'testing' && <TestingLane />}
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}

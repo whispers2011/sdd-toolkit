@@ -23,6 +23,7 @@ import type {
   WorkflowPhase,
 } from '@sdd/shared';
 import {
+  EMPTY_STACK_CONFIG,
   LEVEL2_DEFAULTS,
   OPTIMIZATION_DEFAULTS,
   OPTIMIZATION_OFF_DEFAULTS,
@@ -31,6 +32,7 @@ import {
   normalizeSoundSettings,
   normalizeTicketSource,
   parseOptimizationPartial,
+  parseStackConfig,
   type PersonalSettings,
   type PhaseMap,
   type SoundSettings,
@@ -52,6 +54,7 @@ interface ProjectRow {
   merge_mode: string;
   editor_cmd: string | null;
   integration_mode: string;
+  stack: string | null;
   created_at: number;
 }
 
@@ -69,6 +72,7 @@ function toProject(r: ProjectRow): Project {
     mergeMode: r.merge_mode === 'squash' ? 'squash' : 'ff',
     editorCmd: r.editor_cmd,
     integrationMode: r.integration_mode === 'pr' ? 'pr' : 'local',
+    stack: parseStackConfig(r.stack ?? '{}'),
     createdAt: r.created_at,
   };
 }
@@ -81,8 +85,8 @@ export class ProjectRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, optimization, merge_mode, editor_cmd, integration_mode, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, optimization, merge_mode, editor_cmd, integration_mode, stack, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -97,6 +101,7 @@ export class ProjectRepo {
         p.mergeMode,
         p.editorCmd,
         p.integrationMode,
+        JSON.stringify(p.stack ?? EMPTY_STACK_CONFIG),
         createdAt,
       );
     return { ...p, id, createdAt };
@@ -108,7 +113,7 @@ export class ProjectRepo {
     const merged = { ...cur, ...patch };
     this.db
       .prepare(
-        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, optimization=?, merge_mode=?, editor_cmd=?, integration_mode=? WHERE id=?`,
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, optimization=?, merge_mode=?, editor_cmd=?, integration_mode=?, stack=? WHERE id=?`,
       )
       .run(
         merged.name,
@@ -122,6 +127,7 @@ export class ProjectRepo {
         merged.mergeMode,
         merged.editorCmd,
         merged.integrationMode,
+        JSON.stringify(merged.stack ?? EMPTY_STACK_CONFIG),
         id,
       );
   }
@@ -164,6 +170,7 @@ interface FeatureRow {
   jira_url: string | null;
   jira_imported_at: number | null;
   review_rejected_at: number | null;
+  cleanup_error: string | null;
   created_at: number;
   archived_at: number | null;
 }
@@ -186,6 +193,7 @@ function toFeature(r: FeatureRow): Feature {
       ? { jiraRef: { key: r.jira_key, url: r.jira_url, importedAt: r.jira_imported_at ?? 0 } }
       : {}),
     reviewRejectedAt: r.review_rejected_at ?? null,
+    cleanupError: r.cleanup_error ?? null,
     createdAt: r.created_at,
     archivedAt: r.archived_at,
   };
@@ -194,7 +202,7 @@ function toFeature(r: FeatureRow): Feature {
 export class FeatureRepo {
   constructor(private db: DB) {}
 
-  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt' | 'reviewRejectedAt'>): Feature {
+  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt' | 'reviewRejectedAt' | 'cleanupError'>): Feature {
     const id = nanoid(10);
     const createdAt = Date.now();
     this.db
@@ -217,7 +225,7 @@ export class FeatureRepo {
         f.tasksTotal,
         createdAt,
       );
-    return { ...f, id, createdAt, archivedAt: null, reviewRejectedAt: null };
+    return { ...f, id, createdAt, archivedAt: null, reviewRejectedAt: null, cleanupError: null };
   }
 
   get(id: string): Feature | null {
@@ -268,6 +276,15 @@ export class FeatureRepo {
 
   setWorktree(id: string, worktreePath: string | null): void {
     this.db.prepare('UPDATE features SET worktree_path=? WHERE id=?').run(worktreePath, id);
+  }
+
+  /**
+   * Grund eines fehlgeschlagenen Aufräumens (FR-035); null löscht ihn, sobald das
+   * Entfernen nachgewiesen geklappt hat. Getrennt von `setWorktree`, damit der
+   * Pfad NICHT versehentlich mit dem Fehler zusammen geleert wird (FR-036).
+   */
+  setCleanupError(id: string, reason: string | null): void {
+    this.db.prepare('UPDATE features SET cleanup_error=? WHERE id=?').run(reason, id);
   }
 
   /**

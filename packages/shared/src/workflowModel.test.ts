@@ -3,6 +3,7 @@ import {
   FEATURE_PHASES,
   INTEGRATION_STAGE_IDS,
   LEVEL2_DEFAULTS,
+  LEVEL3_DEFAULTS,
   LIFECYCLE_TRIGGER_KINDS,
   OPTIONAL_PHASES,
   type FeaturePhase,
@@ -176,5 +177,53 @@ describe('featureProgressLabel', () => {
       if (stage === 'none') continue;
       expect(featureProgressLabel(feature(stage)).length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ---------- Manuelles Test-Gate: neue Stufe und neuer Schalter ----------
+
+describe('Manuelle Abnahme: Stufe und Schalter sind in allen Katalogen beantwortet', () => {
+  it('führt die Stufe im Ton „human" — der Mensch ist am Zug, nichts ist kaputt', () => {
+    expect(INTEGRATION_STAGE_META.awaiting_manual_test).toEqual({
+      label: 'wartet auf manuelle Abnahme',
+      tone: 'human',
+    });
+  });
+
+  /** FR-024: die Stufe liegt VOR dem menschlichen Review, nicht danach. */
+  it('reiht die Pipeline-Stufe zwischen Review-Gate und menschliches Review ein', () => {
+    const ids = INTEGRATION_STEPS.map((s) => s.id);
+    expect(ids.indexOf('manual_test')).toBeGreaterThan(ids.indexOf('review_gate'));
+    expect(ids.indexOf('manual_test')).toBeLessThan(ids.indexOf('human_review'));
+  });
+
+  it('hängt die Stufe am Schalter manualTestGate', () => {
+    const step = INTEGRATION_STEPS.find((s) => s.id === 'manual_test');
+    expect(step?.requires).toBe('manualTestGate');
+  });
+
+  /**
+   * FR-028: es gibt keinen automatischen Weg aus der Stufe heraus — deshalb kein
+   * `humanUnless`, das sie überspringen könnte.
+   */
+  it('lässt die Abnahme von keinem Automatik-Schalter überspringen', () => {
+    const step = INTEGRATION_STEPS.find((s) => s.id === 'manual_test');
+    expect(step?.humanUnless).toBeUndefined();
+    expect(step?.autoBy).toBeUndefined();
+  });
+
+  it('beschreibt den Schalter in AUTOMATION_META', () => {
+    expect(AUTOMATION_META.manualTestGate.label).toBe('Manuelles Test-Gate');
+    expect(AUTOMATION_META.manualTestGate.help).toContain('durchklickt');
+  });
+
+  /** FR-026: Stufe 2 hält an, Stufe 3 ist Autonomie. */
+  it('ist in Stufe 2 an und in Stufe 3 aus', () => {
+    expect(LEVEL2_DEFAULTS.manualTestGate).toBe(true);
+    expect(LEVEL3_DEFAULTS.manualTestGate).toBe(false);
+  });
+
+  it('liefert einen Stufentitel aus dem Katalog statt eines Rohbezeichners', () => {
+    expect(stageTitle('manual_test')).toBe('Manuelle Abnahme');
   });
 });

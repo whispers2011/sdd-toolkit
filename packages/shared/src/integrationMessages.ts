@@ -39,6 +39,19 @@ export function reviewDueMessage(f: NamedFeature, opts: { verificationConfigured
 }
 
 /**
+ * Meldung, mit der ein Feature zur manuellen Abnahme gerufen wird (FR-024/FR-030).
+ *
+ * Die Adresse steht mit im Text, damit die Inbox ohne Umweg über die Lane sagt,
+ * wo die Anwendung läuft. Ist sie nicht bekannt — kein Stack konfiguriert oder
+ * der Haupteingang antwortet nicht —, wird das benannt statt eines Links ins
+ * Leere (FR-033).
+ */
+export function manualTestDueMessage(f: NamedFeature, url: string | null): string {
+  const adresse = url ?? 'keine erreichbare Adresse — Stack in der Testing-Lane starten';
+  return `${f.name}: wartet auf manuelle Abnahme — ${adresse}${TRENNER}${taskProgressText(f)}`;
+}
+
+/**
  * Text der Meldung über den vollzogenen Merge bzw. den erstellten PR (FR-012a).
  * Auf beiden Merge-Pfaden ist das die einzige Gelegenheit, den Aufgabenstand zu
  * sehen — es gibt dort kein menschliches Review-Halt.

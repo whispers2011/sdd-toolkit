@@ -89,6 +89,16 @@ export interface OrchestratorDeps {
    * Beurteilung nie Voraussetzung eines Laufabschlusses sein darf (FR-003).
    */
   plausibility?: PlausibilityService;
+  /**
+   * Stack-Profile. Optional, damit bestehende Tests unverändert kompilieren; ein
+   * Projekt ohne Konfiguration löst hier ohnehin nichts aus (FR-013, SC-010).
+   */
+  stacks?: {
+    isConfigured(project: Project): boolean;
+    isRunning(featureId: string): boolean;
+    up(feature: Feature, project: Project, profile: 'test' | 'full'): Promise<void>;
+    down(feature: Feature, project: Project, opts?: { quiet?: boolean }): Promise<void>;
+  };
 }
 
 /**
@@ -433,7 +443,8 @@ export class Orchestrator {
       const trigger = { kind: 'before_phase', phase } as const;
       const deferred =
         !opts.skipGates &&
-        (this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger) ||
+        (this.needsTestStack(feature, phase) ||
+          this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger) ||
           this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger));
       if (deferred) {
         const key = `${featureId}:${phase}`;
@@ -489,6 +500,19 @@ export class Orchestrator {
       const project = this.mustProject(feature.projectId);
       const trigger = { kind: 'before_phase', phase } as const;
 
+      // Reihenfolge am gemeinsamen Punkt: STACK vor Schritten vor Agents (research E9).
+      // Ein Schritt darf Migrationen gegen die frisch hochgefahrene Datenbank fahren;
+      // ein Agent soll den vorbereiteten Stand beurteilen. Scheitert das Profil,
+      // startet die Phase NICHT und bleibt `idle` — die Meldung hat der StackService
+      // schon erzeugt (FR-019, US2 Szenario 5).
+      if (this.needsTestStack(feature, phase)) {
+        try {
+          await this.deps.stacks!.up(feature, project, 'test');
+        } catch {
+          return;
+        }
+      }
+
       // Das Inbox-Item hat der Schritt-Service schon erzeugt; hier bleibt nur, den
       // Start zu unterlassen (Human-Override über manuelles Starten bleibt möglich).
       const steps = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
@@ -514,6 +538,38 @@ export class Orchestrator {
     } finally {
       this.runningGates.delete(key);
     }
+  }
+
+  /**
+   * Muss vor dieser Phase das `test`-Profil hochgefahren werden (FR-014)?
+   *
+   * Nur beim Beginn von `implement` und nur, solange die Absicht noch nicht
+   * steht: über alle folgenden Läufe desselben Features bleibt der Stack stehen
+   * und wird NICHT pro Lauf herunter- und wieder hochgefahren (SC-006).
+   *
+   * Fast-Path: ohne Stack-Konfiguration ist das ein Blick auf ein leeres Objekt —
+   * kein Query, kein Spawn, keine messbare Verzögerung (SC-010).
+   */
+  private needsTestStack(feature: Feature, phase: FeaturePhase): boolean {
+    if (phase !== 'implement' || !this.deps.stacks) return false;
+    const project = this.deps.projects.get(feature.projectId);
+    if (!project || !this.deps.stacks.isConfigured(project)) return false;
+    return !this.deps.stacks.isRunning(feature.id);
+  }
+
+  /**
+   * Stack eines Features abbauen (FR-017). Für die Anlässe, an denen ein
+   * Fehlschlag den Vorgang nicht abbrechen darf — Session-Ende, Archivieren,
+   * Löschen: es entsteht die Meldung, der Vorgang läuft weiter (Edge Case
+   * „archiviert oder abgebrochen, ohne je gemergt zu werden").
+   */
+  async tearDownStack(featureId: string): Promise<void> {
+    if (!this.deps.stacks) return;
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return;
+    const project = this.deps.projects.get(feature.projectId);
+    if (!project) return;
+    await this.deps.stacks.down(feature, project, { quiet: true }).catch(() => {});
   }
 
   /** Blockierender Gate-FAIL: Inbox-Item + Notification (Human-Override bleibt möglich). */

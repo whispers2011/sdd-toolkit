@@ -30,6 +30,8 @@ import type {
   SaveFeatureArtifactRequest,
   SaveFeatureArtifactResult,
   FeatureProposalStatus,
+  FeatureStackView,
+  TestingLaneView,
   JiraConnectionStatus,
   JiraImportResult,
   JiraIssueSummary,
@@ -459,6 +461,38 @@ export const api = {
    * Server — hier wird nur gezeigt, was er urteilt.
    */
   systemStatus: () => request<SystemStatus>('GET', '/api/system/status'),
+
+  // Stack-Profile und Testing-Lane (manuelle Abnahme vor dem Merge)
+
+  /** Erhobener Stack-Zustand eines Features (FR-023) — Lesen ist immer erlaubt. */
+  featureStack: (featureId: string, refresh = false) =>
+    request<FeatureStackView>(
+      'GET',
+      `/api/features/${featureId}/stack${refresh ? '?refresh=1' : ''}`,
+    ),
+  /**
+   * Eine der vier Lane-Aktionen. Wirkt ausschließlich auf den Stack dieses
+   * Features; die Antwort ist der frisch erhobene Zustand danach (FR-032).
+   */
+  stackAction: (featureId: string, action: 'up' | 'stop' | 'restart' | 'down', profile?: 'test' | 'full') =>
+    request<FeatureStackView>('POST', `/api/features/${featureId}/stack/${action}`, profile ? { profile } : {}),
+  /** Einträge der Testing-Lane eines Projekts (FR-030). */
+  testingLane: (projectId: string, refresh = false) =>
+    request<TestingLaneView>(
+      'GET',
+      `/api/testing-lane?projectId=${encodeURIComponent(projectId)}${refresh ? '&refresh=1' : ''}`,
+    ),
+  confirmManualTest: (featureId: string) =>
+    request<Feature>('POST', `/api/features/${featureId}/manual-test/confirm`),
+  /** Ablehnen; der Grund ist Pflicht (FR-029). */
+  rejectManualTest: (featureId: string, reason: string) =>
+    request<Feature>('POST', `/api/features/${featureId}/manual-test/reject`, { reason }),
+  /** Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037). */
+  retryCleanup: (featureId: string) =>
+    request<{ cleaned: boolean; worktreePath: string | null; cleanupError: string | null }>(
+      'POST',
+      `/api/features/${featureId}/cleanup`,
+    ),
 
   // Worktree-Übersicht (tool-weit, projektübergreifend)
   worktrees: (refresh = false) =>

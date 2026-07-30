@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  AUTOMATION_META,
   FEATURE_PHASES,
   LEVEL2_DEFAULTS,
   LEVEL3_DEFAULTS,
@@ -86,6 +87,18 @@ export function AutomationDial() {
             checked={a.autoMerge}
             onChange={(v) => void apply({ autoMerge: v })}
           />
+          {/* Beschriftung und Hilfetext kommen aus AUTOMATION_META — kein zweiter Text. */}
+          <Toggle
+            label={AUTOMATION_META.manualTestGate.label}
+            checked={a.manualTestGate}
+            onChange={(v) => void apply({ manualTestGate: v })}
+          />
+          <p className="mb-1.5 ml-6 text-xs text-zinc-600">
+            {a.manualTestGate
+              ? AUTOMATION_META.manualTestGate.onLabel
+              : AUTOMATION_META.manualTestGate.offLabel}{' '}
+            — {AUTOMATION_META.manualTestGate.help}
+          </p>
           <Toggle
             label="Auto-Modus (Berechtigungen automatisch erteilen)"
             checked={a.autoMode}

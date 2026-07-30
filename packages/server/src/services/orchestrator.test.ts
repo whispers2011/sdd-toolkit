@@ -1295,3 +1295,151 @@ describe('Orchestrator — Phasen-Auslöser (Lebenszyklus-Schritte)', () => {
     expect(state.phases.specify.status).toBe('awaiting_review');
   });
 });
+
+
+// ---------- Stack-Profil ab `implement` (US2, FR-014, SC-006/SC-010) ----------
+
+describe('Orchestrator — test-Profil beim Beginn von implement', () => {
+  /**
+   * Eigene, minimale Aufstellung: nur was der Vorlauf braucht. Der Zweck ist die
+   * REIHENFOLGE „Stack vor Schritten vor Agents" (research E9) und der Fast-Path
+   * für Projekte ohne Konfiguration (SC-010).
+   */
+  function setupStack(opts: {
+    configured?: boolean;
+    running?: boolean;
+    upFails?: boolean;
+    hasSteps?: boolean;
+    hasAgents?: boolean;
+  } = {}) {
+    const calls: string[] = [];
+    const projekt = { id: 'p1', name: 'Demo', path: '/repo', defaultBranch: 'main', verifyCommands: [] };
+    const feature = {
+      id: 'f1',
+      projectId: 'p1',
+      name: 'demo',
+      branch: 'feature/demo',
+      worktreePath: '/wt/demo',
+      phases: {
+        implement: { status: 'idle', stale: false },
+      },
+      integration: 'none',
+      automation: {},
+      archivedAt: null,
+      createdAt: 1,
+    };
+    let running = opts.running ?? false;
+
+    const deps = {
+      features: {
+        get: () => feature,
+        savePhases: vi.fn(),
+        listByProject: () => [feature],
+      },
+      projects: { get: () => projekt, list: () => [projekt] },
+      attention: { raise: vi.fn(), resolveFor: () => [], listOpen: () => [], resolve: () => true, forget: () => [] },
+      executions: { finish: vi.fn(), reapOrphans: () => 0, start: vi.fn() },
+      sessions: { listOpen: () => [], end: vi.fn(), latestForFeature: () => undefined, create: vi.fn() },
+      settings: {
+        getAutomation: () => ({
+          autoProgressUntil: 'off',
+          autoVerify: false,
+          autoReviewAgents: false,
+          autoMerge: false,
+          autoMode: true,
+          manualTestGate: false,
+        }),
+        getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+      },
+      worktrees: {},
+      ptys: {
+        forFeature: () => undefined,
+        // Der Phasenstart selbst wird hier nicht geprüft — er scheitert bewusst,
+        // NACHDEM der Vorlauf gelaufen ist.
+        spawn: vi.fn(async () => {
+          throw new Error('kein PTY im Test');
+        }),
+        sendPrompt: vi.fn(),
+        list: () => [],
+      },
+      knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+      featureDocuments: { listDocuments: () => [] },
+      agentGate: {
+        hasAgentsFor: () => opts.hasAgents === true,
+        runTrigger: vi.fn(async () => {
+          calls.push('agents');
+          return { ok: true };
+        }),
+        runAgent: vi.fn(),
+      },
+      lifecycleSteps: {
+        hasStepsFor: () => opts.hasSteps === true,
+        runTrigger: vi.fn(async () => {
+          calls.push('steps');
+          return { ok: true, failed: null, ran: [] };
+        }),
+      },
+      stacks: {
+        isConfigured: () => opts.configured !== false,
+        isRunning: () => running,
+        up: vi.fn(async () => {
+          calls.push('stack:up');
+          if (opts.upFails) throw new Error('Stack-Profil „test" fehlgeschlagen (exit 3)');
+          running = true;
+        }),
+        down: vi.fn(async () => {}),
+      },
+      dataDir: '/tmp',
+    } as unknown as OrchestratorDeps;
+
+    return { orch: new Orchestrator(deps), calls, deps };
+  }
+
+  it('fährt das test-Profil beim Beginn von implement hoch (FR-014)', async () => {
+    const { orch, calls } = setupStack();
+    await orch.startPhaseRun('f1', 'implement');
+    await vi.waitFor(() => expect(calls).toContain('stack:up'));
+  });
+
+  /** research E9: Schritte dürfen Migrationen gegen die frische DB fahren. */
+  it('hält die Reihenfolge Stack → Schritte → Agents', async () => {
+    const { orch, calls } = setupStack({ hasSteps: true, hasAgents: true });
+    await orch.startPhaseRun('f1', 'implement');
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(3));
+    // Nur die Reihenfolge des Vorlaufs ist die Aussage; was der anschließende
+    // Phasenstart tut (hier: scheitern am fehlenden PTY), gehört nicht dazu.
+    expect(calls.slice(0, 3)).toEqual(['stack:up', 'steps', 'agents']);
+  });
+
+  /** SC-006: der Stack bleibt über Läufe stehen und wird nicht neu gestartet. */
+  it('fährt bei bereits betriebenem Profil KEIN zweites Mal hoch', async () => {
+    const { orch, calls } = setupStack({ running: true, hasSteps: true });
+    await orch.startPhaseRun('f1', 'implement');
+    await vi.waitFor(() => expect(calls).toContain('steps'));
+    expect(calls).not.toContain('stack:up');
+  });
+
+  /** SC-010: null zusätzliche Prozesse, kein Aufschub, kein Unterschied zu vorher. */
+  it('rührt ein Projekt ohne Stack-Konfiguration nicht an (FR-013, SC-010)', async () => {
+    const { orch, calls, deps } = setupStack({ configured: false });
+    await orch.startPhaseRun('f1', 'implement').catch(() => {});
+    expect(calls).not.toContain('stack:up');
+    expect((deps as unknown as { stacks: { up: { mock: { calls: unknown[] } } } }).stacks.up.mock.calls).toHaveLength(0);
+  });
+
+  /** US2 Szenario 5: die Phase startet NICHT auf einem halben Stack (FR-019). */
+  it('startet die Phase nicht, wenn das Profil fehlschlägt', async () => {
+    const { orch, calls } = setupStack({ upFails: true, hasSteps: true, hasAgents: true });
+    const result = await orch.startPhaseRun('f1', 'implement');
+    expect(result.gateRunning).toBe(true);
+    await vi.waitFor(() => expect(calls).toEqual(['stack:up']));
+    expect(calls).not.toContain('steps');
+    expect(calls).not.toContain('agents');
+  });
+
+  it('fährt vor anderen Phasen als implement nichts hoch', async () => {
+    const { orch, calls } = setupStack();
+    await orch.startPhaseRun('f1', 'specify').catch(() => {});
+    expect(calls).not.toContain('stack:up');
+  });
+});

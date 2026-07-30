@@ -184,6 +184,8 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
         approve: () => {},
         discard: () => {},
         reconcileOpenAttention: () => {},
+        // Ohne Stack-Konfiguration ist der Abbau ein No-Op (FR-013).
+        tearDownStack: async () => {},
       },
       mergeQueue: {
         beginIntegration: async () => beginResult,
@@ -197,6 +199,11 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
         terminate: async () => {},
         sendPrompt: () => {},
       },
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       telemetry,
       dataDir: mkdtempSync(join(tmpdir(), 'sdd-api-data-')),
       webDir: null,
@@ -450,6 +457,11 @@ describe('GET /api/telemetry/status', () => {
       sessions: new SessionRepo(db),
       executions: new ExecutionRepo(db),
       attention: new AttentionRepo(db),
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       telemetry,
       dataDir: mkdtempSync(join(tmpdir(), 'sdd-telemetry-')),
       webDir: null,
@@ -599,9 +611,16 @@ describe('Feature-Dokumente: Routen', () => {
         approve: () => {},
         discard: () => {},
         reconcileOpenAttention: () => {},
+        // Ohne Stack-Konfiguration ist der Abbau ein No-Op (FR-013).
+        tearDownStack: async () => {},
       },
       ptys: { forFeature: () => undefined, terminate: async () => {}, sendPrompt: () => {} },
       telemetry: new TelemetryStore({ autoSweep: false }),
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       dataDir: mkdtempSync(join(tmpdir(), 'sdd-docs-api-')),
       webDir: null,
       port: 4899,
@@ -937,6 +956,11 @@ describe('Chat-Routen — Kostenprofil und Neustart-Angebot', () => {
           if (costProfile) costProfile = { ...costProfile, reasons: [], offerOpen: false, message: null };
         },
       },
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       telemetry,
       dataDir: mkdtempSync(join(tmpdir(), 'sdd-chat-hygiene-')),
       webDir: null,
@@ -1478,5 +1502,234 @@ describe('Individuelle Einstellungen: Ablage und Routen', () => {
     await patched({ sound: { enabled: false }, ticketSource: 'manual' });
     const keys = (db.prepare('SELECT key FROM settings ORDER BY key').all() as { key: string }[]).map((r) => r.key);
     expect(keys).toEqual(['sound', 'ticketSource']);
+  });
+});
+
+// ---------- Stack-Routen und manuelle Abnahme (US2/US3) ----------
+
+describe('Stack- und Abnahme-Routen', () => {
+  let db: DB;
+  let dataDir: string;
+  let app: Awaited<ReturnType<typeof buildServer>>;
+  let features: FeatureRepo;
+  let projects: ProjectRepo;
+  let projectId: string;
+  let featureId: string;
+  let stackCalls: string[];
+  let confirmCalls: string[];
+  let rejectCalls: { id: string; reason: string }[];
+  let laufend: boolean;
+  const ENABLED_P: FeaturePhase[] = ['specify', 'implement'];
+
+  const STACK = {
+    test: { command: 'up-test', sharedCommand: null, timeoutMs: null },
+    full: { command: 'up-full', sharedCommand: null, timeoutMs: null },
+    down: { command: 'tear-down', sharedCommand: null, timeoutMs: null },
+    stopCommand: 'halt',
+    services: [{ name: 'web', portOffset: 0, scope: 'feature' as const, stateful: false, primary: true }],
+  };
+
+  const leereSicht = {
+    configured: true,
+    profile: 'full' as const,
+    portBase: 21000,
+    url: null,
+    services: [],
+    collectedAt: 1,
+  };
+
+  beforeEach(async () => {
+    db = openMemoryDatabase();
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-api-stack-'));
+    stackCalls = [];
+    confirmCalls = [];
+    rejectCalls = [];
+    laufend = true;
+    projects = new ProjectRepo(db);
+    features = new FeatureRepo(db);
+    projectId = projects.create({
+      name: 'Demo',
+      path: dataDir,
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: ENABLED_P,
+      verifyCommands: [],
+      automation: {},
+      optimization: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+      stack: STACK,
+    }).id;
+    featureId = features.create({
+      projectId,
+      name: 'demo',
+      branch: 'feature/demo',
+      worktreePath: join(dataDir, 'wt'),
+      phases: initialPhases(ENABLED_P),
+      integration: 'none',
+      integrationTarget: null,
+      automation: {},
+      optimization: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    }).id;
+
+    app = await buildServer({
+      allowedOrigins: buildAllowedOrigins([80]),
+      projects,
+      features,
+      sessions: new SessionRepo(db),
+      executions: new ExecutionRepo(db),
+      attention: new AttentionRepo(db),
+      queue: new QueueRepo(db),
+      settings: new SettingsRepo(db),
+      reviewComments: new ReviewCommentRepo(db),
+      orchestrator: {
+        isGateRunning: () => false,
+        ensureSession: async () => ({ id: 's1' }),
+        tearDownStack: async () => {},
+      },
+      mergeQueue: { retryCleanup: async () => ({ cleaned: true, worktreePath: null, cleanupError: null }) },
+      ptys: { forFeature: () => undefined, terminate: async () => {}, sendPrompt: () => {} },
+      stackService: {
+        isRunning: () => laufend,
+        probe: async () => leereSicht,
+        up: async () => stackCalls.push('up'),
+        stop: async () => stackCalls.push('stop'),
+        restart: async () => stackCalls.push('restart'),
+        down: async () => stackCalls.push('down'),
+      },
+      testingLane: {
+        confirm: async (id: string) => confirmCalls.push(id),
+        reject: async (id: string, reason: string) => rejectCalls.push({ id, reason }),
+      },
+      telemetry: new TelemetryStore({ autoSweep: false }),
+      dataDir,
+      webDir: null,
+      port: 4899,
+      portBlockSize: 20,
+    } as unknown as ApiDeps);
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const post = (url: string, payload?: unknown) => app.inject({ method: 'POST', url, payload: payload ?? {} });
+  const msg = (res: { payload: string }) => (JSON.parse(res.payload) as { message?: string }).message;
+
+  it('liefert den erhobenen Stack-Zustand ohne Guard (Lesen ist immer erlaubt)', async () => {
+    const res = await app.inject({ method: 'GET', url: `/api/features/${featureId}/stack` });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toMatchObject({ configured: true, portBase: 21000 });
+  });
+
+  it('führt jede der vier Aktionen aus', async () => {
+    for (const action of ['up', 'stop', 'restart', 'down'] as const) {
+      expect((await post(`/api/features/${featureId}/stack/${action}`)).statusCode).toBe(200);
+    }
+    expect(stackCalls).toEqual(['up', 'stop', 'restart', 'down']);
+  });
+
+  it('lehnt eine unbekannte Aktion mit 400 ab', async () => {
+    expect((await post(`/api/features/${featureId}/stack/explodieren`)).statusCode).toBe(400);
+  });
+
+  /** FR-033: der Grund ist derselbe Satz, den die Oberfläche zeigt. */
+  it('lehnt Stack-Aktionen ohne Konfiguration mit 409 und dem Satz der Policy ab', async () => {
+    projects.update(projectId, { stack: { test: null, full: null, down: null, stopCommand: null, services: [] } });
+    const res = await post(`/api/features/${featureId}/stack/up`);
+    expect(res.statusCode).toBe(409);
+    expect(msg(res)).toBe('Kein Stack konfiguriert — Profile in den Projekt-Einstellungen hinterlegen.');
+  });
+
+  it('lehnt „Stoppen" ohne Anhalte-Kommando mit 409 ab', async () => {
+    projects.update(projectId, { stack: { ...STACK, stopCommand: null } });
+    const res = await post(`/api/features/${featureId}/stack/stop`);
+    expect(res.statusCode).toBe(409);
+    expect(msg(res)).toBe('Kein Kommando zum Anhalten hinterlegt — nur Abbauen ist möglich.');
+  });
+
+  it('lehnt Abbauen ab, wenn kein Profil betrieben wird', async () => {
+    laufend = false;
+    const res = await post(`/api/features/${featureId}/stack/down`);
+    expect(res.statusCode).toBe(409);
+    expect(msg(res)).toBe('Für dieses Feature wird kein Stack betrieben.');
+  });
+
+  it('bestätigt die Abnahme nur auf der richtigen Stufe (FR-028)', async () => {
+    const falsch = await post(`/api/features/${featureId}/manual-test/confirm`);
+    expect(falsch.statusCode).toBe(409);
+    expect(msg(falsch)).toBe('Das Feature wartet nicht auf eine manuelle Abnahme.');
+
+    features.setIntegration(featureId, 'awaiting_manual_test');
+    expect((await post(`/api/features/${featureId}/manual-test/confirm`)).statusCode).toBe(200);
+    expect(confirmCalls).toEqual([featureId]);
+  });
+
+  it('verlangt bei der Ablehnung einen Grund (400)', async () => {
+    features.setIntegration(featureId, 'awaiting_manual_test');
+    const ohne = await post(`/api/features/${featureId}/manual-test/reject`, { reason: '   ' });
+    expect(ohne.statusCode).toBe(400);
+    expect(msg(ohne)).toBe('Ein Grund ist erforderlich.');
+    expect(rejectCalls).toEqual([]);
+  });
+
+  it('reicht die Ablehnung samt Grund durch', async () => {
+    features.setIntegration(featureId, 'awaiting_manual_test');
+    const res = await post(`/api/features/${featureId}/manual-test/reject`, { reason: 'Knopf tot' });
+    expect(res.statusCode).toBe(200);
+    expect(rejectCalls).toEqual([{ id: featureId, reason: 'Knopf tot' }]);
+  });
+
+  /** FR-037: erneutes Scheitern ist ein Ergebnis, kein Fehler. */
+  it('stößt das Aufräumen erneut an', async () => {
+    const res = await post(`/api/features/${featureId}/cleanup`);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.payload)).toEqual({ cleaned: true, worktreePath: null, cleanupError: null });
+  });
+
+  it('antwortet 404 für ein unbekanntes Feature', async () => {
+    expect((await post('/api/features/gibtsnicht/cleanup')).statusCode).toBe(404);
+  });
+
+  describe('Stack-Konfiguration am Projekt', () => {
+    const patch = (stack: unknown) =>
+      app.inject({ method: 'PATCH', url: `/api/projects/${projectId}`, payload: { stack } });
+
+    it('nimmt eine gültige Konfiguration an', async () => {
+      expect((await patch(STACK)).statusCode).toBe(200);
+    });
+
+    it('weist einen zustandsbehafteten geteilten Dienst mit 400 ab (FR-021)', async () => {
+      const res = await patch({
+        ...STACK,
+        services: [{ name: 'db', portOffset: 2, scope: 'shared', stateful: true, primary: false }],
+      });
+      expect(res.statusCode).toBe(400);
+      expect(msg(res)).toBe('Ein zustandsbehafteter Dienst muss feature-eigen laufen.');
+    });
+
+    it('weist doppelte Abstände mit 400 ab', async () => {
+      const res = await patch({
+        ...STACK,
+        services: [
+          { name: 'a', portOffset: 1, scope: 'feature', stateful: false, primary: false },
+          { name: 'b', portOffset: 1, scope: 'feature', stateful: false, primary: false },
+        ],
+      });
+      expect(res.statusCode).toBe(400);
+      expect(msg(res)).toBe('Zwei Dienste können nicht denselben Abstand haben.');
+    });
+
+    /** FR-013: die leere Konfiguration ist gültig und bedeutet „kein Stack". */
+    it('nimmt die leere Konfiguration an', async () => {
+      const res = await patch({});
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.payload)).toMatchObject({ stack: { test: null, full: null, down: null, services: [] } });
+    });
   });
 });

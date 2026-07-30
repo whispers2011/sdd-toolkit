@@ -123,6 +123,12 @@ export const AUTOMATION_META: Record<keyof AutomationSettings, AutomationMeta> =
     onLabel: 'automatisch',
     offLabel: 'Human-Review vor Merge',
   },
+  manualTestGate: {
+    label: 'Manuelles Test-Gate',
+    help: 'Nach dem Review-Gate hält das Feature an, damit ein Mensch die laufende Anwendung durchklickt — vor dem menschlichen Review.',
+    onLabel: 'hält vor dem Review zur Abnahme an',
+    offLabel: 'ohne Halt zur Abnahme',
+  },
 };
 
 // ---------- Agent-Trigger ----------
@@ -237,6 +243,9 @@ export const INTEGRATION_STAGE_META: Record<IntegrationStage, { label: string; t
   verify_failed: { label: 'Verifikation fehlgeschlagen', tone: 'escalation' },
   review_gate: { label: 'Review-Gate läuft', tone: 'progress' },
   gate_failed: { label: 'Review-Gate FAIL', tone: 'escalation' },
+  // Amber wie `verification_unconfigured`: der Mensch ist am Zug. Kein Fortschritt
+  // (es läuft nichts) und keine Eskalation (nichts ist kaputt) — FR-024.
+  awaiting_manual_test: { label: 'wartet auf manuelle Abnahme', tone: 'human' },
   awaiting_human_review: { label: 'wartet auf menschliches Review', tone: 'human' },
   queued: { label: 'in der Merge-Queue', tone: 'progress' },
   merging: { label: 'Merge läuft', tone: 'progress' },
@@ -327,6 +336,16 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     requires: 'autoReviewAgents',
     escalatesTo: 'gate_failed',
     showsReviewGateAgents: true,
+  },
+  {
+    id: 'manual_test',
+    label: 'Manuelle Abnahme',
+    detail:
+      'Testing-Lane: vollen Stack starten, die laufende Anwendung durchklicken, bestätigen oder mit Grund ablehnen.',
+    icon: '🧪',
+    requires: 'manualTestGate',
+    // Kein `humanUnless`: die Abnahme ist IMMER menschlich — es gibt keinen
+    // automatischen Weg aus der Stufe heraus (FR-028).
   },
   {
     id: 'human_review',

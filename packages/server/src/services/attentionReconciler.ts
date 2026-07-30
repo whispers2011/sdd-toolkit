@@ -21,6 +21,9 @@ export interface ReconcileSnapshot {
  */
 export const STAGE_FOR_KIND: Partial<Record<AttentionKind, IntegrationStage>> = {
   review_due: 'awaiting_human_review',
+  // Die Meldung verschwindet mit dem Stufenwechsel — bestätigt oder abgelehnt,
+  // in beiden Fällen ist die Abnahme erledigt (FR-024, research E10).
+  manual_test_due: 'awaiting_manual_test',
   verify_failed: 'verify_failed',
   gate_failed: 'gate_failed',
   merge_conflict_escalated: 'conflict_escalated',
@@ -88,6 +91,7 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       // Entscheidung hier steht und nicht aus einem Fallback zu lesen ist.
       return true;
     case 'review_due':
+    case 'manual_test_due':
     case 'verify_failed':
     case 'gate_failed':
     case 'merge_conflict_escalated': {
@@ -96,6 +100,21 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       if (stage === undefined) return false;
       return stage === STAGE_FOR_KIND[item.kind];
     }
+    case 'stack_failed':
+    case 'worktree_cleanup_failed':
+      // Dieselbe Linie wie `lifecycle_step_failed`: ein fehlgeschlagenes
+      // Profilkommando bzw. ein fehlgeschlagenes Aufräumen ist nicht dadurch
+      // behoben, dass irgendeine Session arbeitet oder die Integration eine Stufe
+      // weiterrückt. Aufgelöst wird die Meldung ausschließlich von einem
+      // erfolgreichen Wiederanlauf desselben Vorgangs — oder vom Menschen.
+      // Bewusst KEIN Eintrag in STAGE_FOR_KIND (sonst räumt jeder setStage() sie ab).
+      return true;
+    case 'orphan_worktree':
+      // Gültig, solange der verwaiste Eintrag in einer Erhebung erscheint. Anders
+      // als bei den Datenbefunden ist das Wiederauftauchen hier RICHTIG: solange
+      // ein Verzeichnis herumliegt, ist etwas zu tun (research E14). Die Auflösung
+      // übernimmt der Aufrufer, wenn der Eintrag aus der Erhebung verschwindet.
+      return true;
     case 'run_unpriced':
     case 'phase_false_start':
     case 'project_without_runs':

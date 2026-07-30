@@ -50,6 +50,11 @@ describe('GET /api/system/status', () => {
     app = await buildServer({
       resourceMonitor,
       outageMonitor: { lastOutage: over.lastOutage ?? null },
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       dataDir,
       allowedOrigins: buildAllowedOrigins([80]),
     } as unknown as ApiDeps);

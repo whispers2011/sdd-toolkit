@@ -53,6 +53,7 @@ function feature(patch: Partial<Feature>): Feature {
     tasksDone: 0,
     tasksTotal: 0,
     reviewRejectedAt: null,
+    cleanupError: null,
     createdAt: 1,
     archivedAt: null,
     ...patch,

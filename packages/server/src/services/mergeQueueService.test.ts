@@ -335,7 +335,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
       worktreePath: wt,
       phases: {},
       integration: 'none',
-      automation: { autoReviewAgents: false, autoMerge: false },
+      automation: { autoReviewAgents: false, autoMerge: false, manualTestGate: false },
       tasksDone: 0,
       tasksTotal: 0,
     });
@@ -368,7 +368,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
       worktreePath: wt,
       phases: {},
       integration: 'none',
-      automation: { autoReviewAgents: false, autoMerge: false },
+      automation: { autoReviewAgents: false, autoMerge: false, manualTestGate: false },
       tasksDone: 0,
       tasksTotal: 56,
     });
@@ -476,6 +476,177 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   // ---------- US5: Lebenszyklus-Schritte an den Stufen der Pipeline ----------
 
   /** Marker-Datei außerhalb des Worktrees — sie überlebt das Cleanup der letzten Stufe. */
+  // ---------- Manuelles Test-Gate (US3, FR-024 – FR-029) ----------
+
+  /** Wie makeManualFeature, aber MIT eingeschaltetem Gate. */
+  async function makeGatedFeature(name: string) {
+    const { feature } = await makeReviewReadyFeature(name);
+    features.setIntegration(feature.id, 'none');
+    features.setAutomation(feature.id, { autoReviewAgents: false, autoMerge: false, manualTestGate: true });
+    return features.get(feature.id)!;
+  }
+
+  it('hält bei eingeschaltetem Gate auf der Abnahme an — VOR dem Review (FR-024)', async () => {
+    const feature = await makeGatedFeature('gate-an');
+
+    await svc.beginIntegration(feature.id);
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_manual_test');
+    // Die Review-Meldung entsteht NICHT: der Mensch ist noch nicht beim Review.
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'review_due')).toBe(false);
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'manual_test_due')).toBe(true);
+  });
+
+  it('nennt in der Meldung, dass keine Adresse erreichbar ist (FR-033)', async () => {
+    const feature = await makeGatedFeature('gate-adresse');
+    await svc.beginIntegration(feature.id);
+    const item = attention.listOpen(projectId).find((i) => i.kind === 'manual_test_due');
+    expect(item?.message).toContain('wartet auf manuelle Abnahme');
+    expect(item?.message).toContain('keine erreichbare Adresse');
+  });
+
+  /** FR-027: Gate aus ⇒ der Ablauf ist unverändert. */
+  it('betritt die Stufe bei ausgeschaltetem Gate nicht (FR-027)', async () => {
+    const feature = await makeManualFeature('gate-aus');
+
+    await svc.beginIntegration(feature.id);
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'manual_test_due')).toBe(false);
+  });
+
+  it('führt die Schritte der Stufe „Manuelle Abnahme" aus', async () => {
+    const feature = await makeGatedFeature('gate-schritte');
+    addMarkerStep('before_stage', 'manual_test', 'vor-abnahme');
+
+    await svc.beginIntegration(feature.id);
+
+    expect(trail()).toEqual(['vor-abnahme']);
+  });
+
+  it('bestätigt die Abnahme und führt danach zum Review (FR-028)', async () => {
+    const feature = await makeGatedFeature('gate-ok');
+    addMarkerStep('after_stage', 'manual_test', 'nach-abnahme');
+    await svc.beginIntegration(feature.id);
+
+    await svc.confirmManualTest(feature.id);
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    expect(trail()).toEqual(['nach-abnahme']);
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'manual_test_due')).toBe(false);
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'review_due')).toBe(true);
+  });
+
+  it('lehnt die Bestätigung auf jeder anderen Stufe ab', async () => {
+    const feature = await makeManualFeature('gate-falsch');
+    await expect(svc.confirmManualTest(feature.id)).rejects.toThrow(/wartet nicht auf eine manuelle Abnahme/);
+  });
+
+  /** FR-029 / Assumption: zurück in die Nacharbeit, nicht an den Anfang. */
+  it('führt eine Ablehnung mit Grund in die Nacharbeit zurück (FR-029)', async () => {
+    const feature = await makeGatedFeature('gate-nein');
+    await svc.beginIntegration(feature.id);
+
+    await svc.rejectManualTest(feature.id, 'Der Knopf tut nichts.');
+
+    const fresh = features.get(feature.id)!;
+    expect(fresh.integration).toBe('none');
+    expect(fresh.reviewRejectedAt).not.toBeNull();
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'manual_test_due')).toBe(false);
+  });
+
+  it('verlangt bei der Ablehnung einen Grund', async () => {
+    const feature = await makeGatedFeature('gate-ohne-grund');
+    await svc.beginIntegration(feature.id);
+    await expect(svc.rejectManualTest(feature.id, '   ')).rejects.toThrow(/Grund ist erforderlich/);
+    expect(features.get(feature.id)?.integration).toBe('awaiting_manual_test');
+  });
+
+  /**
+   * Edge Case: das Einschalten des Gates schiebt ein Feature, das schon auf
+   * Review wartet, NICHT zurück — der Schalter wird beim Durchlauf gelesen.
+   */
+  it('schiebt ein Feature auf awaiting_human_review nicht rückwärts', async () => {
+    const { feature } = await makeReviewReadyFeature('kein-rueckwaerts');
+    features.setAutomation(feature.id, { manualTestGate: true });
+
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+    await svc.beginIntegration(feature.id).catch(() => {});
+    expect(features.get(feature.id)?.integration).toBe('awaiting_human_review');
+  });
+
+  // ---------- Aufräumen mit Nachweis (US4, FR-034 – FR-037) ----------
+
+  it('leert den Worktree-Pfad NICHT, wenn das Entfernen scheitert (FR-035, SC-004)', async () => {
+    const { feature, wt } = await makeReviewReadyFeature('haelt-fest');
+    features.setIntegration(feature.id, 'merged');
+    // Entfernen scheitert: das Verzeichnis bleibt bestehen.
+    const spy = vi.spyOn(worktrees, 'remove').mockRejectedValue(new Error('Prozess hält das Verzeichnis'));
+
+    const result = await svc.retryCleanup(feature.id);
+
+    expect(result.cleaned).toBe(false);
+    expect(features.get(feature.id)?.worktreePath).toBe(wt);
+    expect(features.get(feature.id)?.cleanupError).toContain('Prozess hält das Verzeichnis');
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'worktree_cleanup_failed')).toBe(true);
+    spy.mockRestore();
+  });
+
+  it('nennt in der Meldung den Grund und den bleibenden Ordner', async () => {
+    const { feature, wt } = await makeReviewReadyFeature('meldung');
+    features.setIntegration(feature.id, 'merged');
+    const spy = vi.spyOn(worktrees, 'remove').mockRejectedValue(new Error('kaputt'));
+
+    await svc.retryCleanup(feature.id);
+
+    const item = attention.listOpen(projectId).find((i) => i.kind === 'worktree_cleanup_failed');
+    expect(item?.message).toContain('kaputt');
+    expect(item?.message).toContain(wt);
+    spy.mockRestore();
+  });
+
+  /** FR-036/FR-037: der Pfad wird erst nach nachgewiesenem Entfernen geleert. */
+  it('läuft nach Beheben der Ursache zu Ende und leert den Pfad erst danach', async () => {
+    const { feature } = await makeReviewReadyFeature('wiederholung');
+    features.setIntegration(feature.id, 'merged');
+    const spy = vi.spyOn(worktrees, 'remove').mockRejectedValue(new Error('noch nicht'));
+    await svc.retryCleanup(feature.id);
+    expect(features.get(feature.id)?.worktreePath).not.toBeNull();
+
+    spy.mockRestore();
+    const result = await svc.retryCleanup(feature.id);
+
+    expect(result.cleaned).toBe(true);
+    expect(result.worktreePath).toBeNull();
+    expect(result.cleanupError).toBeNull();
+    expect(attention.listOpen(projectId).some((i) => i.kind === 'worktree_cleanup_failed')).toBe(false);
+  });
+
+  it('meldet erneutes Scheitern als Ergebnis, nicht als Fehler', async () => {
+    const { feature, wt } = await makeReviewReadyFeature('nochmal-nein');
+    features.setIntegration(feature.id, 'merged');
+    const spy = vi.spyOn(worktrees, 'remove').mockRejectedValue(new Error('haelt weiter'));
+
+    await svc.retryCleanup(feature.id);
+    const result = await svc.retryCleanup(feature.id);
+
+    expect(result.cleaned).toBe(false);
+    expect(result.worktreePath).toBe(wt);
+    expect(result.cleanupError).toContain('haelt weiter');
+    spy.mockRestore();
+  });
+
+  it('räumt bei erfolgreichem Entfernen wie bisher ab', async () => {
+    const { feature, wt } = await makeReviewReadyFeature('klappt');
+    features.setIntegration(feature.id, 'merged');
+
+    await svc.retryCleanup(feature.id);
+
+    expect(existsSync(wt)).toBe(false);
+    expect(features.get(feature.id)?.worktreePath).toBeNull();
+    expect(features.get(feature.id)?.cleanupError).toBeNull();
+  });
+
   function markerPath(): string {
     return join(dataDir, 'ablauf.txt');
   }
@@ -516,7 +687,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   async function makeManualFeature(name: string) {
     const { feature } = await makeReviewReadyFeature(name);
     features.setIntegration(feature.id, 'none');
-    features.setAutomation(feature.id, { autoReviewAgents: false, autoMerge: false });
+    features.setAutomation(feature.id, { autoReviewAgents: false, autoMerge: false, manualTestGate: false });
     return features.get(feature.id)!;
   }
 

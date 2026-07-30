@@ -13,6 +13,24 @@ export interface WorktreeProject {
 }
 
 /**
+ * Die Portvergabe, so viel davon wie der WorktreeManager braucht. Als Schnittstelle
+ * statt als Klasse, damit `git/` nicht von `services/` abhängt und Tests ohne
+ * Datenbank auskommen.
+ */
+export interface WorktreePortAllocator {
+  ensureFor(owner: {
+    kind: 'worktree';
+    path: string;
+    projectId: string;
+    projectName: string;
+    projectPath: string;
+    featureName: string;
+    branch: string;
+  }): Promise<unknown>;
+  releaseWorktree(worktreePath: string): void;
+}
+
+/**
  * Ordnername eines Projekts: `<name>-<id>`. Die ID allein ist eindeutig, aber
  * unlesbar — Reste gelöschter Projekte waren dadurch im Datenverzeichnis nicht
  * zuzuordnen (neun verwaiste Worktrees am 26.07.2026). Der Name macht sie
@@ -78,7 +96,14 @@ export interface WorktreeCleanup {
  * — kein .gitignore-Zwang im Ziel-Repo.
  */
 export class WorktreeManager {
-  constructor(private dataDir: string) {}
+  /**
+   * @param ports Die EINE Stelle der Portvergabe. Optional, damit bestehende
+   * Tests ohne Datenbank weiterlaufen; im Betrieb immer gesetzt (FR-001).
+   */
+  constructor(
+    private dataDir: string,
+    private ports?: WorktreePortAllocator,
+  ) {}
 
   /** Läufe pro Schlüssel serialisieren: der nächste startet erst, wenn der vorige fertig ist. */
   private locks = new Map<string, Promise<unknown>>();
@@ -166,7 +191,23 @@ export class WorktreeManager {
     branch: string;
     defaultBranch: string;
   }): Promise<string> {
-    return this.serialize(`${opts.projectPath}::${opts.branch}`, () => this.createUnlocked(opts));
+    return this.serialize(`${opts.projectPath}::${opts.branch}`, async () => {
+      const path = await this.createUnlocked(opts);
+      // DIE Stelle der Portvergabe: hier — und nur hier — bekommt ein Worktree
+      // seinen Block. Beide Anlagepfade (Feature und Chat) laufen hier durch,
+      // deshalb ist der Block über ALLE gleichzeitig bestehenden Worktrees
+      // eindeutig (FR-001/FR-002, research E1).
+      await this.ports?.ensureFor({
+        kind: 'worktree',
+        path,
+        projectId: opts.project.id,
+        projectName: opts.project.name,
+        projectPath: opts.projectPath,
+        featureName: opts.featureName,
+        branch: opts.branch,
+      });
+      return path;
+    });
   }
 
   private async createUnlocked(opts: {
@@ -253,16 +294,33 @@ export class WorktreeManager {
     return (await isGitRepo(worktreePath)) ? 'repaired' : 'missing';
   }
 
-  /** Entfernen mit Sauberkeitsprüfung; force nur explizit. */
+  /**
+   * Entfernen mit Sauberkeitsprüfung; force nur explizit.
+   *
+   * Nach dem git-Aufruf wird NACHGEWIESEN, dass das Verzeichnis wirklich fort ist
+   * (FR-034). Dem Rückgabewert allein ist hier nicht zu trauen: `git worktree
+   * remove` kehrt in Randfällen erfolgreich zurück und lässt Reste stehen — genau
+   * so wuchs ein 10-GB-Verzeichnis unauffindbar weiter, weil der Aufrufer den
+   * Pfad danach trotzdem geleert hat (research E11).
+   *
+   * Der Portblock wird erst NACH dem Nachweis freigegeben (FR-005/FR-036).
+   */
   async remove(projectPath: string, worktreePath: string, opts: { force?: boolean } = {}): Promise<void> {
     if (!existsSync(worktreePath)) {
       await git(projectPath, ['worktree', 'prune']);
+      this.ports?.releaseWorktree(worktreePath);
       return;
     }
     if (!opts.force && !(await isCleanWorkingTree(worktreePath))) {
       throw new Error(`Worktree ${worktreePath} hat uncommittete Änderungen — Entfernen verweigert`);
     }
     await gitOk(projectPath, ['worktree', 'remove', ...(opts.force ? ['--force'] : []), worktreePath]);
+    if (existsSync(worktreePath)) {
+      throw new Error(
+        `Worktree ${worktreePath} ist nach dem Entfernen noch vorhanden — vermutlich hält ein Prozess das Verzeichnis.`,
+      );
+    }
+    this.ports?.releaseWorktree(worktreePath);
   }
 
   /** Branch löschen (best-effort; wirft nicht bei fehlendem Branch). */

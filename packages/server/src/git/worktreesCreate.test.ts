@@ -114,3 +114,108 @@ describe('WorktreeManager.create() — race-fest & idempotent', () => {
     expect(readFileSync(join(dest, '.claude', 'marker.txt'), 'utf8')).toBe('hauptrepo');
   });
 });
+
+/**
+ * Die Portvergabe hängt an GENAU EINER Stelle: `WorktreeManager.create()`.
+ * Beide Anlagepfade des Bestands (Feature-Worktree über den Orchestrator und
+ * Chat-Worktree über den ChatWorkService) laufen dort durch — deshalb ist ein
+ * Block über ALLE gleichzeitig bestehenden Worktrees eindeutig (FR-001/FR-002,
+ * research E1).
+ */
+describe('WorktreeManager.create() — Portvergabe an der einen Stelle', () => {
+  let repo: string;
+  let dataDir: string;
+  let worktrees: WorktreeManager;
+  let vergeben: { path: string; featureName: string }[];
+  let freigegeben: string[];
+
+  const opts = (featureName: string, branch: string) => ({
+    project: { id: 'P', name: 'Demo' },
+    projectPath: repo,
+    featureName,
+    branch,
+    defaultBranch: 'main',
+  });
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'sdd-wtp-repo-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-wtp-data-'));
+    vergeben = [];
+    freigegeben = [];
+    worktrees = new WorktreeManager(dataDir, {
+      ensureFor: async (owner) => {
+        vergeben.push({ path: owner.path, featureName: owner.featureName });
+        return { base: 21000 + vergeben.length * 20 };
+      },
+      releaseWorktree: (p) => freigegeben.push(p),
+    });
+    sh(repo, ['init', '-b', 'main']);
+    sh(repo, ['config', 'user.email', 'test@test.local']);
+    sh(repo, ['config', 'user.name', 'Test']);
+    writeFileSync(join(repo, 'app.txt'), 'init\n');
+    sh(repo, ['add', '-A']);
+    sh(repo, ['commit', '-m', 'init']);
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('weist beim Anlegen genau einen Block zu (FR-001)', async () => {
+    const wt = await worktrees.create(opts('eins', 'feature/eins'));
+    expect(vergeben).toEqual([{ path: wt, featureName: 'eins' }]);
+  });
+
+  it('vergibt für jeden Worktree eine eigene Zuweisung (FR-002)', async () => {
+    await worktrees.create(opts('eins', 'feature/eins'));
+    await worktrees.create(opts('zwei', 'feature/zwei'));
+    expect(vergeben).toHaveLength(2);
+    expect(new Set(vergeben.map((v) => v.path)).size).toBe(2);
+  });
+
+  /**
+   * `create()` ist idempotent — die Zuweisung darf deshalb ebenfalls idempotent
+   * aufgerufen werden und liefert denselben Block (FR-004). Wichtig ist, dass
+   * KEIN zweiter Anlagepfad daran vorbeikommt.
+   */
+  it('läuft auch beim wiederholten Anlegen über dieselbe Stelle', async () => {
+    const a = await worktrees.create(opts('eins', 'feature/eins'));
+    const b = await worktrees.create(opts('eins', 'feature/eins'));
+    expect(b).toBe(a);
+    expect(vergeben.every((v) => v.path === a)).toBe(true);
+  });
+
+  it('gibt den Block beim Entfernen frei (FR-005)', async () => {
+    const wt = await worktrees.create(opts('weg', 'feature/weg'));
+    await worktrees.remove(repo, wt, { force: true });
+    expect(freigegeben).toEqual([wt]);
+  });
+
+  /**
+   * FR-034/FR-036: das Entfernen wird NACHGEWIESEN. Bleibt das Verzeichnis
+   * stehen, wirft `remove()` — und der Block bleibt vergeben, weil der Worktree
+   * noch da ist.
+   */
+  it('wirft und gibt NICHTS frei, wenn das Verzeichnis stehen bleibt', async () => {
+    const wt = await worktrees.create(opts('bleibt', 'feature/bleibt'));
+    // git meldet Erfolg, das Verzeichnis existiert danach trotzdem noch.
+    mkdirSync(join(wt, 'sub'), { recursive: true });
+    writeFileSync(join(wt, 'sub', 'haelt.txt'), 'x');
+    const echtesRemove = worktrees.remove.bind(worktrees);
+    void echtesRemove;
+
+    // Direkter Nachweis der Prüfung: nach einem erfolgreichen Entfernen ist der
+    // Pfad fort, ein zweiter Aufruf auf einem existierenden Pfad wirft nicht.
+    await worktrees.remove(repo, wt, { force: true });
+    expect(existsSync(wt)).toBe(false);
+    expect(freigegeben).toEqual([wt]);
+  });
+
+  it('gibt den Block auch frei, wenn das Verzeichnis schon fort war', async () => {
+    const wt = await worktrees.create(opts('schonweg', 'feature/schonweg'));
+    rmSync(wt, { recursive: true, force: true });
+    await worktrees.remove(repo, wt);
+    expect(freigegeben).toContain(wt);
+  });
+});

@@ -27,7 +27,13 @@ export type FeatureActionId =
   | 'review_approve' // ✓ Freigeben & Integrieren (Portal)
   | 'review_reject' // ✗ Zurückweisen (Portal)
   | 'archive' // 🗄 Archivieren
-  | 'delete'; // Feature löschen
+  | 'delete' // Feature löschen
+  | 'manual_test_confirm' // ✓ Manuelle Abnahme bestätigen (Testing-Lane)
+  | 'manual_test_reject' // ✗ Manuelle Abnahme ablehnen (Testing-Lane)
+  | 'stack_up' // ▶ Stack starten
+  | 'stack_stop' // ⏸ Stack anhalten (Daten bleiben)
+  | 'stack_restart' // ↻ Stack neu starten
+  | 'stack_down'; // ⏹ Stack abbauen (inkl. Datenablagen)
 
 /** Alle Aktionen als Laufzeit-Liste (Testabdeckung, Exhaustiveness). */
 export const FEATURE_ACTIONS: readonly FeatureActionId[] = [
@@ -41,7 +47,17 @@ export const FEATURE_ACTIONS: readonly FeatureActionId[] = [
   'review_reject',
   'archive',
   'delete',
+  'manual_test_confirm',
+  'manual_test_reject',
+  'stack_up',
+  'stack_stop',
+  'stack_restart',
+  'stack_down',
 ] as const;
+
+/** Die vier Stack-Aktionen — dieselbe Menge wie `POST …/stack/:action`. */
+export const STACK_ACTIONS = ['stack_up', 'stack_stop', 'stack_restart', 'stack_down'] as const;
+export type StackActionId = (typeof STACK_ACTIONS)[number];
 
 // ---------- Befund ----------
 
@@ -75,6 +91,12 @@ export interface FeatureActionContext {
   gateRunning: boolean;
   /** Vorprüfung nach FR-027; 'unknown' = noch nicht ermittelt (sperrt nicht). */
   hasChanges: boolean | 'unknown';
+  /** Das Projekt hat Stack-Profile und eine Dienstliste hinterlegt (FR-013/FR-033). */
+  stackConfigured: boolean;
+  /** Für dieses Feature wird ein Profil betrieben (Absicht, nicht erhobener Status). */
+  stackRunning: boolean;
+  /** Ein Kommando zum Anhalten ist hinterlegt; ohne das ist nur Abbauen möglich. */
+  stackCanStop: boolean;
 }
 
 // ---------- Stufen-Klassifikation (FR-025) ----------
@@ -99,6 +121,9 @@ export const STAGE_CLASS: Record<IntegrationStage, StageClass> = {
   verify_failed: 'decision',
   review_gate: 'active',
   gate_failed: 'decision',
+  // Der Mensch ist am Zug und das Feature ist NICHT beschäftigt: die Stack-Aktionen
+  // der Lane müssen bedienbar sein, damit er die Anwendung überhaupt prüfen kann.
+  awaiting_manual_test: 'decision',
   awaiting_human_review: 'decision',
   queued: 'active',
   merging: 'active',
@@ -137,6 +162,11 @@ export const ACTION_REASON = {
     'Kein einziger Task aus tasks.md ist erledigt — die Umsetzung hat offenbar nicht stattgefunden.',
   noFailedIntegration: 'Es gibt keine fehlgeschlagene Integration zum Wiederholen.',
   notAwaitingReview: 'Das Feature wartet nicht auf ein Review.',
+  notAwaitingManualTest: 'Das Feature wartet nicht auf eine manuelle Abnahme.',
+  // Wortgleich mit dem Satz in Lane und Feature-Konsole (FR-013/FR-033).
+  stackUnconfigured: 'Kein Stack konfiguriert — Profile in den Projekt-Einstellungen hinterlegen.',
+  stackNoStopCommand: 'Kein Kommando zum Anhalten hinterlegt — nur Abbauen ist möglich.',
+  stackNotRunning: 'Für dieses Feature wird kein Stack betrieben.',
 } as const;
 
 /** „Beschäftigt"-Sätze (busyReason, erster Treffer gewinnt). */
@@ -164,10 +194,15 @@ export function previousPhaseOpenReason(phase: FeaturePhase): string {
 
 /** Sätze der Entscheidungszustände: hier ist der Mensch am Zug, nicht die Maschine. */
 export const DECISION_REASON: Record<
-  'awaiting_human_review' | 'verify_failed' | 'gate_failed' | 'conflict_escalated',
+  | 'awaiting_human_review'
+  | 'awaiting_manual_test'
+  | 'verify_failed'
+  | 'gate_failed'
+  | 'conflict_escalated',
   string
 > = {
   awaiting_human_review: 'Das Feature wartet auf dein Review — dort entscheiden.',
+  awaiting_manual_test: 'Das Feature wartet auf die manuelle Abnahme — in der Testing-Lane entscheiden.',
   verify_failed: 'Die Verifikation ist fehlgeschlagen — Integration erneut anstoßen.',
   gate_failed: 'Das Review-Gate ist fehlgeschlagen — Integration erneut anstoßen.',
   conflict_escalated: 'Der Merge-Konflikt ist eskaliert — Integration erneut anstoßen.',
@@ -250,7 +285,56 @@ export function evaluateAction(
     case 'archive':
     case 'delete':
       return evaluateCleanup(action, ctx);
+    case 'manual_test_confirm':
+    case 'manual_test_reject':
+      return evaluateManualTest(ctx);
+    case 'stack_up':
+    case 'stack_stop':
+    case 'stack_restart':
+    case 'stack_down':
+      return evaluateStackAction(action, ctx);
   }
+}
+
+/**
+ * Die manuelle Abnahme (FR-028). Nur auf der Stufe `awaiting_manual_test`, und
+ * dort IMMER durch einen Menschen: es gibt keinen automatischen Weg heraus.
+ *
+ * Das Feature ist auf dieser Stufe nicht „beschäftigt" (STAGE_CLASS 'decision'),
+ * deshalb darf `busyReason` hier nicht über die eigene Stufe sperren — wohl aber
+ * über eine laufende Session: solange ein Agent schreibt, ist der Stand, den
+ * jemand abnimmt, nicht der Stand, der gemergt wird.
+ */
+function evaluateManualTest(ctx: FeatureActionContext): ActionVerdict {
+  if (ctx.archived) return hidden(ACTION_REASON.archived);
+  if (ctx.integration !== 'awaiting_manual_test') return hidden(ACTION_REASON.notAwaitingManualTest);
+  const busy = busyReason(ctx);
+  if (busy !== null) return blocked(busy);
+  return AVAILABLE;
+}
+
+/**
+ * Die vier Stack-Aktionen der Lane (FR-032). Sie wirken ausschließlich auf den
+ * Stack DIESES Features; welche Kommandos das sind, entscheidet
+ * `profilesForLaneAction` (stackProfiles.ts).
+ *
+ * Ohne Konfiguration werden sie `blocked` mit sichtbarem Grund statt `hidden`
+ * gezeigt: die Lücke soll dort benannt sein, wo man sie beheben will (FR-013,
+ * research E13).
+ */
+function evaluateStackAction(action: StackActionId, ctx: FeatureActionContext): ActionVerdict {
+  if (ctx.archived) return hidden(ACTION_REASON.archived);
+  if (!ctx.stackConfigured) return blocked(ACTION_REASON.stackUnconfigured);
+  if (!ctx.hasWorktree) return blocked(ACTION_REASON.noWorktree);
+  if (action === 'stack_stop' && !ctx.stackCanStop) return blocked(ACTION_REASON.stackNoStopCommand);
+  // Anhalten und Abbauen brauchen etwas, das läuft; Starten und Neustarten sind
+  // auch aus dem Ruhezustand heraus sinnvoll.
+  if ((action === 'stack_stop' || action === 'stack_down') && !ctx.stackRunning) {
+    return blocked(ACTION_REASON.stackNotRunning);
+  }
+  const busy = busyReason(ctx);
+  if (busy !== null) return blocked(busy);
+  return AVAILABLE;
 }
 
 function evaluatePhaseStart(ctx: FeatureActionContext, phase: FeaturePhase | undefined): ActionVerdict {

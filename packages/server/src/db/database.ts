@@ -396,6 +396,56 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   -- Hält Läufe eines später gelöschten oder umbenannten Schritts lesbar.
   ALTER TABLE executions ADD COLUMN label TEXT;
   `,
+
+  // Feature "ersetzbare-kernschritte-stack-profile-testing-lane": Portvergabe,
+  // Stack-Profile und manuelle Abnahme. Additiv, keine Seeds, kein Backfill —
+  // ohne Stack-Konfiguration verhält sich eine bestehende Datenbank unverändert
+  // (FR-013, SC-010).
+  `
+  -- Die EINZIGE Buchführung der Portvergabe (FR-001/FR-002).
+  CREATE TABLE port_blocks (
+    owner_kind   TEXT    NOT NULL CHECK (owner_kind IN ('worktree','project')),
+    owner_id     TEXT    NOT NULL,                 -- realpath des Worktrees bzw. projectId
+    project_id   TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    base         INTEGER NOT NULL,
+    span         INTEGER NOT NULL,
+    allocated_at INTEGER NOT NULL,
+    released_at  INTEGER,                          -- NULL = belegt
+    PRIMARY KEY (owner_kind, owner_id)
+  );
+
+  -- Eindeutigkeit der BELEGTEN Blöcke (SQLite behandelt NULL als eigenständig,
+  -- deshalb der partielle Index — zwei freigegebene Blöcke mit gleicher Basis
+  -- sind erlaubt, weil sie wiederverwendbar sind).
+  CREATE UNIQUE INDEX idx_port_blocks_base_live ON port_blocks(base) WHERE released_at IS NULL;
+
+  -- Absicht, NICHT Zustand: welches Profil soll für dieses Feature betrieben
+  -- werden (FR-014/FR-023). Der tatsächliche Dienststatus wird erhoben.
+  CREATE TABLE feature_stacks (
+    feature_id TEXT PRIMARY KEY REFERENCES features(id) ON DELETE CASCADE,
+    profile    TEXT    NOT NULL CHECK (profile IN ('test','full')),
+    since      INTEGER NOT NULL
+  );
+
+  -- Manuelle Abnahme: Bestätigung/Ablehnung mit Zeitpunkt und Grund als
+  -- Historie, nicht überschreibend — mehrere Ablehnungen sind möglich
+  -- (FR-028/FR-029).
+  CREATE TABLE manual_test_decisions (
+    id         TEXT PRIMARY KEY,
+    feature_id TEXT    NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    decision   TEXT    NOT NULL CHECK (decision IN ('confirmed','rejected')),
+    reason     TEXT,                               -- Pflicht bei 'rejected'
+    decided_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_manual_test_decisions_feature ON manual_test_decisions(feature_id);
+
+  -- Profilkommandos + Dienstliste je Projekt (JSON, '{}' = kein Stack).
+  ALTER TABLE projects ADD COLUMN stack TEXT NOT NULL DEFAULT '{}';
+
+  -- Grund eines fehlgeschlagenen Aufräumens; NULL = kein offener Fehlschlag
+  -- (FR-035/FR-037).
+  ALTER TABLE features ADD COLUMN cleanup_error TEXT;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

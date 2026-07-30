@@ -23,6 +23,7 @@ import {
   ArrowRightIcon,
   RestartIcon,
   ReviewIcon,
+  FlaskIcon,
   type IconProps,
 } from './icons.js';
 
@@ -447,6 +448,9 @@ function FeatureCard({
         )}
         {/* Betrachtend (FR-007): das Portal öffnet nur eine Ansicht und wird nie gesperrt. */}
         {feature.integration === 'awaiting_human_review' && <OpenReviewButton featureId={feature.id} />}
+        {/* Die Entscheidung selbst fällt NUR in der Lane — dort ist die laufende
+            Anwendung, an der geprüft wird. Auf der Kachel steht der Weg dorthin. */}
+        {feature.integration === 'awaiting_manual_test' && <OpenTestingLaneButton />}
         {retryV && (
           <ActionButton
             verdict={retryV}
@@ -493,6 +497,19 @@ function FeatureCard({
         )}
       </ActionGroup>
     </div>
+  );
+}
+
+/** Sprung in die Testing-Lane; die Abnahme selbst geschieht dort (FR-030). */
+function OpenTestingLaneButton() {
+  const { dispatch } = useStore();
+  return (
+    <button
+      className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
+      onClick={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+    >
+      <FlaskIcon /> Testing-Lane öffnen
+    </button>
   );
 }
 

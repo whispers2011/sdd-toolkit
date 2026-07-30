@@ -28,6 +28,12 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   project_without_runs: { label: 'Projekt ohne Lauf', icon: '🕸', tone: 'text-zinc-400' },
   metering_conflict: { label: 'Messung widersprüchlich', icon: '⚖️', tone: 'text-red-400' },
   server_outage: { label: 'Server-Ausfall', icon: '🕳', tone: 'text-red-400' },
+  // Der Mensch ist am Zug, nichts ist kaputt — amber wie review_due-Verwandte.
+  manual_test_due: { label: 'Abnahme fällig', icon: '🧪', tone: 'text-amber-400' },
+  stack_failed: { label: 'Stack fehlgeschlagen', icon: '⛔', tone: 'text-red-400' },
+  worktree_cleanup_failed: { label: 'Aufräumen fehlgeschlagen', icon: '🧹', tone: 'text-red-400' },
+  // Kein Fehler, aber es liegt etwas herum, das Platte frisst.
+  orphan_worktree: { label: 'Verwaister Worktree', icon: '🗂', tone: 'text-amber-400' },
 };
 
 const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700';
@@ -45,17 +51,50 @@ const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc
  */
 function NextAction({
   featureId,
+  kind,
   ctx,
   onReview,
   onConsole,
+  onTestingLane,
+  onWorktrees,
   run,
 }: {
   featureId: string;
+  kind: AttentionKind;
   ctx: FeatureActionContext | null;
   onReview: (featureId: string) => void;
   onConsole: (featureId: string) => void;
+  onTestingLane: () => void;
+  onWorktrees: () => void;
   run: (key: string, fn: () => Promise<unknown>) => void;
 }) {
+  // Die Abnahme und ein fehlgeschlagener Stack werden dort erledigt, wo die
+  // laufende Anwendung steht — in der Lane (ui-contract §8).
+  if (ctx?.integration === 'awaiting_manual_test' || kind === 'manual_test_due' || kind === 'stack_failed') {
+    return (
+      <button onClick={onTestingLane} className={BTN}>
+        Testing-Lane
+      </button>
+    );
+  }
+
+  // Ein fehlgeschlagenes Aufräumen ist wiederholbar (FR-037) — direkt von hier.
+  if (kind === 'worktree_cleanup_failed') {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => run(`cleanup:${featureId}`, () => api.retryCleanup(featureId))}
+          className={BTN}
+        >
+          Aufräumen erneut anstoßen
+        </button>
+        <button onClick={onWorktrees} className={BTN}>
+          Worktrees
+        </button>
+      </div>
+    );
+  }
+
   if (ctx?.integration === 'awaiting_human_review') {
     return (
       <button onClick={() => onReview(featureId)} className={BTN}>
@@ -194,9 +233,12 @@ export function AttentionInbox() {
             {item.featureId && (
               <NextAction
                 featureId={item.featureId}
+                kind={item.kind}
                 ctx={featureActionContext(state, item.featureId)}
                 onReview={setPortalFeature}
                 onConsole={(id) => dispatch({ type: 'set_view', view: { kind: 'console', featureId: id } })}
+                onTestingLane={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+                onWorktrees={() => dispatch({ type: 'set_view', view: { kind: 'worktrees' } })}
                 run={runAction}
               />
             )}

@@ -560,6 +560,9 @@ export const INTEGRATION_STAGE_ORIGIN = {
   verify_failed: 'integration',
   review_gate: 'integration',
   gate_failed: 'integration',
+  // Die manuelle Abnahme sitzt in derselben Strecke wie das Review — die Lane ist
+  // die Bedienoberfläche dazu, nicht eine eigene Lebenszyklus-Stufe.
+  awaiting_manual_test: 'integration',
   awaiting_human_review: 'integration',
   queued: 'integration',
   merging: 'merge',

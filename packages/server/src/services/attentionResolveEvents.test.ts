@@ -514,6 +514,11 @@ describe('API — die beiden HTTP-Auflösewege', () => {
       orchestrator: { reconcileOpenAttention: () => {}, isGateRunning: () => false },
       mergeQueue: {},
       ptys: { forFeature: () => undefined, sendPrompt: () => {} },
+      // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
+      // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
+      stackService: { isRunning: () => false },
+      testingLane: { confirm: async () => {}, reject: async () => {} },
+      portBlockSize: 20,
       dataDir,
       webDir: null,
       port: 4899,

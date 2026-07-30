@@ -83,13 +83,20 @@ export function lifecycleCwdKind(trigger: LifecycleTrigger): 'worktree' | 'main'
 }
 
 /**
- * DIE eine Stelle, an der Umgebungsvariablen für Schritte entstehen. Genau sechs
+ * DIE eine Stelle, an der Umgebungsvariablen für Schritte entstehen. Genau acht
  * Schlüssel, immer alle vorhanden — nicht zutreffende Angaben sind der leere
  * String, nie ein Platzhalter und nie ein Wert aus einem anderen Vorgang. Damit
  * ist `set -u` in einem Kommando gefahrlos.
  *
- * Die zentrale Portvergabe ergänzt hier SDD_PORT_BASE und SDD_PROFILE; heute
- * darf sich kein Kommando darauf verlassen.
+ * SDD_PORT_BASE und SDD_PROFILE kommen aus der zentralen Portvergabe und werden
+ * HIER ergänzt — nicht in einem eigenen Umgebungsaufbau des StackService. Ein
+ * zweiter Weg zur Portvergabe oder zum Variablensatz ist ausgeschlossen
+ * (FR-007); Profilläufe rufen dieselbe Funktion.
+ *
+ * `[ -z "$SDD_PROFILE" ]` unterscheidet einen gewöhnlichen Schritt von einem
+ * Profillauf. Bestehende Kommandos, die die zwei neuen Schlüssel nicht
+ * verwenden, laufen unverändert: es wird nur hinzugefügt, kein bestehender
+ * Schlüssel ändert Name oder Bedeutung (FR-008, SC-007).
  */
 export function buildLifecycleEnv(ctx: LifecycleContext): Record<string, string> {
   return {
@@ -99,6 +106,8 @@ export function buildLifecycleEnv(ctx: LifecycleContext): Record<string, string>
     SDD_BRANCH: ctx.branch,
     SDD_PHASE: ctx.phase ?? '',
     SDD_STAGE: ctx.stage ?? '',
+    SDD_PORT_BASE: ctx.portBase === null ? '' : String(ctx.portBase),
+    SDD_PROFILE: ctx.profile ?? '',
   };
 }
 

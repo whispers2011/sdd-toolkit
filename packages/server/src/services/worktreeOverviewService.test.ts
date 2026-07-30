@@ -753,3 +753,198 @@ describe('WorktreeOverviewService.buildOverview (Integration)', () => {
     expect(after.groups[0]?.worktreeCount).toBe(0);
   });
 });
+
+// ---------- Größe, Portbereich, Plattenwarnung, verwaiste Worktrees ----------
+
+describe('WorktreeOverviewService — Platte und verwaiste Einträge', () => {
+  let repo: string;
+  let dataDir: string;
+  let db: DB;
+  let projects: ProjectRepo;
+  let features: FeatureRepo;
+  let worktrees: WorktreeManager;
+  let projectId: string;
+  let svc: WorktreeOverviewService;
+  let raised: { kind: string; message: string; id: string }[];
+  let resolved: string[];
+  let sizeFor: (path: string) => Promise<number | null>;
+  let freeBytes: number | null;
+
+  const ptys = { list: () => [] };
+
+  function build(): WorktreeOverviewService {
+    return new WorktreeOverviewService({
+      projects,
+      features,
+      ptys,
+      worktrees,
+      bus: { emitEvent: () => {} },
+      attention: {
+        raise: (a) => {
+          const item = { ...a, id: `att-${raised.length}` };
+          // Dedup wie im echten Repo: gleiche offene Meldung entsteht nicht doppelt.
+          const vorhanden = raised.find((r) => r.kind === a.kind && r.message === a.message);
+          if (vorhanden) return vorhanden;
+          raised.push(item);
+          return item;
+        },
+        listOpen: () => raised.filter((r) => !resolved.includes(r.id)),
+        resolve: (id) => {
+          resolved.push(id);
+          return true;
+        },
+      },
+      ports: { baseForWorktree: () => 21040, reconcile: () => 0 },
+      readDirSize: (p) => sizeFor(p),
+      diskFreeBytes: async () => freeBytes,
+      diskWarnBytes: 10 * 1024 ** 3,
+    });
+  }
+
+  beforeEach(() => {
+    repo = mkdtempSync(join(tmpdir(), 'sdd-wd-repo-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-wd-data-'));
+    raised = [];
+    resolved = [];
+    sizeFor = async () => 1_500_000_000;
+    freeBytes = 500 * 1024 ** 3;
+    sh(repo, ['init', '-b', 'main']);
+    sh(repo, ['config', 'user.email', 'test@test.local']);
+    sh(repo, ['config', 'user.name', 'Test']);
+    writeFileSync(join(repo, 'app.txt'), 'init\n');
+    sh(repo, ['add', '-A']);
+    sh(repo, ['commit', '-m', 'init']);
+
+    db = openMemoryDatabase();
+    projects = new ProjectRepo(db);
+    features = new FeatureRepo(db);
+    worktrees = new WorktreeManager(dataDir);
+    projectId = projects.create({
+      name: 'Demo',
+      path: repo,
+      defaultBranch: 'main',
+      color: null,
+      enabledPhases: [],
+      verifyCommands: [],
+      automation: {},
+      optimization: {},
+      mergeMode: 'ff',
+      editorCmd: null,
+      integrationMode: 'local',
+    }).id;
+    svc = build();
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+    db.close();
+  });
+
+  /** Ein Worktree ohne zugeordnetes Feature = verwaist. */
+  async function makeOrphan(name: string): Promise<string> {
+    return worktrees.create({
+      project: { id: projectId, name: 'Demo' },
+      projectPath: repo,
+      featureName: name,
+      branch: `chatlos/${name}`,
+      defaultBranch: 'main',
+    });
+  }
+
+  it('nennt je Eintrag eine Größe (FR-042)', async () => {
+    await makeOrphan('gross');
+    const overview = await svc.buildOverview({ refresh: true });
+    expect(overview.groups[0]?.worktrees[0]?.sizeBytes).toBe(1_500_000_000);
+  });
+
+  /** FR-044: „unbekannt" ist ein gültiger Wert, der Eintrag bleibt vollständig. */
+  it('lässt den Eintrag vollständig sichtbar, wenn die Größe nicht ermittelbar ist', async () => {
+    sizeFor = async () => null;
+    const wt = await makeOrphan('unbekannt');
+    const entry = (await svc.buildOverview({ refresh: true })).groups[0]?.worktrees[0];
+    expect(entry?.sizeBytes).toBeNull();
+    // Der Pfad kommt kanonisiert (macOS: /var → /private/var) — der Eintrag ist
+    // vollständig, das ist der Punkt.
+    expect(entry?.path).toContain(wt.replace('/private', ''));
+    expect(entry?.branch).toBe('chatlos/unbekannt');
+  });
+
+  it('lässt den Eintrag auch bei einem Fehler der Größenerhebung stehen', async () => {
+    sizeFor = () => Promise.reject(new Error('du kaputt'));
+    await makeOrphan('fehler');
+    const entry = (await svc.buildOverview({ refresh: true })).groups[0]?.worktrees[0];
+    expect(entry?.sizeBytes).toBeNull();
+    expect(entry?.error).toBeNull();
+  });
+
+  it('nennt den zugewiesenen Portbereich je Eintrag', async () => {
+    await makeOrphan('mitport');
+    expect((await svc.buildOverview({ refresh: true })).groups[0]?.worktrees[0]?.portBase).toBe(21040);
+  });
+
+  it('warnt NICHT, solange genug Platz frei ist', async () => {
+    const overview = await svc.buildOverview({ refresh: true });
+    expect(overview.disk).toEqual({ freeBytes: 500 * 1024 ** 3, warnBelowBytes: 10 * 1024 ** 3, warn: false });
+  });
+
+  it('warnt bei Unterschreiten der Schwelle und nennt den freien Platz (FR-043)', async () => {
+    freeBytes = 813 * 1024 ** 2;
+    const overview = await svc.buildOverview({ refresh: true });
+    expect(overview.disk.warn).toBe(true);
+    expect(overview.disk.freeBytes).toBe(813 * 1024 ** 2);
+  });
+
+  it('warnt nicht, wenn der freie Platz nicht ermittelbar ist', async () => {
+    freeBytes = null;
+    const overview = await svc.buildOverview({ refresh: true });
+    expect(overview.disk).toEqual({ freeBytes: null, warnBelowBytes: 10 * 1024 ** 3, warn: false });
+  });
+
+  /** FR-039/SC-011: aktiv melden, nicht nur in einer Liste führen. */
+  it('meldet jeden verwaisten Worktree als „Braucht dich" (FR-039)', async () => {
+    const wt = await makeOrphan('verwaist');
+    await svc.buildOverview({ refresh: true });
+    const item = raised.find((r) => r.kind === 'orphan_worktree');
+    expect(item).toBeDefined();
+    expect(item?.message).toContain(wt);
+    expect(item?.message).toContain('1,4 GB');
+  });
+
+  it('erzeugt je Erhebung keine Dublette', async () => {
+    await makeOrphan('einmal');
+    await svc.buildOverview({ refresh: true });
+    await svc.buildOverview({ refresh: true });
+    expect(raised.filter((r) => r.kind === 'orphan_worktree')).toHaveLength(1);
+  });
+
+  it('löst die Meldung auf, sobald der Eintrag verschwindet', async () => {
+    const wt = await makeOrphan('geht-weg');
+    await svc.buildOverview({ refresh: true });
+    const item = raised.find((r) => r.kind === 'orphan_worktree')!;
+
+    await worktrees.remove(repo, wt, { force: true });
+    await svc.buildOverview({ refresh: true });
+
+    expect(resolved).toContain(item.id);
+  });
+
+  it('meldet ein Feature-Worktree NICHT als verwaist', async () => {
+    const wt = await makeOrphan('gehoert-dazu');
+    features.create({
+      projectId,
+      name: 'gehoert-dazu',
+      branch: 'chatlos/gehoert-dazu',
+      worktreePath: wt,
+      phases: {},
+      integration: 'none',
+      integrationTarget: null,
+      automation: {},
+      optimization: {},
+      tasksDone: 0,
+      tasksTotal: 0,
+    });
+    await svc.buildOverview({ refresh: true });
+    expect(raised.filter((r) => r.kind === 'orphan_worktree')).toHaveLength(0);
+  });
+});

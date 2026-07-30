@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { featureProgressLabel } from '@sdd/shared';
+import { PORT_DEFAULTS, featureProgressLabel, formatPortBlock } from '@sdd/shared';
 import type {
   FileChangeKind,
   FileChangeState,
@@ -14,7 +14,7 @@ import type {
 import { api, WorktreeRemoveError } from '../api.js';
 import { useStore } from '../store.js';
 import { ConfirmDialog } from './Sidebar.js';
-import { ChevronDownIcon, WorktreeIcon } from './icons.js';
+import { ChevronDownIcon, WarningIcon, WorktreeIcon } from './icons.js';
 
 /** Kürzel + Tooltip je Änderungsart (ui-contract C3.2). */
 const KIND_MARK: Record<FileChangeKind, { mark: string; title: string; tone: string }> = {
@@ -168,6 +168,8 @@ export function WorktreeOverview() {
         </p>
       )}
 
+      {data?.disk.warn && <DiskWarning overview={data} />}
+
       {!data && !error && <p className="text-sm text-zinc-600">Lade Worktree-Übersicht …</p>}
 
       {data?.groups.length === 0 && (
@@ -282,6 +284,49 @@ function ProjectBlock({
   );
 }
 
+/**
+ * Plattenwarnung über den Projektblöcken (FR-043): freier Platz, dokumentierte
+ * Schwelle und die drei größten Worktrees — aus derselben Antwort, kein zweiter
+ * Abruf.
+ */
+function DiskWarning({ overview }: { overview: Overview }) {
+  const groesste = overview.groups
+    .flatMap((g) => g.worktrees)
+    .filter((e) => e.sizeBytes !== null)
+    .sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0))
+    .slice(0, 3);
+  return (
+    <p className="flex items-start gap-2 rounded border border-amber-900 bg-amber-950/40 px-4 py-2 text-sm text-amber-300">
+      <WarningIcon className="mt-0.5 shrink-0" />
+      <span>
+        <strong className="font-medium">Nur noch {formatSize(overview.disk.freeBytes)} frei</strong>{' '}
+        (Warnschwelle {formatSize(overview.disk.warnBelowBytes)}).
+        {groesste.length > 0 && (
+          <>
+            {' '}
+            Größte Worktrees:{' '}
+            {groesste.map((e, i) => (
+              <span key={e.id}>
+                {i > 0 && ' · '}
+                <code className="text-amber-200">{e.label}</code> {formatSize(e.sizeBytes)}
+              </span>
+            ))}
+          </>
+        )}
+      </span>
+    </p>
+  );
+}
+
+/** Größe in lesbarer Form; null = „unbekannt" (FR-044). */
+function formatSize(bytes: number | null): string {
+  if (bytes === null) return 'unbekannt';
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(1).replace('.', ',')} GB`;
+  const mb = bytes / 1024 ** 2;
+  return mb >= 1 ? `${Math.round(mb)} MB` : `${Math.round(bytes / 1024)} kB`;
+}
+
 /** Haupt-Checkout: erster, optisch abgesetzter Eintrag — nie mit Entfernen-Aktion (FR-026). */
 function MainRow({ main }: { main: MainCheckoutInfo }) {
   return (
@@ -358,6 +403,19 @@ function EntryRow({
         <span className="truncate text-xs text-zinc-600" title={entry.path}>
           {entry.path}
         </span>
+        {/* Größe und belegter Portbereich — „unbekannt" ist ein gültiger Wert und
+            lässt den Eintrag vollständig sichtbar (FR-042/FR-044). */}
+        <span
+          className={`shrink-0 text-xs tabular-nums ${entry.sizeBytes === null ? 'text-zinc-700' : 'text-zinc-500'}`}
+          title="Belegter Platz"
+        >
+          {formatSize(entry.sizeBytes)}
+        </span>
+        {entry.portBase !== null && (
+          <span className="shrink-0 text-xs tabular-nums text-zinc-600" title="Zugewiesener Portbereich">
+            {formatPortBlock(entry.portBase, PORT_DEFAULTS.blockSize)}
+          </span>
+        )}
         {hasFiles && (
           <span className="ml-auto shrink-0 text-xs text-zinc-500">
             {entry.changedFileCount === 0

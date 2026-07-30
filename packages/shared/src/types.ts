@@ -37,6 +37,8 @@ export type IntegrationStage =
   | 'verify_failed'
   | 'review_gate'
   | 'gate_failed'
+  /** Ein Mensch muss die laufende Anwendung abnehmen — VOR dem Review (FR-024). */
+  | 'awaiting_manual_test'
   | 'awaiting_human_review'
   | 'queued'
   | 'merging'
@@ -56,6 +58,8 @@ export interface AutomationSettings {
   autoMerge: boolean;
   /** Tool-/Kommando-Berechtigungen automatisch erteilen — keine Rückfragen im Feature-Lauf. */
   autoMode: boolean;
+  /** Manuelles Test-Gate: Halt auf 'awaiting_manual_test' vor dem Review (FR-025). */
+  manualTestGate: boolean;
 }
 
 export const LEVEL2_DEFAULTS: AutomationSettings = {
@@ -64,6 +68,8 @@ export const LEVEL2_DEFAULTS: AutomationSettings = {
   autoReviewAgents: false,
   autoMerge: false,
   autoMode: true,
+  // Stufe 2 hält zur Abnahme an (FR-026).
+  manualTestGate: true,
 };
 
 export const LEVEL3_DEFAULTS: AutomationSettings = {
@@ -72,6 +78,8 @@ export const LEVEL3_DEFAULTS: AutomationSettings = {
   autoReviewAgents: true,
   autoMerge: true,
   autoMode: true,
+  // Stufe 3 ist Autonomie — kein Halt zur Abnahme (FR-026).
+  manualTestGate: false,
 };
 
 /** Kontext-Strategie einer Downstream-Phase (Token-Reduktion, Feature "minimize-token-consumption"). */
@@ -113,6 +121,8 @@ export interface Project {
   editorCmd: string | null;
   /** local = direkt auf den Default-Branch mergen; pr = GitHub-PR via gh (WP13). */
   integrationMode: 'local' | 'pr';
+  /** Stack-Profile und Dienstliste; leere Konfiguration = kein Stack (FR-011/FR-013). */
+  stack: StackConfig;
   createdAt: number;
 }
 
@@ -138,6 +148,8 @@ export interface Feature {
   jiraRef?: JiraRef;
   /** Zeitpunkt der letzten Zurückweisung im Review; null = keine offene Zurückweisung (FR-026). */
   reviewRejectedAt: number | null;
+  /** Grund eines fehlgeschlagenen Aufräumens; null = kein offener Fehlschlag (FR-035). */
+  cleanupError: string | null;
   createdAt: number;
   archivedAt: number | null;
 }
@@ -243,7 +255,15 @@ export type AttentionKind =
   /** Der Server war unerwartet weg; die Meldung nennt Fenster, Dauer und betroffene Läufe (FR-007). */
   | 'server_outage'
   /** Ein blockierender Lebenszyklus-Schritt ist fehlgeschlagen (FR-023). */
-  | 'lifecycle_step_failed';
+  | 'lifecycle_step_failed'
+  /** Stufe erreicht: ein Mensch muss die laufende Anwendung abnehmen (FR-024/FR-030). */
+  | 'manual_test_due'
+  /** Hoch- oder Herunterfahren eines Stack-Profils fehlgeschlagen (FR-019). */
+  | 'stack_failed'
+  /** Entfernen des Worktrees nach dem Merge fehlgeschlagen (FR-035). */
+  | 'worktree_cleanup_failed'
+  /** Worktree ohne zugeordnetes Feature (FR-039). */
+  | 'orphan_worktree';
 
 export interface AttentionItem {
   id: string;
@@ -567,6 +587,7 @@ export type LifecycleTriggerKind = (typeof LIFECYCLE_TRIGGER_KINDS)[number];
 export const INTEGRATION_STAGE_IDS = [
   'verify',
   'review_gate',
+  'manual_test',
   'human_review',
   'merge_queue',
   'merged',
@@ -618,6 +639,10 @@ export interface LifecycleContext {
   phase: FeaturePhase | null;
   /** null, wenn am Auslöser fachlich keine Stufe existiert. */
   stage: LifecycleStageId | null;
+  /** Anfang des exklusiven Portblocks; null = kein Block bekannt (FR-007). */
+  portBase: number | null;
+  /** Gemeintes Stack-Profil; null bei einem gewöhnlichen Schritt (FR-018). */
+  profile: StackProfileName | null;
 }
 
 /** Effektive Schritt-Sicht eines Features (per-Feature-Auswahl + jüngster Lauf). */
@@ -756,6 +781,10 @@ export interface WorktreeEntry {
   files: WorktreeFileChange[];
   filesTruncated: boolean;
   warnings: WorktreeWarning[];
+  /** Belegter Platz in Bytes; null = nicht ermittelbar („unbekannt", FR-044). */
+  sizeBytes: number | null;
+  /** Anfang des zugewiesenen Portblocks; null = keiner vergeben. */
+  portBase: number | null;
   /** Erhebung dieses Eintrags fehlgeschlagen — der Eintrag bleibt trotzdem sichtbar. */
   error: string | null;
 }
@@ -775,10 +804,155 @@ export interface WorktreeProjectGroup {
   error: string | null;
 }
 
+/** Plattenplatz des Datenträgers, auf dem die Worktrees liegen (FR-043). */
+export interface WorktreeDiskInfo {
+  /** Freier Platz des Datenträgers des Datenverzeichnisses; null = nicht ermittelbar. */
+  freeBytes: number | null;
+  /** Dokumentierte Warnschwelle (config.diskWarnBytes, Vorgabe 10 GiB). */
+  warnBelowBytes: number;
+  /** freeBytes !== null && freeBytes < warnBelowBytes. */
+  warn: boolean;
+}
+
 /** Wurzel der Antwort von GET /api/worktrees. */
 export interface WorktreeOverview {
   groups: WorktreeProjectGroup[];
   /** Erhebungszeitpunkt (ms) — die Oberfläche weist ihn als „Stand" aus. */
+  collectedAt: number;
+  /** Freier Plattenplatz und Warnschwelle (FR-043). */
+  disk: WorktreeDiskInfo;
+}
+
+// ---------- Portvergabe, Stack-Profile, Testing-Lane ----------
+// (Feature „ersetzbare-kernschritte-stack-profile-testing-lane")
+
+export type PortBlockOwnerKind = 'worktree' | 'project';
+
+/**
+ * Der einem Worktree — oder einem Projekt, für projektweit geteilte Dienste —
+ * zugewiesene exklusive Block von Ports. EINZIGE Quelle der Portvergabe
+ * (FR-001); geschrieben ausschließlich vom PortAllocator.
+ */
+export interface PortBlock {
+  ownerKind: PortBlockOwnerKind;
+  /** worktree: kanonischer Pfad (realpath); project: projectId. */
+  ownerId: string;
+  /** Immer gesetzt — auch bei ownerKind 'worktree' (Zuordnung in der Übersicht). */
+  projectId: string;
+  /** Anfang des Blocks; $SDD_PORT_BASE. */
+  base: number;
+  /**
+   * Breite; zum Zeitpunkt der Zuweisung festgehalten, damit eine Änderung der
+   * Vorgabe bestehende Blöcke nicht rückwirkend verschiebt (FR-004).
+   */
+  span: number;
+  allocatedAt: number;
+  /** null = belegt; gesetzt = freigegeben und wiederverwendbar (FR-005). */
+  releasedAt: number | null;
+}
+
+export const STACK_PROFILE_NAMES = ['test', 'full', 'down'] as const;
+export type StackProfileName = (typeof STACK_PROFILE_NAMES)[number];
+
+/** Ein Profil mit dem je Projekt konfigurierten Kommando (FR-011/FR-012). */
+export interface StackProfile {
+  /** Feature-eigenes Kommando; leer = Profil nicht konfiguriert. */
+  command: string;
+  /** Kommando für projektweit geteilte Dienste; null = keine geteilten Dienste. */
+  sharedCommand: string | null;
+  /** Zeitlimit in ms; null = DEFAULT_STEP_TIMEOUT_MS (15 min, wie bei Schritten). */
+  timeoutMs: number | null;
+}
+
+/** Ein einzelner Bestandteil eines Stacks. */
+export interface StackService {
+  name: string;
+  /** Port = portBase + portOffset; muss kleiner als die Blockbreite sein. */
+  portOffset: number;
+  /** 'feature' = je Feature eigener Dienst; 'shared' = projektweit genau einmal (FR-020). */
+  scope: 'feature' | 'shared';
+  /** Zustandsbehaftet (Datenbank, Dateiablage) — MUSS 'feature' sein (FR-021). */
+  stateful: boolean;
+  /** Haupteingang der Anwendung; höchstens einer je Projekt (Quelle der klickbaren URL). */
+  primary: boolean;
+}
+
+/** Stack-Konfiguration eines Projekts; alles leer/null = kein Stack (FR-013). */
+export interface StackConfig {
+  test: StackProfile | null;
+  full: StackProfile | null;
+  /** `command` baut ab EINSCHLIESSLICH der Datenablagen (FR-017). */
+  down: StackProfile | null;
+  /** Optional: Dienste anhalten, Daten behalten — die Lane-Aktion „Stoppen". */
+  stopCommand: string | null;
+  services: StackService[];
+}
+
+/** Persistierte Absicht: welches Profil soll für dieses Feature betrieben werden? */
+export interface FeatureStackIntent {
+  featureId: string;
+  profile: Extract<StackProfileName, 'test' | 'full'>;
+  since: number;
+}
+
+export type StackServiceStatus = 'up' | 'down' | 'unknown';
+
+export interface StackServiceView {
+  name: string;
+  /** null = kein Port ableitbar (kein Block oder nichts konfiguriert). */
+  port: number | null;
+  scope: StackService['scope'];
+  stateful: boolean;
+  primary: boolean;
+  status: StackServiceStatus;
+}
+
+/**
+ * Erhobener Stack-Zustand eines Features. Der Status kommt IMMER aus einer
+ * frischen Probe, nie aus einem gemerkten Stand (FR-023).
+ */
+export interface FeatureStackView {
+  /** Projekt hat mindestens ein Profil und mindestens einen Dienst (FR-013/FR-033). */
+  configured: boolean;
+  /** Betriebenes Profil laut Absicht; null = keines. */
+  profile: 'test' | 'full' | null;
+  portBase: number | null;
+  /** Nur wenn der Haupteingang erreichbar ist — sonst null (FR-031/FR-033). */
+  url: string | null;
+  services: StackServiceView[];
+  /** Erhebungszeitpunkt der Statusprobe (die Oberfläche weist ihn als „Stand" aus). */
+  collectedAt: number;
+}
+
+/** Die menschliche Entscheidung an der Stufe `awaiting_manual_test`. */
+export interface ManualTestDecision {
+  featureId: string;
+  decision: 'confirmed' | 'rejected';
+  /** Pflicht bei 'rejected' (FR-029); null bei Bestätigung. */
+  reason: string | null;
+  decidedAt: number;
+}
+
+/** Zusammenstellung, die ein Mensch zur manuellen Abnahme braucht (FR-030). */
+export interface TestingLaneEntry {
+  featureId: string;
+  featureName: string;
+  branch: string;
+  /** null = kein Arbeitsverzeichnis (dann keine Stack-Aktion möglich). */
+  worktreePath: string | null;
+  createdAt: number;
+  stage: IntegrationStage;
+  stack: FeatureStackView;
+  /** Jüngste Entscheidung, falls es schon eine gab (z. B. frühere Ablehnung). */
+  lastDecision: ManualTestDecision | null;
+}
+
+/** Wurzel der Antwort von GET /api/testing-lane. */
+export interface TestingLaneView {
+  /** Features des Projekts auf der Stufe `awaiting_manual_test`. */
+  awaitingManualTest: TestingLaneEntry[];
+  /** Features mit betriebenem Stack, die NICHT auf der Stufe stehen. */
+  running: TestingLaneEntry[];
   collectedAt: number;
 }
 
