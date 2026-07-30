@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Feature } from '@sdd/shared';
+import { INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { isShowCompleted, useStore } from '../store.js';
 import { ProjectSettings } from './ProjectSettings.js';
@@ -419,7 +420,14 @@ function FeatureBadge({ feature }: { feature: Feature }) {
     );
   }
   if (feature.integration !== 'none') {
-    return <span className="ml-auto truncate text-xs text-sky-500">{feature.integration}</span>;
+    // Aus dem Katalog statt roh und pauschal Sky (FR-001a, SC-001).
+    return (
+      <span
+        className={`ml-auto truncate text-xs ${INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]}`}
+      >
+        {INTEGRATION_STAGE_META[feature.integration].label}
+      </span>
+    );
   }
   if (feature.tasksTotal > 0) {
     return (

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FEATURE_PHASES, evaluateAction } from '@sdd/shared';
+import { FEATURE_PHASES, evaluateAction, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api } from '../api.js';
 import { featureActionContext, useStore } from '../store.js';
 import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
@@ -372,7 +372,16 @@ function PhaseStrip({ featureId }: { featureId: string }) {
         ⇥ Integrieren
       </ActionButton>
       {feature.integration !== 'none' && (
-        <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-sky-400">{feature.integration}</span>
+        // Beschriftung und Ton aus dem geteilten Katalog: hier stand der Rohbezeichner
+        // in Sky-Blau, der Farbe für laufende Vorgänge — „keine Verifikation
+        // konfiguriert" hätte damit wie Fortschritt gelesen (FR-001a, SC-001).
+        <span
+          className={`rounded bg-zinc-800 px-2 py-0.5 text-xs ${
+            INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]
+          }`}
+        >
+          {INTEGRATION_STAGE_META[feature.integration].label}
+        </span>
       )}
     </ActionGroup>
   );
