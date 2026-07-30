@@ -551,7 +551,12 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
 
     expect(result.started).toBe(true);
     // Die Übergabe an den Menschen unterbleibt — und damit auch die Review-Meldung.
-    expect(features.get(feature.id)?.integration).toBe('verifying');
+    // Worum es hier geht: die Stufe wechselt NICHT zu `awaiting_human_review`. Der Name der
+    // Zwischenstufe hat sich am 30.07.2026 geändert: das Testprojekt hat keine
+    // `verifyCommands`, und seit „Ehrlichkeit vor dem Merge" heisst dieser Zustand ehrlich
+    // `verification_unconfigured` statt `verifying` — ungeprüft darf nicht wie geprüft aussehen.
+    expect(features.get(feature.id)?.integration).not.toBe('awaiting_human_review');
+    expect(features.get(feature.id)?.integration).toBe('verification_unconfigured');
     expect(trail()).toEqual(['vor-verify']);
     expect(attention.listOpen(projectId).some((i) => i.kind === 'review_due')).toBe(false);
     const items = stepItems();
