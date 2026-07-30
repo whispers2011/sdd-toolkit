@@ -664,6 +664,13 @@ export async function buildServer(deps: ApiDeps) {
     return deps.features.get(req.params.id);
   });
 
+  app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/reopen', (req) => {
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_reopen', req.params.id, { phase });
+    deps.orchestrator.reopen(req.params.id, phase);
+    return deps.features.get(req.params.id);
+  });
+
   app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/discard', (req) => {
     const phase = validatePhase(req.params.phase);
     actionGuard.assertAllowed('phase_discard', req.params.id, { phase });

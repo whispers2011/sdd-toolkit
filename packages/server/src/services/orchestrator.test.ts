@@ -511,6 +511,62 @@ describe('Orchestrator — Telemetrie schlägt Transkript', () => {
     expect(usage.outputTokens).toBe(20); // nur das Ereignis im Fenster
   });
 
+  /**
+   * Kern des Fixes vom 30.07.2026: die Messung wird fortgeschrieben, nicht neu summiert.
+   * Vorher summierte jeder Nachtrag den Puffer von Grund auf — und traf einen, den der
+   * Kehraus inzwischen beschnitten hatte. Neun Läufe wurden so um Faktor 2,9–16,8 nach
+   * unten geschrieben; einer verlor sogar seinen Preis, weil die Messung ganz auf das
+   * Transkript zurückfiel.
+   */
+  describe('Telemetrie-Summe ist monoton', () => {
+    /** Direkter Zugriff auf die Messung — der Nachtrag hängt sonst an Timern. */
+    const messen = (orch: unknown, session: unknown, running: unknown, until: number) =>
+      (
+        orch as {
+          meterFromTelemetry(s: unknown, r: unknown, u: number): Record<string, number | null> | null;
+        }
+      ).meterFromTelemetry(session, running, until);
+
+    it('hält die Zahl, wenn der Puffer zwischen zwei Messungen geleert wird', () => {
+      const events: unknown[] = [
+        apiEvent({ requestId: 'a', at: 2_000 }),
+        apiEvent({ requestId: 'b', at: 3_000 }),
+      ];
+      const { orch, session, running } = withTelemetry(events);
+
+      const erst = messen(orch, session, running, 4_000);
+      expect(erst?.tokens).toBe(200); // 2 × (10+20+30+40)
+
+      // Der Kehraus hat zugeschlagen — der Puffer ist leer.
+      events.length = 0;
+      const zweit = messen(orch, session, running, 4_000);
+
+      expect(zweit?.tokens).toBe(200); // unverändert, NICHT 0 und nicht null
+      expect(zweit?.costMicros).toBe(1_000);
+    });
+
+    it('zählt neue Meldungen dazu, jede aber nur einmal (FR-006)', () => {
+      const events: unknown[] = [apiEvent({ requestId: 'a', at: 2_000 })];
+      const { orch, session, running } = withTelemetry(events);
+
+      expect(messen(orch, session, running, 9_000)?.tokens).toBe(100);
+
+      // Dieselbe Meldung erneut im Puffer plus eine echte neue.
+      events.push(apiEvent({ requestId: 'a', at: 2_000 }), apiEvent({ requestId: 'c', at: 5_000 }));
+
+      expect(messen(orch, session, running, 9_000)?.tokens).toBe(200); // 100 + 100, 'a' nicht doppelt
+    });
+
+    it('trennt die Summen zweier Läufe', () => {
+      const events: unknown[] = [apiEvent({ requestId: 'a', at: 2_000 })];
+      const { orch, session, running } = withTelemetry(events);
+      const zweiterLauf = { ...running, executionId: 'e2' };
+
+      expect(messen(orch, session, running, 9_000)?.tokens).toBe(100);
+      expect(messen(orch, session, zweiterLauf, 9_000)?.tokens).toBe(100); // eigener Akkumulator
+    });
+  });
+
   it('weist ohne Subagenten keinen Subagenten-Anteil aus (FR-010, kein Null-Platzhalter)', () => {
     const { orch, session, running, finishWithUsage } = withTelemetry([apiEvent({ origin: 'main' })]);
     (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
@@ -739,5 +795,89 @@ describe('Orchestrator — Dokument-Verweis im Phasenauftrag', () => {
 
     expect(listDocuments).toHaveBeenCalledTimes(2); // nicht aus dem Prozessspeicher
     expect(listDocuments).toHaveBeenCalledWith('f1');
+  });
+});
+
+/**
+ * Befund A12 (30.07.2026): eine implement-Phase galt nach 30 Sekunden als fertig und
+ * freigegeben, während der Agent noch 37 Minuten weiterarbeitete — ungezählt und ohne
+ * jeden Hinweis in der Datenbank. Sichtbar war das allein an der Ausgabe der Session.
+ */
+describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
+  const JETZT = 10_000_000;
+
+  function setupZuordnung(session: Partial<Record<string, unknown>>) {
+    const raise = vi.fn((item: Record<string, unknown>) => ({ id: 'a1', ...item }));
+    const live = {
+      id: 's1',
+      projectId: 'p1',
+      featureId: 'f1',
+      kind: 'feature',
+      exited: false,
+      startedAt: JETZT - 10 * 60_000,
+      lastOutputAt: JETZT - 5_000,
+      ...session,
+    };
+    const deps = {
+      features: { get: () => makeFeature(), savePhases: vi.fn() },
+      projects: { get: () => ({ id: 'p1', path: '/p', defaultBranch: 'main', enabledPhases: [] }) },
+      attention: { raise, resolveFor: vi.fn(), listOpen: () => [] },
+      executions: { start: vi.fn(), finishWithUsage: vi.fn(), updateTelemetry: vi.fn() },
+      sessions: { end: vi.fn() },
+      settings: {
+        getAutomation: () => ({ autoProgressUntil: 'off', autoVerify: false, autoMode: true }),
+        getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
+      },
+      ptys: { list: () => [live], forFeature: () => live },
+      worktrees: {},
+      knowledge: { materializeForFeature: () => ({ preamble: '' }) },
+      agentGate: { hasAgentsFor: () => false },
+      dataDir: '/tmp',
+    } as unknown as OrchestratorDeps;
+    return { orch: new Orchestrator(deps), raise };
+  }
+
+  it('meldet eine schreibende Session, für die kein Schritt offen ist', () => {
+    const { orch, raise } = setupZuordnung({});
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).toHaveBeenCalledTimes(1);
+    expect((raise.mock.calls[0]![0] as { message: string }).message).toContain('kein Schritt ist offen');
+  });
+
+  it('meldet dieselbe Session nur einmal', () => {
+    const { orch, raise } = setupZuordnung({});
+    orch.checkWorkWithoutRun(JETZT);
+    orch.checkWorkWithoutRun(JETZT + 60_000);
+    expect(raise).toHaveBeenCalledTimes(1);
+  });
+
+  it('schweigt, wenn die Ausgabe längst ruht (Agent ist fertig)', () => {
+    const { orch, raise } = setupZuordnung({ lastOutputAt: JETZT - 10 * 60_000 });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('schweigt in der Anlaufzeit einer frischen Session', () => {
+    const { orch, raise } = setupZuordnung({ startedAt: JETZT - 30_000 });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('schweigt, wenn nie Ausgabe kam', () => {
+    const { orch, raise } = setupZuordnung({ lastOutputAt: 0 });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('schweigt bei einer beendeten Session', () => {
+    const { orch, raise } = setupZuordnung({ exited: true });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
+  });
+
+  it('schweigt bei Chat-Sessions — die haben keine Phasen', () => {
+    const { orch, raise } = setupZuordnung({ kind: 'chat_work' });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
   });
 });

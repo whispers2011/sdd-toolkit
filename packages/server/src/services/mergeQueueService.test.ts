@@ -32,12 +32,16 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   let svc: MergeQueueService;
   let projectId: string;
 
+  /** Von Tests gesetzt, die eine lebende Agent-Session brauchen; sonst gibt es keine. */
+  let aktiveSession: { exited: boolean; lastOutputAt: number } | undefined;
+
   const ptysStub = {
-    forFeature: () => undefined,
+    forFeature: () => aktiveSession,
     snapshots: { remove: () => {} },
   } as unknown as PtySessionManager;
 
   beforeEach(() => {
+    aktiveSession = undefined;
     repo = mkdtempSync(join(tmpdir(), 'sdd-mq-repo-'));
     dataDir = mkdtempSync(join(tmpdir(), 'sdd-mq-data-'));
     sh(repo, ['init', '-b', 'main']);
@@ -369,6 +373,60 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     features.setTasks(feature.id, 1, 56);
     const result = await svc.beginIntegration(feature.id);
     expect(result.started).toBe(true);
+  });
+
+  /**
+   * Befund A12 (30.07.2026): eine implement-Phase galt nach 30 s als fertig und
+   * freigegeben, während der Agent noch 37 Minuten weiterarbeitete. Der automatische
+   * Integrationsstart wurde damals nur zufällig aufgehalten (0 von 50 Aufgaben
+   * erledigt) — mit einer einzigen abgehakten Aufgabe hätte die Strecke committet und
+   * gemergt, während der Agent dieselben Dateien schrieb. Das ist die Konstellation
+   * des Datenverlusts vom 24.07.2026.
+   */
+  describe('integriert nicht, während der Agent noch schreibt', () => {
+    it('lehnt den Start ab, solange Ausgabe fliesst — und lässt die Tür offen', async () => {
+      const { feature, wt } = await makeReviewReadyFeature('agent-schreibt-noch');
+      features.setIntegration(feature.id, 'none');
+      features.setTasks(feature.id, 12, 50);
+      // Arbeit mitten im Schreiben — genau das darf die Integration nicht festschreiben.
+      writeFileSync(join(wt, 'halbfertig.txt'), 'Zeile 1\n');
+      aktiveSession = { exited: false, lastOutputAt: Date.now() };
+
+      const result = await svc.beginIntegration(feature.id);
+
+      expect(result.started).toBe(false);
+      expect(result.retryable).toBe(true);
+      expect(result.reason).toContain('arbeitet noch');
+      expect(features.get(feature.id)?.integration).toBe('none'); // Zustand unberührt
+      expect(sh(wt, ['status', '--porcelain'])).toContain('halbfertig.txt'); // NICHT committet
+    });
+
+    it('lässt durch, sobald die Ausgabe lange genug ruht', async () => {
+      const { feature } = await makeReviewReadyFeature('agent-ist-still');
+      features.setIntegration(feature.id, 'none');
+      features.setTasks(feature.id, 12, 50);
+      aktiveSession = { exited: false, lastOutputAt: Date.now() - 60_000 };
+
+      expect((await svc.beginIntegration(feature.id)).started).toBe(true);
+    });
+
+    it('lässt durch, wenn die Session beendet ist', async () => {
+      const { feature } = await makeReviewReadyFeature('session-beendet');
+      features.setIntegration(feature.id, 'none');
+      features.setTasks(feature.id, 12, 50);
+      aktiveSession = { exited: true, lastOutputAt: Date.now() };
+
+      expect((await svc.beginIntegration(feature.id)).started).toBe(true);
+    });
+
+    it('lässt durch, wenn nie Ausgabe kam (frische Session ohne Arbeit)', async () => {
+      const { feature } = await makeReviewReadyFeature('nie-ausgabe');
+      features.setIntegration(feature.id, 'none');
+      features.setTasks(feature.id, 12, 50);
+      aktiveSession = { exited: false, lastOutputAt: 0 };
+
+      expect((await svc.beginIntegration(feature.id)).started).toBe(true);
+    });
   });
 
   it('lehnt ein bereits integrierendes Feature ab', async () => {

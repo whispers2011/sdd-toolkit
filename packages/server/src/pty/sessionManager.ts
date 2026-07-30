@@ -69,6 +69,21 @@ export interface LiveSession {
    * hat, und würde eine Session abräumen, während davor jemand liest und nachdenkt.
    */
   lastUsedAt: number;
+  /**
+   * Letzte Ausgabe der Session — AUSSCHLIESSLICH aus `pty.onData`, ohne jede
+   * Nutzerzuwendung. Beantwortet die Frage „arbeitet der Agent gerade?", während
+   * `lastUsedAt` die Frage „braucht die Session noch jemand?" beantwortet und
+   * `lastActiveAt` die Grid-Sortierung trägt.
+   *
+   * Drei Felder für drei Fragen, absichtlich getrennt: am 28.07.2026 hat der
+   * Leerlauf-Reaper `lastActiveAt` als Lebensbeweis benutzt, für den es nie gebaut
+   * war, und Sessions mitten in der Arbeit abgeräumt. Am 30.07.2026 galt eine
+   * implement-Phase nach 30 Sekunden als fertig, während der Agent noch 37 Minuten
+   * weiterarbeitete — sichtbar allein an der Ausgabe.
+   */
+  lastOutputAt: number;
+  /** Startzeitpunkt dieser Session — unveränderlich, für Anlauf-Karenzen. */
+  startedAt: number;
 }
 
 /**
@@ -206,6 +221,8 @@ export class PtySessionManager {
       readyTimer: null,
       lastActiveAt: Date.now(),
       lastUsedAt: Date.now(),
+      lastOutputAt: 0, // noch keine Ausgabe gesehen
+      startedAt: Date.now(),
     };
     this.sessions.set(id, session);
 
@@ -218,6 +235,7 @@ export class PtySessionManager {
       // „arbeitet nicht" und beendete Sessions mitten im Denken oder in einem langen
       // Build. Solange Ausgabe fließt, lebt die Session.
       session.lastUsedAt = Date.now();
+      session.lastOutputAt = session.lastUsedAt;
       for (const sub of session.subscribers) {
         if (sub.focused) {
           sub.send(data);

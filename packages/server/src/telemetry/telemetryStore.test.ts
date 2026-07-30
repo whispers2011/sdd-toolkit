@@ -99,6 +99,64 @@ describe('TelemetryStore', () => {
     expect(store.eventsFor('sess')).toHaveLength(0);
   });
 
+  /**
+   * Am 30.07.2026 verlor ein 33-Minuten-Lauf ~83 % seines Verbrauchs, weil der Kehraus
+   * seine frühen Meldungen verwarf, bevor der Lauf sie zum ersten Mal verrechnen konnte.
+   * „Kein offener Lauf mehr" ist eine Frage der Zuordnung, nicht des Alters.
+   */
+  describe('offener Lauf schützt seine Meldungen vor dem Kehraus', () => {
+    it('behält Ereignisse eines angemeldeten Laufs, auch weit hinter dem Nachlauffenster', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'früh', at: 100_000 })]);
+
+      // Der Lauf läuft noch — eine Stunde später gilt das immer noch.
+      vi.setSystemTime(100_000 + 60 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(1);
+    });
+
+    it('gibt den Puffer nach dem Abmelden wieder frei', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'alt', at: 100_000 })]);
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+      expect(store.eventsFor('sess')).toHaveLength(1);
+
+      store.release('sess');
+      store.sweep();
+      expect(store.eventsFor('sess')).toHaveLength(0);
+    });
+
+    it('schützt nur die angemeldete Marke, nicht die Nachbarn', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'meins', at: 100_000 })]);
+      store.ingest([ev({ requestId: 'fremd', at: 100_000, sddSessionId: 'andere' })]);
+
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(1);
+      expect(store.eventsFor('andere')).toHaveLength(0);
+    });
+
+    it('forget meldet den Lauf mit ab — danach greift der Kehraus wieder', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'a', at: 100_000 })]);
+      store.forget('sess');
+
+      store.ingest([ev({ requestId: 'b', at: 100_000 })]);
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(0);
+    });
+  });
+
   it('meldet einen unbekannten Schlüssel als leer statt zu werfen', () => {
     expect(store.eventsFor('gibtsnicht')).toEqual([]);
   });

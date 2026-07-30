@@ -31,6 +31,8 @@ export interface TelemetryStats {
 
 export class TelemetryStore {
   private buffers = new Map<string, Buffer>();
+  /** Marken mit einem offenen Lauf — ihr Puffer wird nicht nach Alter geleert. */
+  private held = new Set<string>();
   private eventsReceived = 0;
   private lastEventAt: number | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
@@ -76,9 +78,26 @@ export class TelemetryStore {
     return this.buffers.get(key)?.events ?? [];
   }
 
+  /**
+   * Einen offenen Lauf anmelden: solange er läuft, darf `sweep()` seine Ereignisse
+   * nicht nach Alter verwerfen. Ohne diese Sperre verlor ein Lauf alles, was älter
+   * als das Nachlauffenster war, BEVOR er überhaupt einmal verrechnet wurde — bei
+   * einem 33-Minuten-Lauf am 30.07.2026 waren das ~83 % seines Verbrauchs
+   * (6'578'097 gemeldet gegen 39'472'755 im Transkript gemessen).
+   */
+  hold(key: string): void {
+    this.held.add(key);
+  }
+
+  /** Lauf abgemeldet: ab jetzt gilt für diese Marke wieder der normale Kehraus. */
+  release(key: string): void {
+    this.held.delete(key);
+  }
+
   /** Puffer einer beendeten Session vollständig abräumen. */
   forget(key: string): void {
     this.buffers.delete(key);
+    this.held.delete(key);
   }
 
   stats(): TelemetryStats {
@@ -87,12 +106,23 @@ export class TelemetryStore {
 
   /**
    * Kehraus: alles verwerfen, was kein offener Lauf mehr beanspruchen kann.
-   * Ereignisse älter als das Nachlauffenster können keinem Lauf mehr zugerechnet
-   * werden — ein Lauf gilt spätestens dann als endgültig gemessen (FR-012).
+   *
+   * „Kein offener Lauf mehr" ist eine Frage der Zuordnung, nicht des Alters — genau
+   * hier lag der Fehler bis zum 30.07.2026. Das Nachlauffenster (5 min) galt als
+   * Verfallsdatum für JEDES Ereignis, obwohl ein laufender Lauf beliebig lange dauern
+   * kann: implement-Läufe des Tages liefen 33 bis 76 Minuten. Ihre frühen Ereignisse
+   * wurden also verworfen, bevor der Lauf sie zum ersten Mal verrechnen konnte, und
+   * der Nachtrag am Fensterende summierte nur noch den Rest — neun Läufe wurden so
+   * um Faktor 2,9 bis 16,8 nach unten geschrieben.
+   *
+   * Ereignisse eines angemeldeten Laufs (`hold`) bleiben deshalb liegen, bis er
+   * abgemeldet ist (`release`/`forget` am Ende des Nachlauffensters). Die
+   * Mengenobergrenze `maxEventsPerKey` bleibt als Speicherdeckel bestehen (FR-030).
    */
   sweep(now = Date.now()): void {
     const cutoff = now - TELEMETRY_GRACE_MS;
     for (const [key, buf] of this.buffers) {
+      if (this.held.has(key)) continue;
       const keep = buf.events.filter((e) => e.at >= cutoff);
       if (keep.length === buf.events.length) continue;
       if (keep.length === 0) {

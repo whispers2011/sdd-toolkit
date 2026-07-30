@@ -420,6 +420,12 @@ export interface ExecutionUsageInput {
   telemetryFinalAt?: number | null;
 }
 
+/**
+ * Ergebnis eines Telemetrie-Nachtrags. `applied: false` heisst: die vorhandene Zahl
+ * war besser und bleibt stehen — der Grund gehört gemeldet, nicht verschluckt.
+ */
+export type TelemetryUpdateOutcome = { applied: true } | { applied: false; reason: string };
+
 export class ExecutionRepo {
   constructor(private db: DB) {}
 
@@ -485,8 +491,44 @@ export class ExecutionRepo {
    * finished_at bleiben unangetastet — der Lauf ist fertig, seine Zahl wird nur
    * vervollständigt. `telemetry_final_at` bleibt ebenfalls stehen, damit das
    * Endgültigkeitsfenster durch einen Nachtrag nicht wandert (FR-012).
+   *
+   * Ein Nachtrag darf eine Messung nur VERVOLLSTÄNDIGEN, nie verschlechtern.
+   * Am 30.07.2026 wurde beobachtet, dass genau das passierte: der Nachtrag am Ende
+   * des Nachlauffensters summiert das Telemetrie-Fenster neu, findet aber einen
+   * Puffer, den `telemetryStore.sweep()` inzwischen um alles älter als 5 Minuten
+   * beschnitten hat. Neun Läufe wurden so um Faktor 2,9–16,8 nach unten
+   * geschrieben (uQ_RAMEn: 6'578'097 → 568'955 Tokens, $3.80 → $0.33); lag der
+   * Puffer ganz leer, fiel die Messung auf das Transkript zurück und verlor dabei
+   * den Preis (tMvPe72V: 272'685 → 5'947'193 Tokens, $0.25 → keine Kosten).
+   * Ergebnis war eine Zahl, die nicht mehr mit dem Aufwand stieg — der längste
+   * implement-Lauf des Tages wies weniger aus als der mittlere.
+   *
+   * Deshalb zwei Sperren. Sie ersetzen den eigentlichen Fix (monotoner Akkumulator
+   * je requestId + Sweep an der Lauflaufzeit statt am Alter) NICHT, machen aber aus
+   * stiller Beschädigung ein sichtbares Signal.
    */
-  updateTelemetry(id: string, usage: ExecutionUsageInput): void {
+  updateTelemetry(id: string, usage: ExecutionUsageInput): TelemetryUpdateOutcome {
+    const vorher = this.db.prepare('SELECT tokens, cost_micros FROM executions WHERE id=?').get(id) as
+      | { tokens: number | null; cost_micros: number | null }
+      | undefined;
+
+    if (vorher) {
+      const alt = vorher.tokens ?? 0;
+      const neu = usage.tokens ?? 0;
+      if (alt > 0 && neu < alt) {
+        return {
+          applied: false,
+          reason: `Nachtrag würde die Messung senken: ${alt} → ${neu} Tokens (Faktor ${(alt / Math.max(neu, 1)).toFixed(1)})`,
+        };
+      }
+      if (vorher.cost_micros !== null && (usage.costMicros ?? null) === null) {
+        return {
+          applied: false,
+          reason: `Nachtrag würde den Preis löschen: ${(vorher.cost_micros / 1e6).toFixed(2)} USD vorhanden, Nachtrag ohne Kosten (Quelle ${usage.tokensSource ?? 'keine'})`,
+        };
+      }
+    }
+
     this.db
       .prepare(
         `UPDATE executions SET tokens=?, input_tokens=?, output_tokens=?,
@@ -507,6 +549,7 @@ export class ExecutionRepo {
         usage.model ?? null,
         id,
       );
+    return { applied: true };
   }
 
   /**

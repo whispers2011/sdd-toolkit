@@ -173,6 +173,11 @@ async function main(): Promise<void> {
   // damit keine Session im Hintergrund weiterläuft (Ressourcen-Hygiene).
   const chatIdleInterval = setInterval(() => chatWork.reapIdleSessions(), 60_000);
 
+  // Zuordnungswächter: schreibt ein Agent, ohne dass ein Schritt offen ist, wird sein
+  // Verbrauch nicht gemessen und der Phasenzustand behauptet Fertigstellung, die es
+  // nicht gibt (Befund A12 vom 30.07.2026). Nur melden, nicht eingreifen.
+  const workWithoutRunInterval = setInterval(() => orchestrator.checkWorkWithoutRun(), 60_000);
+
   const onboarding = new OnboardingService(projects, features);
 
   // Worktree-Übersicht: tool-weite Sicht auf Git-Realität + Feature-Zuordnung.
@@ -219,6 +224,7 @@ async function main(): Promise<void> {
     console.log('Fahre herunter — beende Sessions …');
     clearInterval(guardInterval);
     clearInterval(chatIdleInterval);
+    clearInterval(workWithoutRunInterval);
     await changeGuard.stop();
     ptys.saveAllSnapshots();
     chat.killAll();

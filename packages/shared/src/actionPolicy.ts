@@ -21,6 +21,7 @@ export type FeatureActionId =
   | 'phase_start' // ▶ Schritt starten
   | 'phase_approve' // ✓ Schritt freigeben
   | 'phase_discard' // ↺ Schritt verwerfen
+  | 'phase_reopen' // ⟲ freigegebenen Schritt wieder öffnen
   | 'integrate' // ⇥ Integrieren
   | 'integration_retry' // ↻ Integration erneut anstoßen
   | 'review_approve' // ✓ Freigeben & Integrieren (Portal)
@@ -33,6 +34,7 @@ export const FEATURE_ACTIONS: readonly FeatureActionId[] = [
   'phase_start',
   'phase_approve',
   'phase_discard',
+  'phase_reopen',
   'integrate',
   'integration_retry',
   'review_approve',
@@ -123,6 +125,8 @@ export const ACTION_REASON = {
   phaseNotEnabled: 'Dieser Schritt ist im Projekt nicht aktiv.',
   phaseNotIdle: 'Der Schritt ist nicht offen.',
   phaseNotAwaitingReview: 'Der Schritt wartet nicht auf eine Freigabe.',
+  phaseNotApproved: 'Nur ein freigegebener Schritt lässt sich wieder öffnen.',
+  reopenWhileIntegrating: 'Erst die Integration abbrechen, dann den Schritt wieder öffnen.',
   noWorktree: 'Kein Arbeitsverzeichnis vorhanden.',
   notComplete: 'Erst integrierbar, wenn alle aktiven Schritte freigegeben sind.',
   noChanges: 'Keine Änderungen zu integrieren.',
@@ -231,6 +235,8 @@ export function evaluateAction(
     case 'phase_approve':
     case 'phase_discard':
       return evaluatePhaseDecision(ctx, opts?.phase);
+    case 'phase_reopen':
+      return evaluatePhaseReopen(ctx, opts?.phase);
     case 'integrate':
       return evaluateIntegrate(ctx);
     case 'integration_retry':
@@ -271,6 +277,27 @@ function evaluatePhaseDecision(ctx: FeatureActionContext, phase: FeaturePhase | 
   if (busy !== null) return blocked(busy);
   const decision = STAGE_CLASS[ctx.integration] === 'decision' ? decisionReason(ctx.integration) : null;
   if (decision !== null) return blocked(decision);
+  return AVAILABLE;
+}
+
+/**
+ * Einen freigegebenen Schritt wieder öffnen (approved → idle).
+ *
+ * Ohne diesen Weg ist eine versehentliche Freigabe endgültig: `phase_start` verlangt
+ * `idle`, `phase_discard` verlangt `awaiting_review` — ein `approved` Schritt ist damit
+ * eine Sackgasse. Am 30.07.2026 hat das ein Feature blockiert, dessen implement-Phase
+ * nach 30 Sekunden fälschlich als fertig galt (Befund A12): weder fortsetzbar noch
+ * verwerfbar, es blieb nur „unfertig integrieren" oder Weiterarbeit ohne gezählten Lauf.
+ */
+function evaluatePhaseReopen(ctx: FeatureActionContext, phase: FeaturePhase | undefined): ActionVerdict {
+  if (ctx.archived) return hidden(ACTION_REASON.archived);
+  if (STAGE_CLASS[ctx.integration] === 'terminal') return hidden(ACTION_REASON.completed);
+  if (phase === undefined || !(phase in ctx.phases)) return hidden(ACTION_REASON.phaseNotEnabled);
+  if (ctx.phases[phase].status !== 'approved') return hidden(ACTION_REASON.phaseNotApproved);
+  // Läuft die Integration schon, wäre ein Wiederöffnen ein Zustand mit zwei Wahrheiten.
+  if (ctx.integration !== 'none') return blocked(ACTION_REASON.reopenWhileIntegrating);
+  const busy = busyReason(ctx);
+  if (busy !== null) return blocked(busy);
   return AVAILABLE;
 }
 

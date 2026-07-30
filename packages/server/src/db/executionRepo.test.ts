@@ -191,7 +191,7 @@ describe('ExecutionRepo — Telemetrie-Felder', () => {
     });
     const vorher = executions.get(id)!;
 
-    executions.updateTelemetry(id, {
+    const ergebnis = executions.updateTelemetry(id, {
       tokens: 500,
       inputTokens: 5,
       tokensSource: 'telemetry',
@@ -207,5 +207,71 @@ describe('ExecutionRepo — Telemetrie-Felder', () => {
     expect(nachher.exitCode).toBe(vorher.exitCode);
     // Das Endgültigkeitsfenster darf durch einen Nachtrag nicht wandern (FR-012).
     expect(nachher.telemetryFinalAt).toBe(999);
+    expect(ergebnis.applied).toBe(true);
+  });
+
+  /**
+   * Beobachtet am 30.07.2026 an neun Läufen: der Nachtrag am Ende des Nachlauffensters
+   * summiert das Telemetrie-Fenster neu, findet aber einen von `sweep()` beschnittenen
+   * Puffer — und schrieb die Messung um Faktor 2,9–16,8 nach unten. Ein Nachtrag darf
+   * vervollständigen, nie verschlechtern.
+   */
+  describe('Nachtrag darf eine Messung nicht verschlechtern', () => {
+    it('verwirft einen Nachtrag, der die Tokenzahl senkt (Fall uQ_RAMEn)', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 6_578_097, tokensSource: 'telemetry', costMicros: 3_803_016 });
+
+      const ergebnis = executions.updateTelemetry(id, {
+        tokens: 568_955,
+        tokensSource: 'telemetry',
+        costMicros: 334_466,
+      });
+
+      expect(ergebnis.applied).toBe(false);
+      expect(ergebnis.applied === false && ergebnis.reason).toContain('senken');
+      const r = executions.get(id)!;
+      expect(r.tokens).toBe(6_578_097);
+      expect(r.costMicros).toBe(3_803_016);
+    });
+
+    it('verwirft einen Nachtrag, der den Preis löscht (Fall tMvPe72V: Rückfall aufs Transkript)', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 272_685, tokensSource: 'telemetry', costMicros: 248_242 });
+
+      // Mehr Tokens, aber ohne Kosten — die Transkript-Ebene wird nicht bepreist.
+      const ergebnis = executions.updateTelemetry(id, { tokens: 5_947_193, tokensSource: 'transcript' });
+
+      expect(ergebnis.applied).toBe(false);
+      expect(ergebnis.applied === false && ergebnis.reason).toContain('Preis');
+      const r = executions.get(id)!;
+      expect(r.costMicros).toBe(248_242);
+      expect(r.tokensSource).toBe('telemetry');
+    });
+
+    it('lässt einen Nachtrag durch, der die Messung vervollständigt', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, { tokens: 135_484, tokensSource: 'telemetry', costMicros: 135_420 });
+
+      const ergebnis = executions.updateTelemetry(id, {
+        tokens: 272_685,
+        tokensSource: 'telemetry',
+        costMicros: 248_242,
+      });
+
+      expect(ergebnis.applied).toBe(true);
+      const r = executions.get(id)!;
+      expect(r.tokens).toBe(272_685);
+      expect(r.costMicros).toBe(248_242);
+    });
+
+    it('trägt bei einem Lauf ohne Zahl normal nach (erste Messung ist keine Senkung)', () => {
+      const id = start();
+      executions.finishWithUsage(id, 0, {});
+
+      const ergebnis = executions.updateTelemetry(id, { tokens: 1_033, tokensSource: 'transcript' });
+
+      expect(ergebnis.applied).toBe(true);
+      expect(executions.get(id)!.tokens).toBe(1_033);
+    });
   });
 });

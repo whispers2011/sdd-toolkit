@@ -214,7 +214,7 @@ export class MergeQueueService {
    * `finalizeMerged()` auf 'merged' rutscht — ein zweiter Weg in den
    * Endzustand, den SC-003 ausschließt.
    */
-  async beginIntegration(featureId: string): Promise<{ started: boolean; reason?: string }> {
+  async beginIntegration(featureId: string): Promise<{ started: boolean; reason?: string; retryable?: boolean }> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
 
@@ -229,6 +229,11 @@ export class MergeQueueService {
     }
     if (!hasAnyTaskDone(feature)) {
       return { started: false, reason: ACTION_REASON.noTasksDone };
+    }
+    const arbeitet = this.sessionStillWorking(feature.id);
+    if (arbeitet !== null) {
+      // Kein endgültiges Nein: sobald der Agent still ist, darf es weitergehen.
+      return { started: false, reason: arbeitet, retryable: true };
     }
 
     this.setStage(feature, 'verifying');
@@ -749,6 +754,24 @@ export class MergeQueueService {
     bus.emitEvent('queue_updated', { projectId, items: this.deps.queue.listByProject(projectId) });
   }
 
+  /**
+   * Schreibt der Agent dieses Features noch? Ausgabe ist der verlässliche Beweis —
+   * der Zustandsautomat führt eine denkende oder lange bauende Session nach
+   * `WORKING_STALL_SECONDS` nicht mehr als `working` (Sicherheitsnetz für die
+   * ANZEIGE, siehe sessionManager.lastOutputAt).
+   *
+   * Liefert den Grund als Satz, wenn integriert werden darf — sonst `null`.
+   */
+  private sessionStillWorking(featureId: string): string | null {
+    const session = this.deps.ptys.forFeature(featureId);
+    if (!session || session.exited) return null;
+    const seit = Date.now() - session.lastOutputAt;
+    if (session.lastOutputAt === 0 || seit >= INTEGRATION_QUIET_MS) return null;
+    return `Der Agent arbeitet noch — letzte Ausgabe vor ${Math.round(seit / 1000)} s. Integration erst, wenn er ${Math.round(
+      INTEGRATION_QUIET_MS / 1000,
+    )} s still ist.`;
+  }
+
   private mustFeature(id: string): Feature {
     const f = this.deps.features.get(id);
     if (!f) throw new Error(`Feature ${id} nicht gefunden`);
@@ -779,3 +802,21 @@ export class MergeQueueService {
 export function hasAnyTaskDone(feature: Pick<Feature, 'tasksDone' | 'tasksTotal'>): boolean {
   return feature.tasksTotal === 0 || feature.tasksDone > 0;
 }
+
+/**
+ * So lange muss die Ausgabe einer Session ruhen, bevor die Integration beginnt.
+ *
+ * Grund (30.07.2026, Befund A12): eine implement-Phase galt nach 30 Sekunden als
+ * fertig und freigegeben, während der Agent noch 37 Minuten weiterarbeitete — nur
+ * an der Ausgabe sichtbar, in der Datenbank stand kein Lauf. Der automatische
+ * Integrationsstart wurde damals allein vom Task-Guard aufgehalten (0 von 50
+ * Aufgaben erledigt); wäre eine einzige abgehakt gewesen, hätte die Strecke
+ * committet, verifiziert und gemergt, WÄHREND der Agent dieselben Dateien schrieb.
+ * Genau diese Konstellation hat am 24.07.2026 31 Dateien Arbeit gekostet.
+ *
+ * Der Auslöser der verfrühten Freigabe ist aus den erhaltenen Spuren nicht
+ * bestimmbar (im Hook-Strom folgt dem implement-Prompt kein `Stop`). Deshalb sichert
+ * diese Sperre die FOLGE ab, nicht die Turn-Erkennung: unabhängig davon, warum eine
+ * Phase als fertig gilt, wird nicht integriert, solange der Agent schreibt.
+ */
+export const INTEGRATION_QUIET_MS = 20_000;

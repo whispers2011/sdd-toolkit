@@ -595,6 +595,14 @@ describe('Darstellungsregeln — jede Aktion kennt hidden UND blocked', () => {
         DECISION_REASON.conflict_escalated,
       ],
     },
+    phase_reopen: {
+      hidden: [ctx(), 'specify', ACTION_REASON.phaseNotApproved],
+      blocked: [
+        ctx({ phases: phasesWith({ specify: 'approved' }), integration: 'verifying' }),
+        'specify',
+        ACTION_REASON.reopenWhileIntegrating,
+      ],
+    },
     integrate: {
       hidden: [ctx(), undefined, ACTION_REASON.notComplete],
       blocked: [ctx({ phases: completePhases(), hasChanges: false }), undefined, ACTION_REASON.noChanges],

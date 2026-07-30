@@ -26,6 +26,8 @@ import {
   type OptimizationSettings,
   type Project,
   type SessionEffect,
+  type UsageOrigin,
+  type UsageTotals,
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { KnowledgeService } from './knowledgeService.js';
@@ -95,6 +97,36 @@ function templateHint(phase: FeaturePhase): string {
   );
 }
 
+/**
+ * Fortgeschriebene Telemetrie-Summe eines Laufs. `seen` verhindert Doppelzählung,
+ * `total`/`byOrigin` wachsen nur — daher kann eine Messung nie kleiner werden.
+ */
+interface TelemetryAccum {
+  seen: Set<string>;
+  total: UsageTotals;
+  byOrigin: Record<UsageOrigin, UsageTotals>;
+  model: string | null;
+}
+
+/** Ausgabe jünger als das gilt als „schreibt gerade" (checkWorkWithoutRun). */
+const WORK_WITHOUT_RUN_QUIET_MS = 60_000;
+/** So lange nach dem Sessionstart wird nicht gemeldet — Anlauf und erste Phase brauchen Ruhe. */
+const WORK_WITHOUT_RUN_MIN_AGE_MS = 3 * 60_000;
+
+function emptyUsageTotals(): UsageTotals {
+  return { tokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: null };
+}
+
+/** Zuwachs auffalten. `costMicros` bleibt null, solange nichts einen Betrag trug (FR-023). */
+function addTotals(ziel: UsageTotals, zuwachs: UsageTotals): void {
+  ziel.tokens += zuwachs.tokens;
+  ziel.inputTokens += zuwachs.inputTokens;
+  ziel.outputTokens += zuwachs.outputTokens;
+  ziel.cacheReadTokens += zuwachs.cacheReadTokens;
+  ziel.cacheCreationTokens += zuwachs.cacheCreationTokens;
+  if (zuwachs.costMicros !== null) ziel.costMicros = (ziel.costMicros ?? 0) + zuwachs.costMicros;
+}
+
 /** Laufender Phasen-Kontext pro Feature (ephemer). */
 interface RunningPhase {
   phase: FeaturePhase;
@@ -134,6 +166,18 @@ export class Orchestrator {
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
   private telemetryReconcileTimers = new Set<NodeJS.Timeout>(); // Nachtrag verspäteter Meldungen
+  /**
+   * Laufende Summe je Execution, fortgeschrieben statt neu berechnet.
+   *
+   * Vorher summierte jeder Nachtrag das Telemetrie-Fenster von Grund auf neu — und
+   * traf dabei einen Puffer, den der Kehraus inzwischen beschnitten hatte. Die Zahl
+   * konnte also sinken (30.07.2026: neun Läufe um Faktor 2,9–16,8). Ein Akkumulator
+   * über `requestId` kann das nicht: was einmal gezählt wurde, bleibt gezählt, und
+   * jede Meldung zählt trotzdem nur einmal (FR-006).
+   */
+  private telemetryAccum = new Map<string, TelemetryAccum>();
+  /** Sessions, für die „Arbeit ohne Lauf" schon gemeldet wurde (eine Meldung je Episode). */
+  private workWithoutRunReported = new Set<string>();
 
   constructor(private deps: OrchestratorDeps) {}
 
@@ -457,6 +501,10 @@ export class Orchestrator {
       optCompression: opt.compression,
     });
 
+    // Lauf beim Telemetrie-Puffer anmelden: seine Meldungen dürfen nicht nach Alter
+    // verworfen werden, solange er läuft (siehe telemetryStore.sweep).
+    this.deps.telemetry?.hold(session.id);
+
     // Wissens-Präambel nur anhängen, wenn nötig: bei erster Injektion, geändertem
     // Wissen oder nach einem Kontext-Reset (nach /clear ist sie weg, nach /compact
     // evtl. aus der Zusammenfassung gefallen). Ohne Reset (contextStrategy=full)
@@ -540,6 +588,71 @@ export class Orchestrator {
     this.runEffects(featureId, t.effects);
   }
 
+  /**
+   * Arbeit ohne zugeordneten Lauf melden (Befund A12, 30.07.2026).
+   *
+   * Am 30.07. lief eine implement-Phase 30 Sekunden, wurde als fertig verbucht und
+   * freigegeben — und der Agent arbeitete danach 37 Minuten weiter: ungezählt,
+   * unbepreist, mit einem Phasenzustand, der Fertigstellung behauptete. In der
+   * Datenbank stand kein einziger Hinweis darauf. Sichtbar war es nur an der Ausgabe
+   * der Session, also an genau der Grösse, die diese Prüfung liest.
+   *
+   * Bewusst nur eine Meldung, kein Eingriff: der Agent soll weiterarbeiten dürfen.
+   * Was fehlt, ist die Zuordnung — und die kann nur ein Mensch klären.
+   *
+   * Je Session wird höchstens einmal gemeldet; erst wenn wieder ein Lauf offen ist,
+   * kann dieselbe Session erneut auffallen.
+   */
+  checkWorkWithoutRun(now = Date.now()): void {
+    for (const session of this.deps.ptys.list()) {
+      if (session.kind !== 'feature' || !session.featureId || session.exited) continue;
+
+      const laeuftEinSchritt = this.runningPhases.has(session.featureId);
+      if (laeuftEinSchritt) {
+        this.workWithoutRunReported.delete(session.id); // Zuordnung wieder in Ordnung
+        continue;
+      }
+
+      // Der Agent muss über einen längeren Zeitraum schreiben — die letzten Zuckungen
+      // eines gerade beendeten Turns sind kein Befund.
+      const seitAusgabe = now - session.lastOutputAt;
+      if (session.lastOutputAt === 0 || seitAusgabe > WORK_WITHOUT_RUN_QUIET_MS) continue;
+      const seitStart = now - session.startedAt;
+      if (seitStart < WORK_WITHOUT_RUN_MIN_AGE_MS) continue;
+      if (this.workWithoutRunReported.has(session.id)) continue;
+
+      this.workWithoutRunReported.add(session.id);
+      const feature = this.deps.features.get(session.featureId);
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: session.projectId,
+        featureId: session.featureId,
+        message:
+          `${feature?.name ?? session.featureId}: Der Agent arbeitet, aber kein Schritt ist offen — ` +
+          `dieser Verbrauch wird nicht gemessen. Schritt wieder öffnen oder Ergebnis prüfen.`,
+      });
+      bus.emitEvent('attention_raised', item);
+      console.warn(
+        `[zuordnung] ${session.id} (${feature?.name ?? session.featureId}): Ausgabe vor ${Math.round(
+          seitAusgabe / 1000,
+        )} s, kein offener Lauf`,
+      );
+    }
+  }
+
+  /**
+   * Freigegebenen Schritt wieder öffnen (approved → idle), damit die Arbeit daran
+   * fortgesetzt werden kann. Nutzt bewusst `discardPhase`: dieselbe Zustandsänderung
+   * (Schritt auf idle, freigegebene Folgeschritte werden `stale`), keine Dateioperation —
+   * die Arbeit im Worktree bleibt unangetastet.
+   */
+  reopen(featureId: string, phase: FeaturePhase): void {
+    const feature = this.mustFeature(featureId);
+    const t = discardPhase(feature.phases, phase);
+    this.deps.features.savePhases(featureId, t.phases);
+    this.emitFeature(featureId);
+  }
+
   discard(featureId: string, phase: FeaturePhase): void {
     const feature = this.mustFeature(featureId);
     this.resolveGateAttention(featureId);
@@ -555,13 +668,46 @@ export class Orchestrator {
       } else if (e.kind === 'start_integration') {
         // Auch der automatische Pfad unterliegt den Vorprüfungen (FR-004/FR-027):
         // eine Ablehnung ist KEIN Erfolg und ändert nichts am Feature.
-        void this.mergeQueue?.beginIntegration(featureId).then((r) => {
-          if (!r.started && r.reason) {
-            console.warn(`[integration] ${featureId}: automatischer Start abgelehnt — ${r.reason}`);
-          }
-        });
+        this.tryBeginIntegration(featureId, 0);
       }
     }
+  }
+
+  /**
+   * Automatischer Integrationsstart mit Wiederholung.
+   *
+   * Eine Ablehnung mit `retryable` heisst „noch nicht", nicht „nein": der Agent
+   * schreibt noch (siehe mergeQueueService.sessionStillWorking). Ohne Wiederholung
+   * bliebe das Feature stumm liegen — genau das passierte am 30.07.2026, als ein
+   * abgelehnter Auto-Start 40 Minuten lang niemandem auffiel. Nach Ablauf der
+   * Versuche wird es ein Inbox-Item, damit der Vorgang nicht still verschwindet.
+   */
+  private tryBeginIntegration(featureId: string, versuch: number): void {
+    const MAX_VERSUCHE = 20; // 20 × 30 s = 10 min Geduld mit einem arbeitenden Agenten
+    void this.mergeQueue?.beginIntegration(featureId).then((r) => {
+      if (r.started || !r.reason) return;
+      if (!r.retryable) {
+        console.warn(`[integration] ${featureId}: automatischer Start abgelehnt — ${r.reason}`);
+        return;
+      }
+      if (versuch + 1 >= MAX_VERSUCHE) {
+        const feature = this.deps.features.get(featureId);
+        const item = this.deps.attention.raise({
+          kind: 'agent_errored',
+          projectId: feature?.projectId ?? '',
+          featureId,
+          message: `${feature?.name ?? featureId}: Integration konnte nicht starten — ${r.reason}`,
+        });
+        bus.emitEvent('attention_raised', item);
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.telemetryReconcileTimers.delete(timer);
+        this.tryBeginIntegration(featureId, versuch + 1);
+      }, 30_000);
+      timer.unref?.();
+      this.telemetryReconcileTimers.add(timer);
+    });
   }
 
   /** Effekt start_agent: Phase ist in der Maschine schon running — nur Lauf starten. */
@@ -835,18 +981,28 @@ export class Orchestrator {
         try {
           const usage = this.meterFromTelemetry(session, running, finishedAt);
           if (usage) {
-            this.deps.executions.updateTelemetry(running.executionId, usage);
-            bus.emitEvent('execution_updated', {
-              executionId: running.executionId,
-              featureId: session.featureId,
-            });
+            const outcome = this.deps.executions.updateTelemetry(running.executionId, usage);
+            if (!outcome.applied) {
+              // Der Nachtrag war schlechter als die vorhandene Zahl — die bleibt stehen.
+              // Kein stiller Vorgang: der Grund benennt, welche Messung verworfen wurde.
+              console.warn(`[metering] ${running.executionId}: Nachtrag verworfen — ${outcome.reason}`);
+            } else {
+              bus.emitEvent('execution_updated', {
+                executionId: running.executionId,
+                featureId: session.featureId,
+              });
+            }
           } else {
             this.reconcileTranscriptTail(session, running);
           }
         } catch (err) {
           console.warn('[metering] Nachtrag fehlgeschlagen:', (err as Error).message);
         }
-        if (last) this.deps.telemetry?.forget(session.id);
+        if (last) {
+          // Nachlauffenster zu: Puffer abmelden und freigeben, Akkumulator verwerfen.
+          this.deps.telemetry?.forget(session.id);
+          this.telemetryAccum.delete(running.executionId);
+        }
       }, delay);
       timer.unref?.();
       this.telemetryReconcileTimers.add(timer);
@@ -868,7 +1024,13 @@ export class Orchestrator {
   private reconcileTranscriptTail(session: LiveSession, running: RunningPhase): void {
     const usage = this.meterTurn(session, running);
     if (usage.tokensSource !== 'transcript') return; // Schätzung nicht nachziehen
-    this.deps.executions.updateTelemetry(running.executionId, usage);
+    const outcome = this.deps.executions.updateTelemetry(running.executionId, usage);
+    if (!outcome.applied) {
+      // Typischer Fall: der Puffer war leer, also fiel die Messung aufs Transkript
+      // zurück — mehr Tokens, aber ohne Preis. Die bepreiste Zahl bleibt stehen.
+      console.warn(`[metering] ${running.executionId}: Transkript-Nachtrag verworfen — ${outcome.reason}`);
+      return;
+    }
     this.persistTranscriptRange(session, running); // End-Offset auf den vollen Turn
     bus.emitEvent('execution_updated', {
       executionId: running.executionId,
@@ -889,13 +1051,27 @@ export class Orchestrator {
     const store = this.deps.telemetry;
     if (!store) return null;
 
-    const events = selectEventsForWindow(store.eventsFor(session.id), {
-      from: running.startedAt,
-      to: until,
-    });
-    if (events.length === 0) return null;
+    // Fortschreiben statt neu summieren: nur noch nicht verrechnete Meldungen kommen
+    // hinzu (FR-006 über `seen`). Damit ist die Zahl monoton — ein Nachtrag, der einen
+    // inzwischen beschnittenen Puffer sieht, ändert nichts mehr.
+    const accum = this.telemetryAccumFor(running.executionId);
+    const neu = selectEventsForWindow(
+      store.eventsFor(session.id),
+      { from: running.startedAt, to: until },
+      accum.seen,
+    );
+    for (const e of neu) accum.seen.add(e.requestId);
+    if (neu.length > 0) {
+      const zuwachs = summarizeEvents(neu);
+      addTotals(accum.total, zuwachs.total);
+      for (const origin of ['main', 'subagent', 'auxiliary'] as const) {
+        addTotals(accum.byOrigin[origin], zuwachs.byOrigin[origin]);
+      }
+      if (zuwachs.model) accum.model = zuwachs.model;
+    }
+    if (accum.seen.size === 0) return null;
 
-    const { total, byOrigin, model } = summarizeEvents(events);
+    const { total, byOrigin, model } = accum;
     const hasSubagents = byOrigin.subagent.tokens > 0;
     return {
       tokens: total.tokens,
@@ -911,6 +1087,21 @@ export class Orchestrator {
       subagentCostMicros: hasSubagents ? byOrigin.subagent.costMicros : null,
       model,
     };
+  }
+
+  /** Akkumulator eines Laufs holen oder anlegen. */
+  private telemetryAccumFor(executionId: string): TelemetryAccum {
+    let a = this.telemetryAccum.get(executionId);
+    if (!a) {
+      a = {
+        seen: new Set<string>(),
+        total: emptyUsageTotals(),
+        byOrigin: { main: emptyUsageTotals(), subagent: emptyUsageTotals(), auxiliary: emptyUsageTotals() },
+        model: null,
+      };
+      this.telemetryAccum.set(executionId, a);
+    }
+    return a;
   }
 
   /**
