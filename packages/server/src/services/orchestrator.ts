@@ -57,6 +57,7 @@ import {
   type ReconcileSnapshot,
 } from './attentionReconciler.js';
 import { resolveVerificationGaps } from './verificationGap.js';
+import { ensureWorkspace } from './core/workspace.js';
 
 export interface EnsureSessionOptions {
   /**
@@ -314,17 +315,15 @@ export class Orchestrator {
     );
     if (!before.ok) return { ok: false };
 
-    // Idempotent: auch wenn ein gespeicherter Pfad auf Disk fehlt (z. B. manuell gelöscht).
+    // Idempotent, inkl. Waisen-Erholung: auch wenn ein gespeicherter Pfad auf Disk fehlt
+    // (z. B. manuell gelöscht). Der gemeinsame Kern — derselbe Baustein trägt die
+    // Arbeitskopie des Chats (FR-003); die Auslöser darum herum bleiben feature-eigen.
     if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
-      if (feature.worktreePath) {
-        await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
-      }
-      const wt = await this.deps.worktrees.create({
+      const wt = await ensureWorkspace(this.deps.worktrees, {
         project,
-        projectPath: project.path,
-        featureName: feature.name,
+        name: feature.name,
         branch: feature.branch,
-        defaultBranch: project.defaultBranch,
+        recordedPath: feature.worktreePath,
       });
       this.deps.features.setWorktree(feature.id, wt);
       feature.worktreePath = wt;

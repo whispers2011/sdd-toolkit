@@ -82,84 +82,84 @@ Kosten, dieselbe Quelle. Abweichung 0.
 
 ### Vorarbeiten (andere Dateien, parallel)
 
-- [X] T008 [P] [US1] `held: Set<string>` → `holds: Map<string, number>` nach
+- [ ] T008 [P] [US1] `held: Set<string>` → `holds: Map<string, number>` nach
       [contracts/telemetry-store.md](./contracts/telemetry-store.md) in
       `packages/server/src/telemetry/telemetryStore.ts`: `hold` zählt hoch, `release` zählt runter
       und verwirft den Puffer nicht (T3), `sweep` fragt `holds.has(key)`, `forget` unverändert (T4)
-- [X] T009 [P] [US1] Tests zu T1–T3 in `packages/server/src/telemetry/telemetryStore.test.ts`:
+- [ ] T009 [P] [US1] Tests zu T1–T3 in `packages/server/src/telemetry/telemetryStore.test.ts`:
       überlappende Anmeldungen zweier Läufe auf derselben Marke (t0 hold, t305 release → Puffer
       bleibt), Zähler wird nie negativ, bestehende Tests (Zeilen 120–131) bleiben unangetastet (T5)
-- [X] T010 [P] [US1] `ExecutionStartInput.startedAt?: number` (Vorgabe `Date.now()`) in
+- [ ] T010 [P] [US1] `ExecutionStartInput.startedAt?: number` (Vorgabe `Date.now()`) in
       `packages/server/src/db/repos.ts` — schreibt in die vorhandene Spalte `executions.started_at`,
       keine Migration, die übrigen sieben Aufrufer bleiben unverändert
-- [X] T011 [P] [US1] Test zu T010 in `packages/server/src/db/repos.test.ts`: `start({ startedAt })`
+- [ ] T011 [P] [US1] Test zu T010 in `packages/server/src/db/repos.test.ts`: `start({ startedAt })`
       schreibt den mitgegebenen Wert, `start()` ohne das Feld weiterhin `Date.now()`
 
 ### Der Kern: Turn messen
 
-- [X] T012 [US1] `RunMark`, `markSession(session, startedAt)` und `startOffsetIn(path, mark)` mit
+- [ ] T012 [US1] `RunMark`, `markSession(session, startedAt)` und `startOffsetIn(path, mark)` mit
       den drei Fällen aus data-model.md §3 (gleiche Datei / Dateiwechsel → 0 / beim Start unbekannt
       → `offsetAtTimestamp`) in `packages/server/src/services/core/runMeter.ts`
-- [X] T013 [US1] `RunMeter` mit `hold`, `measure` und `finish`: die dreistufige Kaskade aus
+- [ ] T013 [US1] `RunMeter` mit `hold`, `measure` und `finish`: die dreistufige Kaskade aus
       [contracts/run-meter.md](./contracts/run-meter.md) — Meldungen im Fenster
       `[mark.startedAt, until]`, sonst Transkript-Delta, sonst Schätzung aus dem Scrollback; Stufe 2
       läuft nur, wenn Stufe 1 `null` liefert (kein Addieren) — in
       `packages/server/src/services/core/runMeter.ts`
-- [X] T014 [US1] `TelemetryAccum` je `executionId` (`seen`, `total`, `byOrigin`, `model`) mit
+- [ ] T014 [US1] `TelemetryAccum` je `executionId` (`seen`, `total`, `byOrigin`, `model`) mit
       Dedupe über `requestId` (M2), monotonem Fortschreiben (M1) und `costMicros = null`, solange
       keine Meldung einen Betrag trug (R5) in `packages/server/src/services/core/runMeter.ts`
-- [X] T015 [US1] Nachtrag in `packages/server/src/services/core/runMeter.ts`: zweimal nachmessen
+- [ ] T015 [US1] Nachtrag in `packages/server/src/services/core/runMeter.ts`: zweimal nachmessen
       (8 s und 5 min, Timer `unref`'d, M4), abgelehnte Nachträge loggen statt zu senken (M5), am
       Fensterende `telemetry.release(session.id)` statt `forget` (M3), `onApplied`-Rückruf und
       `bus.emitEvent('execution_updated', { executionId, featureId })` (M6)
-- [X] T016 [US1] Turn-Fenster in `packages/server/src/services/core/runMeter.ts`: `openTurn`
+- [ ] T016 [US1] Turn-Fenster in `packages/server/src/services/core/runMeter.ts`: `openTurn`
       (idempotent, `markSession` + `hold`), `closeTurn` (Lauf mit `startedAt` des Fensters anlegen,
       dann `finish` — M10; Rückfallebene: Ende des Vorgängerturns, ersatzweise `session.startedAt`),
       `abandon` (Fenster verwerfen, freigeben, nichts verbuchen — M9), `dispose`
 
 ### Die beiden Pfade umhängen
 
-- [X] T017 [US1] `finishWithMetering`, `meterFromTelemetry`, `meterTurn`, `scheduleLateReconcile`,
+- [ ] T017 [US1] `finishWithMetering`, `meterFromTelemetry`, `meterTurn`, `scheduleLateReconcile`,
       `reconcileTranscriptTail`, `telemetryAccum*`, `startOffsetIn`, `transcriptMarkFor`,
       `TelemetryAccum`, `emptyUsageTotals`, `addTotals` aus
       `packages/server/src/services/orchestrator.ts` entfernen; `launchPhase` ruft `markSession` +
       `meter.hold`, `handleTurnCompleted`/`handleExit` rufen `meter.finish`; `RunningPhase` wird
       `RunMark & { phase; promptConfirmed }`
-- [X] T018 [US1] `persistTranscriptRange` in `packages/server/src/services/orchestrator.ts` behalten,
+- [ ] T018 [US1] `persistTranscriptRange` in `packages/server/src/services/orchestrator.ts` behalten,
       `startOffsetIn` aus dem Kern importieren und die Funktion an den `onApplied`-Rückruf hängen
-- [X] T019 [US1] `meterTurn`, `usageForTurn`, `turnStartedAt`, `turnTranscriptOffset` aus
+- [ ] T019 [US1] `meterTurn`, `usageForTurn`, `turnStartedAt`, `turnTranscriptOffset` aus
       `packages/server/src/services/chatWorkService.ts` entfernen; in `handleStatusChange` bei
       `status === 'working'` → `meter.openTurn(session)`, beim Effekt `turn_completed` →
       `meter.closeTurn(session, { projectId, featureId: null, kind: 'chat_work' })`; in `handleExit`
       → `meter.abandon(session.id)`; `turnStart` bleibt (Scrollback-Marke der Session)
-- [X] T020 [US1] `RunMeter` einmal in `packages/server/src/index.ts` aufbauen und sowohl
+- [ ] T020 [US1] `RunMeter` einmal in `packages/server/src/index.ts` aufbauen und sowohl
       `Orchestrator` als auch `ChatWorkService` mitgeben (ohne diesen Schritt greift T019 nicht)
-- [X] T021 [US1] Telemetrie-Attrappe in `packages/server/src/services/orchestrator.test.ts` (Zeile
+- [ ] T021 [US1] Telemetrie-Attrappe in `packages/server/src/services/orchestrator.test.ts` (Zeile
       ~421) um `release` ergänzen — Ergänzung der Attrappe, **keine** Änderung einer Erwartung
       (FR-017 bleibt erfüllt)
 
 ### Tests zu US1
 
-- [X] T022 [P] [US1] Kaskade in `packages/server/src/services/core/runMeter.test.ts`: Szenario 1
+- [ ] T022 [P] [US1] Kaskade in `packages/server/src/services/core/runMeter.test.ts`: Szenario 1
       (Meldungen → `tokens_source = 'telemetry'`, Transkript wird nicht gelesen), Szenario 5 (ohne
       Meldungen, mit Transkript → `'transcript'`), Edge Case ohne konfigurierten Telemetrie-Speicher
       → fehlerfreier Durchfall auf Schätzung (M8)
-- [X] T023 [P] [US1] SC-002 in `packages/server/src/services/core/runMeter.test.ts`: dieselben
+- [ ] T023 [P] [US1] SC-002 in `packages/server/src/services/core/runMeter.test.ts`: dieselben
       Ereignisse über den Phasen-Weg und den Chat-Weg → identische vier Token-Klassen, identische
       `cost_micros`, dasselbe `model`, dieselbe Quelle; Abweichung 0
-- [X] T024 [P] [US1] SC-004 in `packages/server/src/services/core/runMeter.test.ts`: messen, Puffer
+- [ ] T024 [P] [US1] SC-004 in `packages/server/src/services/core/runMeter.test.ts`: messen, Puffer
       beschneiden, erneut messen — über mehrere Nachträge 0 Absenkungen, nie `null` (M1, M5,
       US1 Szenario 4)
-- [X] T025 [P] [US1] Nachtrag in `packages/server/src/services/core/runMeter.test.ts`: Meldungen
+- [ ] T025 [P] [US1] Nachtrag in `packages/server/src/services/core/runMeter.test.ts`: Meldungen
       treffen nach dem Abschluss ein, das Fenster ist noch offen → Zahl wird nachgezogen und
       `execution_updated` gesendet (US1 Szenario 3, M6)
-- [X] T026 [P] [US1] Turn-Dauer in `packages/server/src/services/core/runMeter.test.ts`: ein
+- [ ] T026 [P] [US1] Turn-Dauer in `packages/server/src/services/core/runMeter.test.ts`: ein
       Chat-Turn schreibt `finished_at − started_at > 0` (M10, Clarification 30.07.2026)
-- [X] T027 [P] [US1] Randfälle in `packages/server/src/services/core/runMeter.test.ts`: `abandon`
+- [ ] T027 [P] [US1] Randfälle in `packages/server/src/services/core/runMeter.test.ts`: `abandon`
       verbucht nichts (M9, Leerlauf-Reaper), `closeTurn` ohne vorheriges `openTurn` öffnet
       rückwirkend und liefert eine Dauer > 0 und nie negativ (research.md D4), zweiter
       `working`-Übergang innerhalb desselben Turns ist ein No-op
-- [X] T028 [US1] Tor Schritt 2: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — die
+- [ ] T028 [US1] Tor Schritt 2: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — die
       bestehenden Metering-Tests in `packages/server/src/services/orchestrator.test.ts`
       (Zeilen 412–619) und `packages/server/src/services/chatWorkService.test.ts` (Zeilen 463, 476)
       bleiben **ohne Anpassung** grün (FR-018, SC-003)
@@ -178,38 +178,38 @@ Kennung, Berechtigungsmodus aus derselben aufgelösten Automatisierung.
 **Independent Test**: Je Pfad zwei Aufrufe gleichzeitig absetzen — genau ein Prozess, dieselbe
 Session-Kennung für beide Aufrufer, in 20 aufeinanderfolgenden Versuchen 0 Doppelstarts.
 
-- [X] T029 [US2] `SessionSpec`, `SpawnStage` und `SessionCore.ensure(key, resolve)` nach
+- [ ] T029 [US2] `SessionSpec`, `SpawnStage` und `SessionCore.ensure(key, resolve)` nach
       [contracts/session-core.md](./contracts/session-core.md) in
       `packages/server/src/services/core/sessionCore.ts` — In-Flight-Karte, `resolve()` **innerhalb**
       des Schutzes, Ablauf 1–11 einschliesslich Resume-Prüfung über `locateTranscript` (FR-014),
       `permissionMode` aus `automation.autoMode` (FR-015) und `finally`-Freigabe auch im Fehlerfall
-- [X] T030 [US2] `Orchestrator.ensureSession` wird ein Aufruf mit `key = 'feature:<featureId>'` in
+- [ ] T030 [US2] `Orchestrator.ensureSession` wird ein Aufruf mit `key = 'feature:<featureId>'` in
       `packages/server/src/services/orchestrator.ts`; `ensureSessionInner` und die eigene
       In-Flight-Karte entfallen. Die `resolve`-Funktion behält die heutige Reihenfolge bei: erst
       `ptys.forFeature`, **dann** die Prüfung auf abgeschlossenes Feature
-- [X] T031 [US2] `ChatWorkService.ensure` wird ein Aufruf mit `key = 'chat:<projectId>'` in
+- [ ] T031 [US2] `ChatWorkService.ensure` wird ein Aufruf mit `key = 'chat:<projectId>'` in
       `packages/server/src/services/chatWorkService.ts`; `ensureUnlocked`, die Karte `ensuring` und
       der eigene Worktree-Block entfallen. `wrapError` liefert
       `ChatError(503, 'Arbeitskopie konnte nicht erstellt werden: …')` und
       `ChatError(503, 'Session konnte nicht gestartet werden: …')` zeichengleich wie heute; die
       Rückgabe bleibt `{ sessionId }` und setzt weiterhin `turnStart.set(session.id, 0)`
-- [X] T032 [US2] `SessionCore` einmal in `packages/server/src/index.ts` aufbauen und beiden
+- [ ] T032 [US2] `SessionCore` einmal in `packages/server/src/index.ts` aufbauen und beiden
       Diensten mitgeben
-- [X] T033 [P] [US2] SC-005 in `packages/server/src/services/core/sessionCore.test.ts`: je Pfad
+- [ ] T033 [P] [US2] SC-005 in `packages/server/src/services/core/sessionCore.test.ts`: je Pfad
       20 × zwei gleichzeitige Aufrufe mit künstlich um 10 ms verzögerter Worktree-Anlage — 20 × genau
       ein Spawn, 20 × dieselbe Session-Kennung (S1, US2 Szenarien 1+2)
-- [X] T034 [P] [US2] Tote Kennung in `packages/server/src/services/core/sessionCore.test.ts`:
+- [ ] T034 [P] [US2] Tote Kennung in `packages/server/src/services/core/sessionCore.test.ts`:
       `locateTranscript` findet nichts → `sessions.setClaudeSessionId(prev.id, null)` und das `argv`
       enthält kein `--resume` (S5, US2 Szenario 3)
-- [X] T035 [P] [US2] Laufende Session und Freigabe in
+- [ ] T035 [P] [US2] Laufende Session und Freigabe in
       `packages/server/src/services/core/sessionCore.test.ts`: `spec.existing` gesetzt → kein zweiter
       Prozess (FR-016, Szenario 4); nach Abschluss ist der Schutz frei (S2); ein Fehler in `resolve`,
       Schritt 4 oder 8 erreicht alle Wartenden und gibt frei (S3)
-- [X] T036 [P] [US2] Fehlerbild und Berechtigungsmodus in
+- [ ] T036 [P] [US2] Fehlerbild und Berechtigungsmodus in
       `packages/server/src/services/core/sessionCore.test.ts`: ohne `wrapError` fliegt der rohe
       Fehler (S4, Phasen-Pfad), mit `wrapError` kommt der `ChatError(503, …)` heraus (FR-005,
       Szenario 5); `autoMode` → `bypassPermissions`, sonst `acceptEdits` (S6)
-- [X] T037 [US2] Tor Schritt 3: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel, inklusive
+- [ ] T037 [US2] Tor Schritt 3: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel, inklusive
       der bestehenden Nebenläufigkeits-Tests in
       `packages/server/src/services/chatWorkService.test.ts` (Zeilen 511, 546) und
       `packages/server/src/services/orchestrator.test.ts` (Zeile 402)
@@ -228,20 +228,20 @@ fehlt. Der Baustein steht seit Phase 2; hier wird die Abnahme geführt.
 **Independent Test**: Für Chat und Feature eine Arbeitskopie anlegen, ihr Verzeichnis von aussen
 entfernen und die Anlage erneut anfordern — beide Pfade zeigen dieselbe Erholung.
 
-- [X] T038 [P] [US3] Szenario 1 in `packages/server/src/services/chatWorkService.test.ts`: nach
+- [ ] T038 [P] [US3] Szenario 1 in `packages/server/src/services/chatWorkService.test.ts`: nach
       `ensure()` existiert `chat-<convId>` mit Zweig `chat/<convId>`, angelegt über `ensureWorkspace`
       — geprüft an der Attrappe, dass `worktrees.create` genau einmal und aus dem Kern gerufen wurde
-- [X] T039 [P] [US3] Szenario 2 in `packages/server/src/services/chatWorkService.test.ts`:
+- [ ] T039 [P] [US3] Szenario 2 in `packages/server/src/services/chatWorkService.test.ts`:
       `recordedPath` aus `worktrees.pathFor` gesetzt, Verzeichnis fehlt → `worktrees.remove`
       best-effort, danach neu angelegt, Session startet (W2 — der Chat bekommt sie neu)
-- [X] T040 [P] [US3] Szenario 3 in `packages/server/src/services/chatWorkService.test.ts`: scheitert
+- [ ] T040 [P] [US3] Szenario 3 in `packages/server/src/services/chatWorkService.test.ts`: scheitert
       das Anlegen, antwortet der Chat unverändert mit
       `ChatError(503, 'Arbeitskopie konnte nicht erstellt werden: …')`
-- [X] T041 [US3] Gegenprobe im Quellcode: kein `worktrees.create` mehr in
+- [ ] T041 [US3] Gegenprobe im Quellcode: kein `worktrees.create` mehr in
       `packages/server/src/services/chatWorkService.ts` und kein eigener Worktree-Block mehr in
       `packages/server/src/services/orchestrator.ts` — verbleibende Fundstellen ausserhalb von
       `services/core/workspace.ts` entfernen
-- [X] T042 [US3] Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel
+- [ ] T042 [US3] Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel
 
 **Checkpoint**: Alle drei Aufgaben laufen über den Kern. Was fehlt, ist der Nachweis, dass es so
 bleibt.
@@ -256,21 +256,21 @@ Abnahmekriterium, das über *Abwesenheit* redet — es braucht einen Test, keine
 **Independent Test**: Den Quellcode nach den charakteristischen Bestandteilen jeder Aufgabe
 durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
 
-- [X] T043 [US4] Wächter in `packages/server/src/services/core/singleImplementation.test.ts`: liest
+- [ ] T043 [US4] Wächter in `packages/server/src/services/core/singleImplementation.test.ts`: liest
       `packages/server/src` rekursiv (`readdirSync`, ohne `*.test.ts`) und lässt je Merkmal genau
       eine Fundstelle zu — `selectEventsForWindow(`/`summarizeEvents(` → `services/core/runMeter.ts`,
       `buildClaudeArgv(` → `services/core/sessionCore.ts` (+ Definition in
       `pty/commandBuilder.ts`), `worktrees.create(` → `services/core/workspace.ts`, `ptys.spawn(` →
       `services/core/sessionCore.ts` **und** `api/server.ts` (Projekt-Terminal, `kind: 'shell'`,
       keine Claude-Session — mit Begründung in der Erlaubnisliste, research.md D9)
-- [X] T044 [US4] Regressionstest zu FR-020 in `packages/server/src/services/orchestrator.test.ts`:
+- [ ] T044 [US4] Regressionstest zu FR-020 in `packages/server/src/services/orchestrator.test.ts`:
       `checkWorkWithoutRun` schlägt für eine arbeitende `chat_work`-Session **nicht** an; der Filter
       `session.kind !== 'feature'` bleibt stehen
-- [X] T045 [US4] Stichprobe SC-008 durchführen: das Nachtragsfenster in
+- [ ] T045 [US4] Stichprobe SC-008 durchführen: das Nachtragsfenster in
       `packages/server/src/services/core/runMeter.ts` probeweise von 8 s auf 6 s ändern, die Zahl der
       zu öffnenden Dateien zählen (Erwartung: genau eine), Änderung zurücknehmen und das Ergebnis in
       [quickstart.md](./quickstart.md) §4.2 festhalten
-- [X] T046 [US4] Tor Schritt 4: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — der
+- [ ] T046 [US4] Tor Schritt 4: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — der
       Wächter läuft ab jetzt im bestehenden `pnpm test` mit
 
 **Checkpoint**: Der Zwilling kann nicht zurückkommen, ohne dass die Suite rot wird.
@@ -281,11 +281,11 @@ durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
 
 **Purpose**: Aufräumen, Buchführung, Gegenprobe an echter Telemetrie.
 
-- [X] T047 [P] Ungenutzte Importe und toten Code in
+- [ ] T047 [P] Ungenutzte Importe und toten Code in
       `packages/server/src/services/orchestrator.ts` und
       `packages/server/src/services/chatWorkService.ts` entfernen; Zeilenbilanz gegen die Erwartung
       aus plan.md prüfen (~−200 bzw. ~−90 Zeilen)
-- [X] T048 [P] SC-007 abschliessen: die Tabelle der vier Verbesserungen vom 30.07.2026 in
+- [ ] T048 [P] SC-007 abschliessen: die Tabelle der vier Verbesserungen vom 30.07.2026 in
       [quickstart.md](./quickstart.md) gegen den gebauten Stand prüfen — zwei im Chat wirksam
       (Nachweis T009/T024), zwei mit Grund ausgeschlossen (Nachweis T044) — 4 von 4 beantwortet,
       0 offen
@@ -300,7 +300,7 @@ durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
       abgeräumt. Der echte Chat-Turn wurde **nicht** gefahren — er startet einen realen
       Claude-Prozess und verursacht Kosten; das braucht eine ausdrückliche Entscheidung. Details
       und Nachholanleitung in quickstart.md §Live.
-- [X] T050 Abschluss-Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel; Ergebnis gegen
+- [ ] T050 Abschluss-Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel; Ergebnis gegen
       den Referenzstand aus T001 halten (SC-006)
 
 ---
