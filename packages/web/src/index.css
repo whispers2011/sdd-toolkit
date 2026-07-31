@@ -186,6 +186,34 @@
   --color-sky-800: #00588a;
   --color-sky-900: #003c5c;
   --color-sky-950: #001f2e;
+
+  /* Akzent: teal — nachgetragen am 31.07.2026. Die Läufe-Ansicht benutzt teal und violet;
+     der Hellmodus invertiert sie seit „Review-Portal und Läufe: Sicht-Pass" mit, also muss
+     dieses Design denselben Schlüsselsatz führen. Der Paritätstest hat genau das gemeldet. */
+  --color-teal-50: #f0fdfa;
+  --color-teal-100: #ccfbf1;
+  --color-teal-200: #99f6e4;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2ff0d0;
+  --color-teal-500: #0ee0bc;
+  --color-teal-600: #00bd9c;
+  --color-teal-700: #00967d;
+  --color-teal-800: #00705e;
+  --color-teal-900: #004a3e;
+  --color-teal-950: #00251f;
+
+  /* Akzent: violet */
+  --color-violet-50: #f5f3ff;
+  --color-violet-100: #ede9fe;
+  --color-violet-200: #ddd6fe;
+  --color-violet-300: #c4b5fd;
+  --color-violet-400: #a78bfa;
+  --color-violet-500: #9061ff;
+  --color-violet-600: #7a3dff;
+  --color-violet-700: #6321e0;
+  --color-violet-800: #4b18ab;
+  --color-violet-900: #331075;
+  --color-violet-950: #1a083b;
 }
 
 /* Dark bleibt Basis; color-scheme wird zusätzlich inline vom FOUC-Guard gesetzt. */
