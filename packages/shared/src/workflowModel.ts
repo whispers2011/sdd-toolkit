@@ -304,7 +304,6 @@ export interface IntegrationStep {
   id: LifecycleStageId;
   label: string;
   detail: string;
-  icon: string;
   /** Läuft nur, wenn dieses Flag an ist (sonst „übersprungen"). */
   requires?: keyof AutomationSettings;
   /** Menschlicher Checkpoint — außer dieses Flag ist an. */
@@ -324,7 +323,6 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     id: 'verify',
     label: 'Verifikation',
     detail: 'Test/Build/Lint im Worktree (pro Projekt konfigurierbar). Vorher: Worktree committen.',
-    icon: '📋',
     autoBy: 'autoVerify',
     escalatesTo: 'verify_failed',
   },
@@ -332,7 +330,6 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     id: 'review_gate',
     label: 'Review-Gate',
     detail: 'review_gate-Agents laufen sequentiell headless; erster blockierender FAIL eskaliert.',
-    icon: '⚖',
     requires: 'autoReviewAgents',
     escalatesTo: 'gate_failed',
     showsReviewGateAgents: true,
@@ -342,7 +339,6 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     label: 'Manuelle Abnahme',
     detail:
       'Spalte „Abnahme": vollen Stack starten, die laufende Anwendung durchklicken, bestätigen oder mit Befunden ablehnen. Eine Ablehnung setzt das Feature auf specify zurück.',
-    icon: '🧪',
     requires: 'manualTestGate',
     // Kein `humanUnless`: die Abnahme ist IMMER menschlich — es gibt keinen
     // automatischen Weg aus der Stufe heraus (FR-028).
@@ -351,14 +347,12 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     id: 'human_review',
     label: 'Menschliches Review',
     detail: 'Review-Portal: Diff prüfen, Kommentare, Ziel-Branch wählen, Freigabe erteilen.',
-    icon: '🧑',
     humanUnless: 'autoMerge',
   },
   {
     id: 'merge_queue',
     label: 'Merge-Queue',
     detail: 'Sequentiell je Projekt: rebase → Auto-Konfliktauflösung (Headless-Claude) → Re-Verify → Merge.',
-    icon: '🔀',
     autoBy: 'autoMerge',
     escalatesTo: 'conflict_escalated',
   },
@@ -366,7 +360,6 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     id: 'merged',
     label: 'Gemergt',
     detail: 'Merge ins Ziel (bzw. PR im PR-Modus) + Worktree/Branch-Cleanup.',
-    icon: '✓',
     terminal: true,
   },
 ];
