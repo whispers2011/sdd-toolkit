@@ -4,9 +4,13 @@ import {
   AUTOMATION_META,
   INTEGRATION_STEPS,
   INTEGRATION_STAGE_META,
+  LIFECYCLE_TRIGGER_META,
   PHASE_META,
+  compareStepOrder,
   isOptionalPhase,
+  lifecycleStage,
   orderedEnabledPhases,
+  rejectTargetPhase,
   resolveAutomation,
   shouldAutoProgress,
 } from '@sdd/shared';
@@ -16,15 +20,33 @@ import type {
   AutomationSettings,
   Feature,
   FeatureAgentView,
+  FeatureLifecycleStepView,
   FeaturePhase,
   IntegrationStep,
   KnowledgeIndexItem,
+  LifecycleCatalogStageId,
+  LifecycleStageId,
+  LifecycleStep,
+  LifecycleTrigger,
+  LifecycleTriggerKind,
 } from '@sdd/shared';
 import { api, type FeatureKnowledgeResponse, type KnowledgeResponse } from '../api.js';
 import { useStore } from '../store.js';
 import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
 import { AgentEditDialog } from './AgentEditDialog.js';
+import { LifecycleStepEditDialog } from './LifecycleStepEditDialog.js';
 import { Dialog } from './Sidebar.js';
+import { InfoPopover } from './InfoPopover.js';
+import { COLUMN_FOR_STEP, INTEGRATION_COLUMN_LABELS, type IntegrationColumn } from './boardColumns.js';
+import {
+  AgentChip,
+  StepChip,
+  TriggerHubButton,
+  WorkflowTriggerHub,
+  type NodeAgent,
+  type NodeStep,
+  type WorkflowNode,
+} from './WorkflowTriggerHub.js';
 import {
   ArrowRightIcon,
   BoltIcon,
@@ -33,13 +55,17 @@ import {
   ChevronDownIcon,
   EditIcon,
   EntryIcon,
+  FlaskIcon,
   GitMergeIcon,
   InfoIcon,
   KnowledgeIcon,
   PlusIcon,
   RefreshIcon,
+  ReviewIcon,
+  ScalesIcon,
   SettingsIcon,
   ShieldIcon,
+  StepsIcon,
   UserIcon,
   VerifyIcon,
   WarningIcon,
@@ -47,13 +73,6 @@ import {
 } from './icons.js';
 
 type Scope = { kind: 'project' } | { kind: 'feature'; featureId: string };
-
-/** Effektive Agent-Sicht eines Knotens (Projekt- vs. Feature-Scope vereinheitlicht). */
-interface NodeAgent {
-  agent: AgentDefinition;
-  effective: boolean;
-  decision: 'include' | 'exclude' | 'auto' | null;
-}
 
 const CARD = 'rounded-lg border border-zinc-800 bg-zinc-900/60';
 const SECONDARY_BTN =
@@ -72,8 +91,10 @@ export function WorkflowOverview() {
 
   const [scope, setScope] = useState<Scope>({ kind: 'project' });
   const [agents, setAgents] = useState<AgentDefinition[] | null>(null);
+  const [steps, setSteps] = useState<LifecycleStep[] | null>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeResponse | null>(null);
   const [featureAgents, setFeatureAgents] = useState<FeatureAgentView[] | null>(null);
+  const [featureSteps, setFeatureSteps] = useState<FeatureLifecycleStepView[] | null>(null);
   const [featureKnowledge, setFeatureKnowledge] = useState<FeatureKnowledgeResponse | null>(null);
   const [tick, setTick] = useState(0);
 
@@ -81,6 +102,9 @@ export function WorkflowOverview() {
   const [editingAgent, setEditingAgent] = useState<AgentDefinition | null>(null);
   const [newAgentTrigger, setNewAgentTrigger] = useState<AgentTrigger | null>(null);
   const [slotPicker, setSlotPicker] = useState<AgentTrigger | null>(null);
+  const [editingStep, setEditingStep] = useState<LifecycleStep | null>(null);
+  const [newStepTrigger, setNewStepTrigger] = useState<LifecycleTrigger | null>(null);
+  const [hubNode, setHubNode] = useState<WorkflowNode | null>(null);
 
   const fail = (e: Error) => dispatch({ type: 'error', message: e.message });
 
@@ -92,6 +116,7 @@ export function WorkflowOverview() {
     if (!projectId) return;
     let alive = true;
     api.agents(projectId).then((a) => alive && setAgents(a)).catch(fail);
+    api.lifecycleSteps(projectId).then((s) => alive && setSteps(s)).catch(fail);
     api.getKnowledge(projectId).then((k) => alive && setKnowledge(k)).catch(fail);
     return () => {
       alive = false;
@@ -102,11 +127,13 @@ export function WorkflowOverview() {
   useEffect(() => {
     if (scope.kind !== 'feature') {
       setFeatureAgents(null);
+      setFeatureSteps(null);
       setFeatureKnowledge(null);
       return;
     }
     let alive = true;
     api.featureAgents(scope.featureId).then((v) => alive && setFeatureAgents(v)).catch(fail);
+    api.featureLifecycleSteps(scope.featureId).then((v) => alive && setFeatureSteps(v)).catch(fail);
     api.featureKnowledge(scope.featureId).then((k) => alive && setFeatureKnowledge(k)).catch(fail);
     return () => {
       alive = false;
@@ -158,6 +185,30 @@ export function WorkflowOverview() {
     setNewAgentTrigger(trigger);
   };
 
+  /**
+   * Schritte eines Auslöserpunkts — Reihenfolge exakt wie bei der Ausführung
+   * (global vor Projekt, dann Position, dann Name) über `compareStepOrder`.
+   */
+  const nodeSteps = (trigger: LifecycleTrigger): NodeStep[] => {
+    const matches = (t: LifecycleTrigger) =>
+      t.kind === trigger.kind && t.phase === trigger.phase && t.stage === trigger.stage;
+    if (scope.kind === 'feature') {
+      return (featureSteps ?? [])
+        .filter((v) => matches(v.step.trigger))
+        .map((v) => ({ step: v.step, effective: v.effective, decision: v.decision }))
+        .sort((a, b) => compareStepOrder(a.step, b.step));
+    }
+    return (steps ?? [])
+      .filter((s) => matches(s.trigger))
+      .map((s) => ({ step: s, effective: s.enabled, decision: null }))
+      .sort((a, b) => compareStepOrder(a.step, b.step));
+  };
+
+  const openNewStep = (trigger: LifecycleTrigger) => {
+    setEditingStep(null);
+    setNewStepTrigger(trigger);
+  };
+
   return (
     <div className="flex h-full flex-col">
       <ConfigHeader
@@ -183,7 +234,13 @@ export function WorkflowOverview() {
             )}
 
             <div className="flex flex-col">
-              <PromptCard firstPhase={phases[0] ?? null} />
+              <PromptCard
+                firstPhase={phases[0] ?? null}
+                beforeSteps={nodeSteps({ kind: 'before_worktree_create' })}
+                afterSteps={nodeSteps({ kind: 'after_worktree_create' })}
+                onEditStep={setEditingStep}
+                onOpenHub={() => setHubNode({ kind: 'worktree' })}
+              />
               <Connector tone="start" label="startet" />
               {phases.map((phase, i) => {
                 const next = phases[i + 1] ?? null;
@@ -198,9 +255,12 @@ export function WorkflowOverview() {
                       active={editingPhase === phase}
                       beforeAgents={nodeAgents('before_phase', phase)}
                       afterAgents={nodeAgents('after_phase', phase)}
+                      beforeSteps={nodeSteps({ kind: 'before_phase', phase })}
+                      afterSteps={nodeSteps({ kind: 'after_phase', phase })}
                       onEditPrompt={() => setEditingPhase((cur) => (cur === phase ? null : phase))}
                       onEditAgent={setEditingAgent}
-                      onAddAgent={setSlotPicker}
+                      onEditStep={setEditingStep}
+                      onOpenHub={() => setHubNode({ kind: 'phase', phase })}
                     />
                     <Connector {...conn} />
                   </div>
@@ -210,9 +270,12 @@ export function WorkflowOverview() {
                 automation={automation}
                 project={project}
                 feature={scopedFeature}
+                phases={phases}
                 reviewAgents={nodeAgents('review_gate')}
                 onEditAgent={setEditingAgent}
-                onAddAgent={setSlotPicker}
+                stepsFor={nodeSteps}
+                onEditStep={setEditingStep}
+                onOpenHub={(step) => setHubNode({ kind: 'stage', step })}
               />
             </div>
 
@@ -242,6 +305,31 @@ export function WorkflowOverview() {
         )}
       </div>
 
+      {hubNode && (
+        <WorkflowTriggerHub
+          node={hubNode}
+          nodeLabel={nodeLabel(hubNode)}
+          stepsFor={nodeSteps}
+          agentsFor={nodeAgents}
+          onAddStep={(t) => {
+            setHubNode(null);
+            openNewStep(t);
+          }}
+          onAddAgent={(t) => {
+            setHubNode(null);
+            setSlotPicker(t);
+          }}
+          onEditStep={(s) => {
+            setHubNode(null);
+            setEditingStep(s);
+          }}
+          onEditAgent={(a) => {
+            setHubNode(null);
+            setEditingAgent(a);
+          }}
+          onClose={() => setHubNode(null)}
+        />
+      )}
       {slotPicker && (
         <AgentSlotPicker
           trigger={slotPicker}
@@ -275,6 +363,22 @@ export function WorkflowOverview() {
           onSaved={() => {
             setEditingAgent(null);
             setNewAgentTrigger(null);
+            reload();
+          }}
+        />
+      )}
+      {(editingStep || newStepTrigger) && (
+        <LifecycleStepEditDialog
+          step={editingStep}
+          projectId={editingStep ? editingStep.projectId : project.id}
+          {...(newStepTrigger ? { initialTrigger: newStepTrigger } : {})}
+          onClose={() => {
+            setEditingStep(null);
+            setNewStepTrigger(null);
+          }}
+          onSaved={() => {
+            setEditingStep(null);
+            setNewStepTrigger(null);
             reload();
           }}
         />
@@ -457,21 +561,63 @@ function automationState(flag: keyof AutomationSettings, value: unknown): { on: 
 
 // ================= Flow-Knoten =================
 
-function PromptCard({ firstPhase }: { firstPhase: FeaturePhase | null }) {
+function PromptCard({
+  firstPhase,
+  beforeSteps,
+  afterSteps,
+  onEditStep,
+  onOpenHub,
+}: {
+  firstPhase: FeaturePhase | null;
+  beforeSteps: NodeStep[];
+  afterSteps: NodeStep[];
+  onEditStep: (s: LifecycleStep) => void;
+  onOpenHub: () => void;
+}) {
   return (
     <div className={`${CARD} w-full p-3`}>
-      <NodeHeader icon={UserIcon} title="User-Prompt" />
-      <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-        Feature-Anlage: Name + Beschreibung (manuell, aus dem Projekt-Chat oder aus einem Jira-Ticket).
-        Es entstehen Branch <code className="rounded bg-zinc-800 px-1 text-[11px] text-zinc-300">feature/&lt;slug&gt;</code>,
-        ein git-Worktree und eine persistente Claude-Session.
+      <div className="flex items-center gap-2">
+        <UserIcon className="text-zinc-400" />
+        <span className="text-sm font-semibold text-zinc-100">{PROMPT_NODE_TITLE}</span>
+        <InfoPopover label="Feature-Anlage">
+          Name + Beschreibung (manuell, aus dem Projekt-Chat oder aus einem Jira-Ticket). Die Beschreibung
+          wird an den ersten Schritt angehängt und startet ihn.
+        </InfoPopover>
+        <TriggerHubButton onOpen={onOpenHub} nodeLabel={PROMPT_NODE_TITLE} />
+      </div>
+
+      {/* Die ENTSTEHENDEN ARTEFAKTE bleiben sichtbar — sie sind Ergebnis, nicht
+          Erklärung; nur der erklärende Satz wandert hinter das ⓘ (FR-022). */}
+      <p className="mt-1.5 text-[11px] text-zinc-400">
+        <code className="rounded bg-zinc-800 px-1 text-[11px] text-zinc-300">feature/&lt;slug&gt;</code> · git-Worktree
+        · Claude-Session
       </p>
+
       {firstPhase && (
-        <p className="mt-2 rounded border border-zinc-800 bg-zinc-900/60 px-2 py-1.5 text-[11px] text-zinc-400">
-          Die Beschreibung wird an den ersten Schritt (
-          <code className="text-zinc-300">/speckit-{firstPhase}</code>) angehängt und startet ihn.
-        </p>
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <code className="truncate rounded bg-zinc-950 px-2 py-1 font-mono text-[11px] text-sky-400">
+            /speckit-{firstPhase}
+          </code>
+          <InfoPopover label="Erster Schritt">
+            Die Beschreibung wird an den ersten Schritt (<code className="text-zinc-300">/speckit-{firstPhase}</code>)
+            angehängt und startet ihn.
+          </InfoPopover>
+        </div>
       )}
+      <LifecycleSteps stages={['worktree_create']} />
+
+      <StepZone
+        kind="before_worktree_create"
+        hint="Läuft im Haupt-Checkout, bevor der Worktree entsteht; kennt bereits den künftigen Pfad."
+        steps={beforeSteps}
+        onEdit={onEditStep}
+      />
+      <StepZone
+        kind="after_worktree_create"
+        hint="Läuft im neuen Worktree, bevor die erste Phase startet; blockierender Fehlschlag hält an."
+        steps={afterSteps}
+        onEdit={onEditStep}
+      />
     </div>
   );
 }
@@ -482,18 +628,24 @@ function PhaseCard({
   active,
   beforeAgents,
   afterAgents,
+  beforeSteps,
+  afterSteps,
   onEditPrompt,
   onEditAgent,
-  onAddAgent,
+  onEditStep,
+  onOpenHub,
 }: {
   phase: FeaturePhase;
   feature: Feature | null;
   active: boolean;
   beforeAgents: NodeAgent[];
   afterAgents: NodeAgent[];
+  beforeSteps: NodeStep[];
+  afterSteps: NodeStep[];
   onEditPrompt: () => void;
   onEditAgent: (a: AgentDefinition) => void;
-  onAddAgent: (t: AgentTrigger) => void;
+  onEditStep: (s: LifecycleStep) => void;
+  onOpenHub: () => void;
 }) {
   const meta = PHASE_META[phase];
   const status = feature?.phases[phase]?.status;
@@ -507,6 +659,8 @@ function PhaseCard({
             optional
           </span>
         )}
+        <InfoPopover label={`Zweck — ${meta.label}`}>{meta.purpose}</InfoPopover>
+        <TriggerHubButton onOpen={onOpenHub} nodeLabel={meta.label} />
       </div>
       <code
         className="mt-1.5 block truncate rounded bg-zinc-950 px-2 py-1 font-mono text-[11px] text-sky-400"
@@ -514,7 +668,6 @@ function PhaseCard({
       >
         /speckit-{phase} specs/&lt;feature&gt;
       </code>
-      <p className="mt-1.5 text-xs leading-relaxed text-zinc-400">{meta.purpose}</p>
 
       <button
         onClick={onEditPrompt}
@@ -534,30 +687,146 @@ function PhaseCard({
         <KnowledgeIcon className="shrink-0" /> Projektwissen injiziert
       </div>
 
+      <LifecycleSteps stages={['phase_start', 'phase_end']} />
+
+      {/* Schritte stehen ÜBER den Agents — die Anordnung spiegelt die
+          Ausführungsreihenfolge: Schritte bereiten vor, Agents beurteilen. */}
+      <StepZone
+        kind="before_phase"
+        hint="Läuft VOR dem Agenten-Gate und vor dem Phasenstart; blockierender Fehlschlag hält die Phase auf idle."
+        steps={beforeSteps}
+        onEdit={onEditStep}
+      />
       <AgentZone
         title={AGENT_TRIGGER_META.before_phase.label}
         hint="Läuft VOR dem Start; blockierender FAIL verhindert den Phasenstart."
         agents={beforeAgents}
         onEdit={onEditAgent}
-        onAdd={() => onAddAgent({ kind: 'before_phase', phase })}
+      />
+      <StepZone
+        kind="after_phase"
+        hint="Läuft NACH Abschluss, vor dem Agenten-Gate und vor jedem Auto-Progress."
+        steps={afterSteps}
+        onEdit={onEditStep}
       />
       <AgentZone
         title={AGENT_TRIGGER_META.after_phase.label}
         hint="Läuft NACH Abschluss vor dem Auto-Progress; blockierender FAIL hält die Phase auf awaiting_review."
         agents={afterAgents}
         onEdit={onEditAgent}
-        onAdd={() => onAddAgent({ kind: 'after_phase', phase })}
       />
     </div>
   );
 }
 
-function NodeHeader({ icon: Icon, title }: { icon: ComponentType<IconProps>; title: string }) {
+/**
+ * Aufklappbare Schrittliste einer Lebenszyklus-Stufe: „Was das Toolkit hier tut".
+ *
+ * Beschreibt die FEST VERDRAHTETE Arbeit des Toolkits an diesem Knoten, im
+ * Unterschied zum übrigen Knoten-Inhalt, der die aktuelle Konfiguration zeigt.
+ * Quelle ist der statisch importierte Katalog aus @sdd/shared — keine
+ * Serveranfrage, kein Ladezustand, kein Leerzustand (eine Stufe ohne Schritte
+ * ist ein Testfehler, kein UI-Fall). Zustand ist bewusst flüchtig und lokal:
+ * jede Instanz schaltet unabhängig, Startzustand zugeklappt (FR-014).
+ */
+function LifecycleSteps({ stages }: { stages: LifecycleCatalogStageId[] }) {
+  const [open, setOpen] = useState<LifecycleCatalogStageId[]>([]);
+  const toggle = (s: LifecycleCatalogStageId) =>
+    setOpen((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
+
   return (
-    <div className="flex items-center gap-2">
-      <Icon className="text-zinc-400" />
-      <span className="text-sm font-semibold text-zinc-100">{title}</span>
+    <div className="mt-2 border-t border-zinc-800 pt-2">
+      {/* Die Umschalter stehen NEBENEINANDER. An einer Phasenkarte sind es zwei
+          („Phasenstart"/„Phasenende"); untereinander waren das zwei Zeilen plus
+          eine Trennlinie, die nichts trennte. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        {stages.map((stage) => {
+          const { title, when, steps, notDoneHere } = lifecycleStage(stage);
+          return (
+            <div key={stage} className="flex items-center gap-1.5">
+              {/* Der Titel kommt aus dem Katalog. Vorher stand an JEDER Stufe
+                  „Was das Toolkit hier tut" — an einer Phasenkarte zweimal
+                  wortgleich, ohne dass die Beschriftung sagte, welche welche ist. */}
+              <button
+                onClick={() => toggle(stage)}
+                aria-expanded={open.includes(stage)}
+                title={`${title}: die fest verdrahteten Schritte des Toolkits an dieser Stelle`}
+                className="flex items-center gap-1.5 text-left text-[11px] text-zinc-400 hover:text-zinc-200"
+              >
+                <ChevronDownIcon className={`shrink-0 ${open.includes(stage) ? 'rotate-180' : ''}`} />
+                <span>
+                  {title} ({steps.length})
+                </span>
+              </button>
+              <InfoPopover label={title}>
+                <p>{when}</p>
+                {notDoneHere && (
+                  <p className="mt-2 border-t border-zinc-800 pt-1.5">
+                    <span className="text-zinc-400">Nicht Aufgabe des Toolkits:</span> {notDoneHere}
+                  </p>
+                )}
+              </InfoPopover>
+            </div>
+          );
+        })}
+      </div>
+
+      {stages
+        .filter((s) => open.includes(s))
+        .map((stage) => {
+          const { title, steps } = lifecycleStage(stage);
+          return (
+            <LifecycleStepList key={stage} title={title} steps={steps} multi={stages.length > 1} />
+          );
+        })}
     </div>
+  );
+}
+
+/** Die aufgeklappte Schrittliste einer Stufe — eine Zeile je Eintrag. */
+function LifecycleStepList({
+  title,
+  steps,
+  multi,
+}: {
+  title: string;
+  steps: ReturnType<typeof lifecycleStage>['steps'];
+  /** Bei mehreren Umschaltern in einer Reihe sagt eine Kopfzeile, welche Liste das ist. */
+  multi: boolean;
+}) {
+  return (
+    <>
+      {multi && <div className="mt-1.5 text-[10px] uppercase tracking-wide text-zinc-500">{title}</div>}
+      <ol className="mt-1.5 space-y-1">
+          {steps.map((step, i) => (
+            /* EINE Zeile je Eintrag: Nummer + Name, rechts das ⓘ mit allen
+               übrigen Feldern. Vorher belegte jeder Eintrag 4–6 Zeilen. */
+            <li key={step.id} className="flex items-center gap-2">
+              <span className="shrink-0 text-[11px] tabular-nums text-zinc-600">{i + 1}.</span>
+              <span className="truncate text-[11px] font-medium text-zinc-200">{step.name}</span>
+              <InfoPopover label={step.name} className="ml-auto">
+                <p>{step.description}</p>
+                <p className="mt-1.5">
+                  <span className="text-zinc-500">Wann:</span> {step.trigger}
+                </p>
+                <p className="mt-1.5 break-words font-mono text-[10px] text-zinc-500">
+                  {step.location.file} · {step.location.symbol}
+                </p>
+                {step.condition && (
+                  <p className="mt-1.5">
+                    <span className="text-zinc-500">Nur wenn:</span> {step.condition}
+                  </p>
+                )}
+                {step.orderNote && (
+                  <p className="mt-1.5 rounded border border-amber-900/50 bg-amber-950/30 px-2 py-1 text-[10px] leading-snug text-amber-300">
+                    <span className="font-medium">Reihenfolge:</span> {step.orderNote}
+                  </p>
+                )}
+              </InfoPopover>
+            </li>
+          ))}
+      </ol>
+    </>
   );
 }
 
@@ -571,92 +840,84 @@ function PhaseStatusDot({ status }: { status: string }) {
   return <span className={`h-2 w-2 rounded-full ${map[status] ?? 'bg-zinc-600'}`} title={`Status: ${status}`} />;
 }
 
+/**
+ * Zone der Agents eines Auslöserpunkts. Rendert NICHTS, wenn nichts konfiguriert
+ * ist: der leere Punkt bleibt über den Hub des Knotens erreichbar (FR-001, FR-002).
+ */
 function AgentZone({
   title,
   hint,
   agents,
   onEdit,
-  onAdd,
 }: {
   title: string;
   hint: string;
   agents: NodeAgent[];
   onEdit: (a: AgentDefinition) => void;
-  onAdd: () => void;
 }) {
+  if (agents.length === 0) return null;
   return (
     <div className="mt-2 border-t border-zinc-800 pt-2">
       <div className="flex items-center gap-1">
         <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500" title={hint}>
           {title}
         </span>
-        <button
-          onClick={onAdd}
-          className="ml-auto rounded border border-zinc-700 p-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-          title="Agent für diesen Auslöser anlegen"
-        >
-          <PlusIcon />
-        </button>
       </div>
-      {agents.length === 0 ? (
-        <p className="mt-1 text-[10px] text-zinc-600">— keiner</p>
-      ) : (
-        <ul className="mt-1 space-y-1">
-          {agents.map((na) => (
-            <AgentChip key={na.agent.id} na={na} onEdit={onEdit} />
-          ))}
-        </ul>
-      )}
+      <ul className="mt-1 space-y-1">
+        {agents.map((na) => (
+          <AgentChip key={na.agent.id} na={na} onEdit={onEdit} />
+        ))}
+      </ul>
     </div>
   );
 }
 
-function AgentChip({ na, onEdit }: { na: NodeAgent; onEdit: (a: AgentDefinition) => void }) {
-  const { agent, effective, decision } = na;
-  const iconTone = !effective ? 'text-zinc-600' : agent.blocking ? 'text-amber-400' : 'text-zinc-500';
+/**
+ * Zone der Lebenszyklus-Schritte eines Auslöserpunkts — optisch der Zwilling von
+ * {@link AgentZone}. Der Titel kommt IMMER aus `LIFECYCLE_TRIGGER_META`, nie aus
+ * einem lokalen Literal: eine neue Auslöser-Art erzwingt dort einen Eintrag und
+ * erscheint damit automatisch (FR-008). Ohne Einträge rendert die Zone nichts —
+ * der Punkt bleibt über den Hub erreichbar (FR-001).
+ */
+function StepZone({
+  kind,
+  hint,
+  steps,
+  onEdit,
+}: {
+  kind: LifecycleTriggerKind;
+  hint: string;
+  steps: NodeStep[];
+  onEdit: (s: LifecycleStep) => void;
+}) {
+  if (steps.length === 0) return null;
   return (
-    <li>
-      <button
-        onClick={() => onEdit(agent)}
-        className={`flex w-full items-center gap-1.5 rounded border px-1.5 py-1 text-left hover:bg-zinc-800 ${
-          effective
-            ? agent.blocking
-              ? 'border-amber-900/50 bg-zinc-900/60'
-              : 'border-zinc-800 bg-zinc-900/60'
-            : 'border-zinc-800/60 opacity-50'
-        }`}
-        title={
-          effective
-            ? 'Läuft für diese Geltung. Klick zum Bearbeiten.'
-            : 'Läuft NICHT (inaktiv/ausgeschlossen). Klick zum Bearbeiten.'
-        }
-      >
-        <ShieldIcon className={`shrink-0 ${iconTone}`} />
-        <span className="truncate text-[11px] font-medium text-zinc-200">{agent.name}</span>
-        <span
-          className={`ml-auto shrink-0 rounded px-1 text-[9px] ${
-            agent.blocking ? 'bg-red-950/60 text-red-300' : 'bg-zinc-800 text-zinc-400'
-          }`}
-        >
-          {agent.blocking ? 'Gate' : 'Hinweis'}
+    <div className="mt-2 border-t border-zinc-800 pt-2">
+      <div className="flex items-center gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-zinc-500" title={hint}>
+          {LIFECYCLE_TRIGGER_META[kind].title}
         </span>
-        {agent.projectId === null && (
-          <span className="shrink-0 rounded bg-zinc-800 px-1 text-[9px] text-zinc-400" title="Globaler Agent">
-            global
-          </span>
-        )}
-        {decision && decision !== 'auto' && (
-          <span
-            className={`shrink-0 rounded px-1 text-[9px] ${
-              decision === 'include' ? 'bg-emerald-950/60 text-emerald-300' : 'bg-zinc-800 text-zinc-500'
-            }`}
-          >
-            {decision === 'include' ? 'erzwungen' : 'aus'}
-          </span>
-        )}
-      </button>
-    </li>
+      </div>
+      <ul className="mt-1 space-y-1">
+        {steps.map((ns) => (
+          <StepChip key={ns.step.id} ns={ns} onEdit={onEdit} />
+        ))}
+      </ul>
+    </div>
   );
+}
+
+/** Titel des Prompt-/Worktree-Knotens — einmal definiert, in Kopf und Hub benutzt. */
+const PROMPT_NODE_TITLE = 'User-Prompt';
+
+/**
+ * Beschriftung eines Knotens für Hub-Titel und `aria-label`. Kommt aus denselben
+ * Quellen wie die Kopfzeile des Knotens, nie aus einem zweiten Literal (FR-026).
+ */
+function nodeLabel(node: WorkflowNode): string {
+  if (node.kind === 'worktree') return PROMPT_NODE_TITLE;
+  if (node.kind === 'phase') return PHASE_META[node.phase].label;
+  return node.step.label;
 }
 
 function triggerLabel(t: AgentTrigger): string {
@@ -772,16 +1033,23 @@ function IntegrationBlock({
   automation,
   project,
   feature,
+  phases,
   reviewAgents,
   onEditAgent,
-  onAddAgent,
+  stepsFor,
+  onEditStep,
+  onOpenHub,
 }: {
   automation: AutomationSettings;
   project: { integrationMode: string; mergeMode: string; verifyCommands: unknown[] };
   feature: Feature | null;
+  /** Aktive Phasen in Modellreihenfolge — Quelle des Rücksprungziels (FR-013). */
+  phases: FeaturePhase[];
   reviewAgents: NodeAgent[];
   onEditAgent: (a: AgentDefinition) => void;
-  onAddAgent: (t: AgentTrigger) => void;
+  stepsFor: (t: LifecycleTrigger) => NodeStep[];
+  onEditStep: (s: LifecycleStep) => void;
+  onOpenHub: (step: IntegrationStep) => void;
 }) {
   return (
     <div className={`${CARD} w-full p-3`}>
@@ -789,42 +1057,115 @@ function IntegrationBlock({
         <GitMergeIcon className="text-zinc-400" />
         <span className="text-sm font-semibold text-zinc-100">Integration</span>
         <span className="text-[11px] text-zinc-500">nach der letzten Phase</span>
+        <InfoPopover label="Eskalation">
+          Scheitert Verify/Gate/Merge, wird <span className="text-red-400">eskaliert</span> in die
+          „Braucht dich"-Inbox — nie blind gemergt. Der Merge läuft in einem separaten Worktree; der
+          Haupt-Checkout wird nie umgeschaltet.
+        </InfoPopover>
         {feature && feature.integration !== 'none' && <StageBadge stage={feature.integration} />}
       </div>
 
+      <LifecycleSteps stages={['integration']} />
+
       <div className="mt-3 flex flex-col">
-        {INTEGRATION_STEPS.map((step, i) => (
-          <div key={step.id} className="flex flex-col">
-            <IntegrationStepPill
-              step={step}
-              automation={automation}
-              project={project}
-              reviewAgents={step.showsReviewGateAgents ? reviewAgents : null}
-              onEditAgent={onEditAgent}
-              onAddAgent={onAddAgent}
-            />
-            {i < INTEGRATION_STEPS.length - 1 && (
-              <div className="flex justify-center py-0.5 text-zinc-600">
-                <ArrowRightIcon className="rotate-90" />
+        {integrationColumnGroups().map((group, gi) => (
+          <div key={group.column} className="flex flex-col">
+            {/* Überschrift wortgleich mit der Board-Spalte — dieselbe Konstante,
+                damit Board und Ablauf denselben Schritt nicht verschieden nennen. */}
+            <div className="mb-1 mt-1 flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                {INTEGRATION_COLUMN_LABELS[group.column]}
+              </span>
+              <span className="h-px flex-1 bg-zinc-800" />
+            </div>
+            {group.steps.map((step, i) => (
+              <div key={step.id} className="flex flex-col">
+                <IntegrationStepPill
+                  step={step}
+                  automation={automation}
+                  project={project}
+                  reviewAgents={step.showsReviewGateAgents ? reviewAgents : null}
+                  onEditAgent={onEditAgent}
+                  beforeSteps={stepsFor({ kind: 'before_stage', stage: step.id })}
+                  afterSteps={stepsFor({ kind: 'after_stage', stage: step.id })}
+                  onEditStep={onEditStep}
+                  onOpenHub={() => onOpenHub(step)}
+                />
+                {/* Der Pfeil bleibt zwischen ALLEN Stufen — auch über eine
+                    Spaltengrenze hinweg, denn der Ablauf läuft weiter. */}
+                {!(gi === INTEGRATION_COLUMN_GROUP_COUNT - 1 && i === group.steps.length - 1) && (
+                  <div className="flex justify-center py-0.5 text-zinc-600">
+                    <ArrowRightIcon className="rotate-90" />
+                  </div>
+                )}
               </div>
+            ))}
+            {group.column === 'accept' && automation.manualTestGate === true && (
+              <RejectEdge phases={phases} />
             )}
           </div>
         ))}
       </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
-        Scheitert Verify/Gate/Merge, wird <span className="text-red-400">eskaliert</span> in die
-        „Braucht dich"-Inbox — nie blind gemergt. Der Merge läuft in einem separaten Worktree; der
-        Haupt-Checkout wird nie umgeschaltet.
-      </p>
     </div>
   );
 }
 
-const STEP_ICON: Record<string, ComponentType<IconProps>> = {
+/**
+ * Die Integrationsstufen, gruppiert nach Board-Spalte.
+ *
+ * Sowohl die Spaltenreihenfolge als auch die Stufenreihenfolge entstehen aus
+ * `INTEGRATION_STEPS` — die erste Stufe einer Spalte bestimmt deren Position
+ * (FR-010). Keine zweite Liste, die still veralten könnte.
+ */
+function integrationColumnGroups(): { column: IntegrationColumn; steps: IntegrationStep[] }[] {
+  const groups: { column: IntegrationColumn; steps: IntegrationStep[] }[] = [];
+  for (const step of INTEGRATION_STEPS) {
+    const column = COLUMN_FOR_STEP[step.id];
+    const last = groups[groups.length - 1];
+    if (last && last.column === column) last.steps.push(step);
+    else groups.push({ column, steps: [step] });
+  }
+  return groups;
+}
+
+const INTEGRATION_COLUMN_GROUP_COUNT = integrationColumnGroups().length;
+
+/**
+ * Die Kante zurück: eine abgelehnte manuelle Abnahme wirft das Feature nicht
+ * weg, sie schickt es an die Spezifikation zurück. Das war bisher nur Prosa —
+ * jetzt ist es eine sichtbare Kante im Diagramm (FR-013, FR-014).
+ *
+ * Die Zielphase kommt aus `rejectTargetPhase`, derselben Funktion, die der
+ * Server ausführt — kein Literal `'specify'`, das still veraltet, sobald die
+ * Phase abschaltbar wird.
+ */
+function RejectEdge({ phases }: { phases: FeaturePhase[] }) {
+  const target = rejectTargetPhase(phases);
+  if (!target) return null;
+  return (
+    <div className="flex items-center justify-center gap-1.5 py-1 text-amber-400">
+      <ArrowRightIcon className="-rotate-90" />
+      <span className="text-[11px]">Ablehnung → {PHASE_META[target].label}</span>
+      <InfoPopover label={`Ablehnung → ${PHASE_META[target].label}`}>
+        Die Befunde gehen als Arbeitsauftrag in die <strong className="text-zinc-200">bestehende</strong>{' '}
+        Spezifikation — sie wird überarbeitet, nicht neu erstellt. Alles Nachgelagerte wird als veraltet
+        markiert, und der Lebenszyklus läuft von „{PHASE_META[target].label}" an erneut.
+      </InfoPopover>
+    </div>
+  );
+}
+
+/**
+ * Icon je Integrationsstufe. Über `Record<LifecycleStageId, …>` VOLLSTÄNDIG getypt
+ * und ohne Fallback: eine neue Stufe bricht hier den Typcheck, statt still das
+ * Icon der Verifikation zu erben (FR-017, SC-010). Genau das war der Fehler —
+ * „Manuelle Abnahme" hatte keinen Eintrag und trug deshalb das Verify-Icon.
+ */
+const STEP_ICON: Record<LifecycleStageId, ComponentType<IconProps>> = {
   verify: VerifyIcon,
-  review_gate: ShieldIcon,
-  human_review: UserIcon,
+  review_gate: ScalesIcon,
+  manual_test: FlaskIcon,
+  human_review: ReviewIcon,
   merge_queue: GitMergeIcon,
   merged: CheckIcon,
 };
@@ -835,14 +1176,20 @@ function IntegrationStepPill({
   project,
   reviewAgents,
   onEditAgent,
-  onAddAgent,
+  beforeSteps,
+  afterSteps,
+  onEditStep,
+  onOpenHub,
 }: {
   step: IntegrationStep;
   automation: AutomationSettings;
   project: { integrationMode: string; mergeMode: string; verifyCommands: unknown[] };
   reviewAgents: NodeAgent[] | null;
   onEditAgent: (a: AgentDefinition) => void;
-  onAddAgent: (t: AgentTrigger) => void;
+  beforeSteps: NodeStep[];
+  afterSteps: NodeStep[];
+  onEditStep: (s: LifecycleStep) => void;
+  onOpenHub: () => void;
 }) {
   const skipped = step.requires ? automation[step.requires] !== true : false;
   const humanHalt = step.humanUnless ? automation[step.humanUnless] !== true : false;
@@ -856,7 +1203,7 @@ function IntegrationStepPill({
   else if (humanSkipped) badge = { text: 'entfällt (Auto-Merge)', tone: 'skip' };
   else if (step.autoBy) badge = auto ? { text: 'automatisch', tone: 'auto' } : { text: 'manuell', tone: 'human' };
 
-  const Icon = STEP_ICON[step.id] ?? VerifyIcon;
+  const Icon = STEP_ICON[step.id];
   const iconTone =
     badge?.tone === 'auto' || badge?.tone === 'done'
       ? 'text-emerald-400'
@@ -869,13 +1216,18 @@ function IntegrationStepPill({
       <div className="flex items-center gap-1.5">
         <Icon className={`shrink-0 ${iconTone}`} />
         <span className="text-xs font-medium text-zinc-100">{step.label}</span>
+        <InfoPopover label={step.label}>{step.detail}</InfoPopover>
         {badge && (
           <span className="ml-auto">
             <BadgePill {...badge} />
           </span>
         )}
+        <TriggerHubButton onOpen={onOpenHub} nodeLabel={step.label} />
       </div>
-      <p className="mt-1 text-[10px] leading-snug text-zinc-500">{step.detail}</p>
+
+      {/* Die Merge-Arbeit passiert hier (rebase, Konfliktauflösung, Re-Verify, Merge) —
+          nicht am terminalen Schritt 'merged', der nur das Ergebnis ist. */}
+      {step.id === 'merge_queue' && <LifecycleSteps stages={['merge']} />}
 
       {step.id === 'verify' && (
         <p className="mt-1 text-[10px] text-zinc-600">
@@ -896,29 +1248,36 @@ function IntegrationStepPill({
         </p>
       )}
 
-      {reviewAgents && (
+      {/* Schritte vor der Stufenarbeit — und, nach dem Erfolg der Stufe, danach.
+          Beide Zonen entstehen aus INTEGRATION_STEPS × LIFECYCLE_TRIGGER_META, nie
+          aus lokalen Literalen: eine neue Stufe bringt ihre Zonen automatisch mit. */}
+      <StepZone
+        kind="before_stage"
+        hint={`Läuft vor der Stufe „${step.label}"; blockierender Fehlschlag hält die Pipeline hier an.`}
+        steps={beforeSteps}
+        onEdit={onEditStep}
+      />
+      {reviewAgents && reviewAgents.length > 0 && (
         <div className="mt-1.5 border-t border-zinc-800 pt-1.5">
-          <div className="flex items-center">
-            <span className="text-[9px] uppercase tracking-wide text-zinc-500">Agents</span>
-            <button
-              onClick={() => onAddAgent({ kind: 'review_gate' })}
-              className="ml-auto rounded border border-zinc-700 p-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-              title="Review-Gate-Agent anlegen"
-            >
-              <PlusIcon />
-            </button>
-          </div>
-          {reviewAgents.length === 0 ? (
-            <p className="mt-1 text-[10px] text-zinc-600">— keiner</p>
-          ) : (
-            <ul className="mt-1 space-y-1">
-              {reviewAgents.map((na) => (
-                <AgentChip key={na.agent.id} na={na} onEdit={onEditAgent} />
-              ))}
-            </ul>
-          )}
+          <span className="text-[9px] uppercase tracking-wide text-zinc-500">
+            {AGENT_TRIGGER_META.review_gate.label}
+          </span>
+          <ul className="mt-1 space-y-1">
+            {reviewAgents.map((na) => (
+              <AgentChip key={na.agent.id} na={na} onEdit={onEditAgent} />
+            ))}
+          </ul>
         </div>
       )}
+
+      {/* Nach der Stufenarbeit — bei „Review-Gate" also nach den Agents: die
+          Anordnung spiegelt durchgehend die Ausführungsreihenfolge. */}
+      <StepZone
+        kind="after_stage"
+        hint={`Läuft nach erfolgreicher Stufe „${step.label}"; blockierender Fehlschlag hält die Pipeline hier an.`}
+        steps={afterSteps}
+        onEdit={onEditStep}
+      />
     </div>
   );
 }
@@ -969,28 +1328,30 @@ function KnowledgeSection({
         <KnowledgeIcon className="text-sky-400" />
         <span className="text-sm font-semibold text-zinc-100">Projektspezifisches Wissen</span>
         <span className="text-xs text-zinc-500">wird vor jeder Phase injiziert</span>
+        {/* Wissens-Prosa UND Präambel-Text in EINEM Popover — beides erklärt
+            dasselbe und wurde vorher als 9 Zeilen Dauertext gezeigt (FR-020). */}
+        <InfoPopover label="Wie das Wissen injiziert wird">
+          <p>
+            Vor jedem Phasenstart wird das <strong className="text-zinc-200">relevante</strong> Wissen nach{' '}
+            <code className="rounded bg-zinc-800 px-1 text-[11px] text-zinc-300">.sdd/knowledge/</code>{' '}
+            materialisiert (git-excluded) und per kompakter Präambel an den Phasen-Prompt gehängt. Relevanz wird
+            automatisch aus der Anwendbarkeit vorgeschlagen
+            {scope.kind === 'feature' ? ' und ist pro Feature übersteuerbar' : ' (pro Feature übersteuerbar)'}.
+          </p>
+          <div className="mt-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+            <span className="text-[11px] uppercase tracking-wide text-zinc-500">An den Prompt angehängt</span>
+            <p className="mt-1 text-zinc-300">
+              Konsultiere zuerst die Wissens-Übersicht (
+              <code className="rounded bg-zinc-800 px-1 text-[11px]">.sdd/knowledge/index.md</code>) und lies nur
+              die dort als <span className="rounded bg-sky-950/60 px-1 text-[11px] text-sky-300">relevant</span>{' '}
+              markierten Bundles und Einträge — nicht den gesamten Kontext einlesen.
+            </p>
+          </div>
+        </InfoPopover>
         <button onClick={onManage} className={`${SECONDARY_BTN} ml-auto`}>
           Wissen verwalten
           <ArrowRightIcon />
         </button>
-      </div>
-
-      <p className="mt-2 text-xs leading-relaxed text-zinc-400">
-        Vor jedem Phasenstart wird das <strong className="text-zinc-200">relevante</strong> Wissen nach{' '}
-        <code className="rounded bg-zinc-800 px-1 text-[11px] text-zinc-300">.sdd/knowledge/</code> materialisiert
-        (git-excluded) und per kompakter Präambel an den Phasen-Prompt gehängt. Relevanz wird automatisch aus
-        der Anwendbarkeit vorgeschlagen{scope.kind === 'feature' ? ' und ist pro Feature übersteuerbar' : ' (pro Feature übersteuerbar)'}.
-      </p>
-
-      <div className="mt-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs leading-relaxed text-zinc-400">
-        <span className="text-[11px] uppercase tracking-wide text-zinc-500">An den Prompt angehängt</span>
-        <p className="mt-1 text-zinc-300">
-          Konsultiere zuerst die Wissens-Übersicht (
-          <code className="rounded bg-zinc-800 px-1 text-[11px]">.sdd/knowledge/index.md</code>) und lies nur die
-          dort als{' '}
-          <span className="rounded bg-sky-950/60 px-1 text-[11px] text-sky-300">relevant</span> markierten
-          Bundles und Einträge — nicht den gesamten Kontext einlesen.
-        </p>
       </div>
 
       {items.length === 0 ? (
@@ -1036,27 +1397,43 @@ function KnowledgeSection({
 
 // ================= Legende =================
 
+/**
+ * Die achtteilige Legende, hinter EIN ⓘ am Fuß gelegt (FR-021). Der Inhalt ist
+ * unverändert — er wird nur einmal nachgeschlagen, statt dauerhaft acht Zeilen
+ * am Ende jeder Ansicht zu belegen.
+ */
 function Legend() {
   return (
-    <div className="mt-6 flex flex-wrap items-center gap-4 border-t border-zinc-800 pt-3 text-[11px] text-zinc-500">
-      <span className="flex items-center gap-1">
-        <BoltIcon className="text-emerald-400" /> automatisch
-      </span>
-      <span className="flex items-center gap-1">
-        <UserIcon className="text-amber-400" /> Human-in-the-Loop
-      </span>
-      <span className="flex items-center gap-1">
-        <WarningIcon className="text-red-400" /> Eskalation → Braucht dich
-      </span>
-      <span className="flex items-center gap-1">
-        <ShieldIcon className="text-amber-400" /> Agent-Gate (blockierend)
-      </span>
-      <span className="flex items-center gap-1">
-        <ShieldIcon className="text-zinc-500" /> Agent-Hinweis (beratend)
-      </span>
-      <span className="flex items-center gap-1">
-        <KnowledgeIcon className="text-sky-400" /> Projektwissen-Injektion
-      </span>
+    <div className="mt-6 flex items-center gap-1.5 border-t border-zinc-800 pt-3 text-[11px] text-zinc-500">
+      <span>Legende</span>
+      <InfoPopover label="Legende">
+        <div className="flex flex-col gap-1">
+          <span className="flex items-center gap-1.5">
+            <BoltIcon className="text-emerald-400" /> automatisch
+          </span>
+          <span className="flex items-center gap-1.5">
+            <UserIcon className="text-amber-400" /> Human-in-the-Loop
+          </span>
+          <span className="flex items-center gap-1.5">
+            <WarningIcon className="text-red-400" /> Eskalation → Braucht dich
+          </span>
+          <span className="flex items-center gap-1.5">
+            <ShieldIcon className="text-amber-400" /> Agent-Gate (blockierend)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <ShieldIcon className="text-zinc-500" /> Agent-Hinweis (beratend)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <StepsIcon className="text-amber-400" /> Schritt (blockierend)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <StepsIcon className="text-zinc-500" /> Schritt (beratend)
+          </span>
+          <span className="flex items-center gap-1.5">
+            <KnowledgeIcon className="text-sky-400" /> Projektwissen-Injektion
+          </span>
+        </div>
+      </InfoPopover>
     </div>
   );
 }

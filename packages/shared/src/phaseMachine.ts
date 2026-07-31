@@ -116,6 +116,22 @@ export function shouldAutoProgress(next: FeaturePhase, automation: AutomationSet
   return FEATURE_PHASES.indexOf(next) <= FEATURE_PHASES.indexOf(automation.autoProgressUntil);
 }
 
+/**
+ * Zurückweisung im Review (FR-020/FR-021): der LETZTE aktive Schritt geht auf
+ * `awaiting_review` zurück und braucht eine neue, ausdrückliche Freigabe.
+ *
+ * Bewusst OHNE Effekte: `approvePhase()` würde bei autoVerify sofort wieder
+ * einen Integrationsstart auslösen — genau das darf beim Zurücksetzen nicht
+ * passieren. Erst die spätere Freigabe durch den Menschen geht wieder durch
+ * `approvePhase()` und startet die Pipeline dann von vorn.
+ */
+export function reopenLastPhase(phases: PhaseMap): PhaseTransition {
+  const order = orderedPhases(phases);
+  const last = order.at(-1);
+  if (last === undefined) return { phases, effects: [] };
+  return { phases: patch(phases, last, { status: 'awaiting_review' }), effects: [] };
+}
+
 /** Phase verwerfen: selbst auf idle, alle approvten Downstream-Phasen werden stale. */
 export function discardPhase(phases: PhaseMap, phase: FeaturePhase): PhaseTransition {
   let map = patch(phases, phase, { status: 'idle', stale: false });
@@ -140,6 +156,31 @@ export function reconcileWithDisk(phases: PhaseMap, artifactExists: (p: FeatureP
     }
   }
   return map;
+}
+
+/**
+ * Phasen-Diff für die Ton-Ebene (Contract S6, research D2): welche Phase ist
+ * gerade *erreicht* worden? Erreicht = ihr Status wechselt auf `running`.
+ *
+ * Bewusst ohne neues Server-Ereignis: die Oberfläche hält den letzten
+ * `phases`-Stand je Feature und vergleicht ihn beim Eintreffen von
+ * `feature_updated`. `prev === undefined` (erstes Eintreffen, Bootstrap,
+ * Wiederverbinden) liefert `null` — kein Ton ohne echtes Ereignis.
+ *
+ * Ein Neustart derselben Phase gilt erneut als erreicht; hörbar ist „diese
+ * Phase läuft jetzt an", nicht „zum ersten Mal".
+ */
+export function enteredPhase(prev: PhaseMap | undefined, next: PhaseMap): FeaturePhase | null {
+  if (prev === undefined) return null;
+  let entered: FeaturePhase | null = null;
+  // FEATURE_PHASES ist die Workflow-Reihenfolge: bei mehreren gleichzeitigen
+  // Wechseln bleibt die SPÄTESTE stehen — die weitergehende Arbeit (S6.3).
+  for (const p of FEATURE_PHASES) {
+    const before = prev[p] as PhaseState | undefined;
+    const after = next[p] as PhaseState | undefined;
+    if (after?.status === 'running' && before?.status !== 'running') entered = p;
+  }
+  return entered;
 }
 
 /**

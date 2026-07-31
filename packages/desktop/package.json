@@ -1,0 +1,23 @@
+{
+  "name": "@sdd/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "macOS-App-Hülle: bündelt Server + Web-UI in eine installierbare .app",
+  "type": "module",
+  "scripts": {
+    "bundle": "node build.mjs",
+    "app": "node build.mjs && electron app/main.cjs",
+    "dist": "node build.mjs && electron-builder --mac --config electron-builder.yml",
+    "dist:signed": "node build.mjs && electron-builder --mac --config electron-builder.yml --config.mac.notarize=true",
+    "icon": "node make-icon.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@types/node": "^22.15.0",
+    "electron": "43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "0.25.12",
+    "typescript": "^5.8.0"
+  }
+}

@@ -67,7 +67,6 @@ describe('ChatRepo', () => {
       status: 'complete',
       content: 'Antwort',
       proposal: { name: 'x', description: 'y', status: 'offen' },
-      costUsd: 0.01,
       tokens: 42,
     });
     chat.finalizeMessage(msg.id, { status: 'error', error: 'zu spät' });
@@ -77,7 +76,6 @@ describe('ChatRepo', () => {
     expect(stored.content).toBe('Antwort');
     expect(stored.error).toBeNull();
     expect(stored.proposal).toEqual({ name: 'x', description: 'y', status: 'offen' });
-    expect(stored.costUsd).toBe(0.01);
     expect(stored.tokens).toBe(42);
   });
 

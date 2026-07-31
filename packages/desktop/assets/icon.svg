@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="SDD Toolkit">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#27272a" />
+      <stop offset="1" stop-color="#0e0e11" />
+    </linearGradient>
+    <!--
+      userSpaceOnUse ist Pflicht: Der senkrechte Stamm hat eine Bounding-Box
+      ohne Breite — ein objectBoundingBox-Verlauf entartet dort und der Strich
+      verschwindet spurlos.
+    -->
+    <linearGradient id="mark" gradientUnits="userSpaceOnUse" x1="330" y1="300" x2="700" y2="730">
+      <stop offset="0" stop-color="#6ee7b7" />
+      <stop offset="1" stop-color="#10b981" />
+    </linearGradient>
+  </defs>
+
+  <!-- Grundplatte im macOS-Squircle-Raster: 824 px Kantenlänge, 100 px Rand. -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#plate)" />
+  <rect x="104" y="104" width="816" height="816" rx="181" fill="none" stroke="#3f3f46" stroke-width="8" />
+
+  <!-- Branch-Glyphe, maßstäblich aus dem Favicon übernommen. -->
+  <g fill="none" stroke="url(#mark)" stroke-width="78" stroke-linecap="round">
+    <path d="M370 348v328" />
+    <path d="M654 348v58a132 132 0 0 1-132 132H370" />
+  </g>
+  <g fill="url(#mark)">
+    <circle cx="370" cy="348" r="76" />
+    <circle cx="654" cy="348" r="76" />
+    <circle cx="370" cy="676" r="76" />
+  </g>
+</svg>

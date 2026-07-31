@@ -8,13 +8,17 @@ import type {
   AutomationSettings,
   BranchInfo,
   FeatureAgentView,
+  FeatureLifecycleStepView,
+  LifecycleStep,
+  LifecycleStepFeatureDecision,
   ReviewComment,
   ReviewOverviewItem,
   ChatConversation,
+  ChatCostProfile,
   ChatFeatureProposal,
   ChatMessage,
-  ChatWorkAdoptBlocked,
-  ChatWorkAdoptResult,
+  ChatPauseState,
+  ChatWorkEnsureResult,
   ChatWorkRestartNeedsConfirm,
   ChatWorkRestartResult,
   ChatWorkSessionInfo,
@@ -22,10 +26,16 @@ import type {
   FeatureArtifact,
   FeatureArtifactStep,
   FeatureCostBreakdown,
+  FeatureDocument,
+  FeatureDocumentsResult,
   FeaturePhase,
   SaveFeatureArtifactRequest,
   SaveFeatureArtifactResult,
   FeatureProposalStatus,
+  FeatureStackView,
+  ManualTestFinding,
+  ManualTestRejection,
+  TestingLaneView,
   JiraConnectionStatus,
   JiraImportResult,
   JiraIssueSummary,
@@ -39,6 +49,7 @@ import type {
   KnowledgeTree,
   MergeQueueItem,
   OptimizationSettings,
+  PersonalSettings,
   PhaseDefinition,
   Project,
   ResolvedSelection,
@@ -46,6 +57,8 @@ import type {
   SavePhaseDefinitionRequest,
   SavePhaseDefinitionResult,
   SelectionDecision,
+  SystemStatus,
+  WorktreeOverview,
 } from '@sdd/shared';
 
 export type { RunSummary };
@@ -65,9 +78,14 @@ export interface ChatState {
   conversation: ChatConversation | null;
   messages: ChatMessage[];
   workSession?: ChatWorkSessionInfo | null;
-  /** Session war live, ist aber pausiert (Leerlauf-Reaper) und fortsetzbar → Panel fragt nach. */
-  workPaused?: boolean;
+  /**
+   * Session war live, läuft nicht mehr (Leerlauf-Reaper) → Panel fragt nach, statt still zu
+   * resumen. Ab `resumeMaxIdleMs` Pause entfällt die Frage: dann beginnt ein neuer Chat.
+   */
+  workPause?: ChatPauseState;
   pendingFeatures?: ChatFeatureProposal | null;
+  /** Bewertung der letzten Turn-Grenze: Verlaufsgröße, Verbrauch, Verhältnis, offenes Angebot. */
+  costProfile?: ChatCostProfile | null;
 }
 
 export interface LiveSessionInfo {
@@ -91,6 +109,29 @@ export interface AppState {
   queues: Record<string, MergeQueueItem[]>;
   automation: AutomationSettings;
   optimization: OptimizationSettings;
+  /** Individuelle Einstellungen — immer vollständig, nie null (A1.1). */
+  personal: PersonalSettings;
+}
+
+/** Abweisungsgründe von `POST /api/worktrees/remove`. */
+export type WorktreeRemoveCode =
+  | 'not_a_worktree'
+  | 'main_checkout'
+  | 'not_removable'
+  | 'session_active'
+  | 'uncommitted'
+  | 'remove_failed';
+
+export class WorktreeRemoveError extends Error {
+  constructor(
+    message: string,
+    public readonly code: WorktreeRemoveCode,
+    /** Nur bei code === 'uncommitted': Anzahl gefährdeter Dateien (FR-024). */
+    public readonly uncommittedFileCount = 0,
+  ) {
+    super(message);
+    this.name = 'WorktreeRemoveError';
+  }
 }
 
 /** Jira-Routen-Fehler mit HTTP-Status + Verbindungszustand (401 → reauth/disconnected). */
@@ -154,28 +195,58 @@ export const api = {
   removeProject: (id: string) => request<unknown>('DELETE', `/api/projects/${id}`),
   createFeature: (projectId: string, name: string, description?: string) =>
     request<Feature>('POST', `/api/projects/${projectId}/features`, { name, description }),
+  /**
+   * Feature mit Dokumenten anlegen (US1). `request()` kann kein multipart —
+   * daher direkter `fetch` wie bei `pasteImage`. Die Reihenfolge im FormData ist
+   * verbindlich: `name`, `description`, dann die Dateien (contracts).
+   */
+  createFeatureWithDocuments: async (
+    projectId: string,
+    name: string,
+    description: string | undefined,
+    files: File[],
+  ): Promise<FeatureDocumentsResult> => {
+    const form = new FormData();
+    form.append('name', name);
+    form.append('description', description ?? '');
+    for (const file of files) form.append('files', file, file.name);
+    const res = await fetch(`/api/projects/${projectId}/features/with-documents`, {
+      method: 'POST',
+      body: form,
+    });
+    const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!res.ok) throw new Error((data.message as string) ?? `POST → ${res.status}`);
+    return data as unknown as FeatureDocumentsResult;
+  },
+  featureDocuments: (featureId: string) =>
+    request<FeatureDocument[]>('GET', `/api/features/${featureId}/documents`),
+  openFeatureDocument: (featureId: string, storedName: string) =>
+    request<{ ok: true }>('POST', `/api/features/${featureId}/documents/open`, { storedName }),
   startPhase: (featureId: string, phase: FeaturePhase, prompt?: string) =>
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/start`, { prompt }),
   approvePhase: (featureId: string, phase: FeaturePhase) =>
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/approve`),
   discardPhase: (featureId: string, phase: FeaturePhase) =>
     request<Feature>('POST', `/api/features/${featureId}/phases/${phase}/discard`),
-  advance: (featureId: string, to: FeaturePhase) =>
-    request<Feature>('POST', `/api/features/${featureId}/advance`, { to }),
   integrate: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/integrate`),
+  /** Der einzige asynchrone Fakt der Aktions-Policy (FR-027). */
+  integrationReadiness: (featureId: string) =>
+    request<{ hasChanges: boolean }>('GET', `/api/features/${featureId}/integration-readiness`),
   approveMerge: (featureId: string, body: ApproveMergeRequest = {}) =>
     request<Feature>('POST', `/api/features/${featureId}/approve-merge`, body),
   retryIntegration: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/retry-integration`),
   archiveFeature: (featureId: string) => request<unknown>('POST', `/api/features/${featureId}/archive`),
   deleteFeature: (featureId: string) => request<{ ok: true }>('DELETE', `/api/features/${featureId}`),
-  markDone: (featureId: string) => request<Feature>('POST', `/api/features/${featureId}/mark-done`),
   updateFeature: (
     featureId: string,
     patch: { automation?: Partial<AutomationSettings>; optimization?: Partial<OptimizationSettings> },
   ) => request<Feature>('PATCH', `/api/features/${featureId}`, patch),
   setOptimization: (patch: Partial<OptimizationSettings>) =>
     request<{ optimization: OptimizationSettings }>('PATCH', '/api/settings/optimization', patch),
+  /** Teilmengen-Semantik; die Antwort ist der vollständige, normalisierte Stand (A2). */
+  savePersonal: (patch: Partial<PersonalSettings>) =>
+    request<PersonalSettings>('PATCH', '/api/settings/personal', patch),
   costBreakdown: (featureId: string, groupByOptimization = false) =>
     request<FeatureCostBreakdown>(
       'GET',
@@ -195,6 +266,7 @@ export const api = {
   executions: (featureId?: string) =>
     request<ExecutionInfo[]>('GET', featureId ? `/api/executions?featureId=${featureId}` : '/api/executions'),
   runs: () => request<{ runs: RunSummary[] }>('GET', '/api/runs'),
+  telemetryStatus: () => request<TelemetryStatus>('GET', '/api/telemetry/status'),
   executionLog: (id: string) => request<{ log: string }>('GET', `/api/executions/${id}/log`),
   resolutionDiff: (id: string) =>
     request<{ pre: string | null; post: string | null }>('GET', `/api/executions/${id}/resolution-diff`),
@@ -323,7 +395,7 @@ export const api = {
     request<ChatMessage>('PATCH', `/api/chat/messages/${messageId}/proposal`, { status, featureId }),
   // Projekt-Chat als vollwertige Session
   ensureChatWorkSession: (projectId: string) =>
-    request<{ sessionId: string }>('POST', `/api/projects/${projectId}/chat/work/session`),
+    request<ChatWorkEnsureResult>('POST', `/api/projects/${projectId}/chat/work/session`),
   /** Neustart: frische Session. 409 → { needsConfirm, reason }; sonst { sessionId, conversationId }. */
   restartChatWorkSession: async (
     projectId: string,
@@ -338,17 +410,13 @@ export const api = {
     if (!res.ok) throw new Error((await res.text()) || `restart → ${res.status}`);
     return (await res.json()) as ChatWorkRestartResult;
   },
-  /** Chat-Arbeit nach main übernehmen. 409 → { blocked, message }; sonst { target, files, committed }. */
-  adoptChatWork: async (projectId: string): Promise<ChatWorkAdoptResult | ChatWorkAdoptBlocked> => {
-    const res = await fetch(`/api/projects/${projectId}/chat/work/adopt`, { method: 'POST' });
-    if (res.status === 409) return (await res.json()) as ChatWorkAdoptBlocked;
-    if (!res.ok) throw new Error((await res.text()) || `adopt → ${res.status}`);
-    return (await res.json()) as ChatWorkAdoptResult;
-  },
   createChatFeatures: (projectId: string, names: string[]) =>
     request<{ features: Feature[] }>('POST', `/api/projects/${projectId}/chat/work/features/create`, { names }),
   dismissChatFeatures: (projectId: string) =>
     request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/features/dismiss`),
+  /** „Chat fortsetzen": Neustart-Angebot ablehnen, bis der Verlauf weiter gewachsen ist. */
+  dismissChatRestartOffer: (projectId: string) =>
+    request<{ ok: true }>('POST', `/api/projects/${projectId}/chat/work/offer/dismiss`),
 
   // Review-Portal
   reviewOverview: (projectId: string) =>
@@ -394,6 +462,90 @@ export const api = {
       `/api/features/${featureId}/agent-runs/${encodeURIComponent(runId)}/report`,
     ),
 
+  /**
+   * Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck samt fertiger
+   * Bewertung und der zuletzt registrierte Ausfall. Die Schwellen entscheidet der
+   * Server — hier wird nur gezeigt, was er urteilt.
+   */
+  systemStatus: () => request<SystemStatus>('GET', '/api/system/status'),
+
+  // Stack-Profile und Testing-Lane (manuelle Abnahme vor dem Merge)
+
+  /** Erhobener Stack-Zustand eines Features (FR-023) — Lesen ist immer erlaubt. */
+  featureStack: (featureId: string, refresh = false) =>
+    request<FeatureStackView>(
+      'GET',
+      `/api/features/${featureId}/stack${refresh ? '?refresh=1' : ''}`,
+    ),
+  /**
+   * Eine der vier Lane-Aktionen. Wirkt ausschließlich auf den Stack dieses
+   * Features; die Antwort ist der frisch erhobene Zustand danach (FR-032).
+   */
+  stackAction: (featureId: string, action: 'up' | 'stop' | 'restart' | 'down', profile?: 'test' | 'full') =>
+    request<FeatureStackView>('POST', `/api/features/${featureId}/stack/${action}`, profile ? { profile } : {}),
+  /** Einträge der Testing-Lane eines Projekts (FR-030). */
+  testingLane: (projectId: string, refresh = false) =>
+    request<TestingLaneView>(
+      'GET',
+      `/api/testing-lane?projectId=${encodeURIComponent(projectId)}${refresh ? '&refresh=1' : ''}`,
+    ),
+  confirmManualTest: (featureId: string) =>
+    request<Feature>('POST', `/api/features/${featureId}/manual-test/confirm`),
+  /**
+   * Ablehnen: Befunde und/oder Anmerkung (mindestens eines). Der Server legt
+   * die Befunde an, setzt das Feature auf `specify` zurück und startet den Lauf
+   * mit dem kompilierten Auftrag.
+   */
+  rejectManualTest: (featureId: string, input: ManualTestRejection) =>
+    request<Feature>('POST', `/api/features/${featureId}/manual-test/reject`, input),
+  /** „behoben?"-Häkchen der Folgerunde; umkehrbar. */
+  setFindingStatus: (findingId: string, status: 'open' | 'resolved') =>
+    request<ManualTestFinding>('PATCH', `/api/manual-test-findings/${findingId}`, { status }),
+  /** Einen versehentlich erfassten Befund verwerfen. */
+  removeFinding: (findingId: string) =>
+    request<{ ok: true }>('DELETE', `/api/manual-test-findings/${findingId}`),
+  /** Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037). */
+  retryCleanup: (featureId: string) =>
+    request<{ cleaned: boolean; worktreePath: string | null; cleanupError: string | null }>(
+      'POST',
+      `/api/features/${featureId}/cleanup`,
+    ),
+
+  // Worktree-Übersicht (tool-weit, projektübergreifend)
+  worktrees: (refresh = false) =>
+    request<WorktreeOverview>('GET', refresh ? '/api/worktrees?refresh=1' : '/api/worktrees'),
+  /**
+   * Einen Worktree entfernen. Abweisungen kommen als {@link WorktreeRemoveError}
+   * mit unterscheidbarem Code — insbesondere `uncommitted` inkl. Anzahl, die den
+   * zweistufigen Bestätigungsfluss auslöst.
+   */
+  removeWorktree: async (body: {
+    projectId: string;
+    path: string;
+    force?: boolean;
+  }): Promise<{ ok: true; featureId: string | null }> => {
+    const res = await fetch('/api/worktrees/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: WorktreeRemoveCode;
+      message?: string;
+      uncommittedFileCount?: number;
+      ok?: true;
+      featureId?: string | null;
+    };
+    if (!res.ok) {
+      throw new WorktreeRemoveError(
+        data.message ?? `Entfernen fehlgeschlagen (${res.status})`,
+        data.error ?? 'remove_failed',
+        data.uncommittedFileCount ?? 0,
+      );
+    }
+    return { ok: true, featureId: data.featureId ?? null };
+  },
+
   // Agents-Verwaltung
   agents: (projectId?: string) =>
     request<AgentDefinition[]>('GET', projectId ? `/api/agents?projectId=${projectId}` : '/api/agents'),
@@ -405,6 +557,24 @@ export const api = {
     request<unknown>('PUT', `/api/features/${featureId}/agents/selection`, { agentId, decision }),
   runAgent: (featureId: string, agentId: string) =>
     request<{ started: true }>('POST', `/api/features/${featureId}/agents/${agentId}/run`),
+
+  // Lebenszyklus-Schritte (Zwilling der Agent-Aufrufe). Bewusst OHNE „jetzt ausführen":
+  // ein Schritt läuft an seinem Auslöser, die Stufe wird als Ganzes erneut angestoßen.
+  lifecycleSteps: (projectId?: string) =>
+    request<LifecycleStep[]>(
+      'GET',
+      projectId ? `/api/lifecycle-steps?projectId=${projectId}` : '/api/lifecycle-steps',
+    ),
+  saveLifecycleStep: (step: Omit<LifecycleStep, 'id'> & { id?: string }) =>
+    request<LifecycleStep>('PUT', '/api/lifecycle-steps', step),
+  deleteLifecycleStep: (stepId: string) => request<unknown>('DELETE', `/api/lifecycle-steps/${stepId}`),
+  featureLifecycleSteps: (featureId: string) =>
+    request<FeatureLifecycleStepView[]>('GET', `/api/features/${featureId}/lifecycle-steps`),
+  setLifecycleStepSelection: (
+    featureId: string,
+    stepId: string,
+    decision: LifecycleStepFeatureDecision | 'auto',
+  ) => request<unknown>('PUT', `/api/features/${featureId}/lifecycle-steps/selection`, { stepId, decision }),
   // Jira-Anbindung & Import (US1–US4)
   jiraStatus: () => jiraRequest<JiraConnectionStatus>('GET', '/api/jira/status'),
   jiraConnect: () => jiraRequest<{ authUrl: string | null }>('POST', '/api/jira/connect'),
@@ -454,22 +624,42 @@ export interface DiffSummary {
   commits: { sha: string; date: number; subject: string }[];
 }
 
+/** Zustand der Telemetrie-Erfassung (FR-019). */
+export interface TelemetryStatus {
+  active: boolean;
+  /** Grund, wenn nicht in Betrieb; null = läuft. */
+  reason: 'route_unavailable' | 'no_events_yet' | null;
+  endpoint: string;
+  eventsReceived: number;
+  lastEventAt: number | null;
+  /** Eine bestehende OTel-Konfiguration wird für Toolkit-Sessions übersteuert. */
+  overridesUserConfig: boolean;
+}
+
 export interface ExecutionInfo {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
+  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work' | 'lifecycle_step';
+  /** Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start. */
+  label: string | null;
   phase: string | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
   finishedAt: number | null;
   exitCode: number | null;
-  costUsd: number | null;
   tokens: number | null;
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
-  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  tokensSource: 'telemetry' | 'transcript' | 'parsed' | 'estimated' | null;
+  /** Von der CLI gemeldeter Betrag in Mikro-USD; null = kein Betrag (nie geschätzt). */
+  costMicros: number | null;
+  /** Tokens der Subagenten; null = es liefen keine (dann wird nichts angezeigt). */
+  subagentTokens: number | null;
+  subagentCostMicros: number | null;
+  model: string | null;
+  telemetryFinalAt: number | null;
   logPath: string | null;
 }

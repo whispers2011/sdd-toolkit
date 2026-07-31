@@ -23,11 +23,19 @@ import type {
   WorkflowPhase,
 } from '@sdd/shared';
 import {
+  EMPTY_STACK_CONFIG,
   LEVEL2_DEFAULTS,
   OPTIMIZATION_DEFAULTS,
   OPTIMIZATION_OFF_DEFAULTS,
+  isTicketSource,
+  meteringConflictFactor,
+  normalizeSoundSettings,
+  normalizeTicketSource,
   parseOptimizationPartial,
+  parseStackConfig,
+  type PersonalSettings,
   type PhaseMap,
+  type SoundSettings,
 } from '@sdd/shared';
 import type { DB } from './database.js';
 
@@ -46,6 +54,7 @@ interface ProjectRow {
   merge_mode: string;
   editor_cmd: string | null;
   integration_mode: string;
+  stack: string | null;
   created_at: number;
 }
 
@@ -63,6 +72,7 @@ function toProject(r: ProjectRow): Project {
     mergeMode: r.merge_mode === 'squash' ? 'squash' : 'ff',
     editorCmd: r.editor_cmd,
     integrationMode: r.integration_mode === 'pr' ? 'pr' : 'local',
+    stack: parseStackConfig(r.stack ?? '{}'),
     createdAt: r.created_at,
   };
 }
@@ -75,8 +85,8 @@ export class ProjectRepo {
     const createdAt = Date.now();
     this.db
       .prepare(
-        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, optimization, merge_mode, editor_cmd, integration_mode, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO projects (id, name, path, default_branch, color, enabled_phases, verify_commands, automation, optimization, merge_mode, editor_cmd, integration_mode, stack, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -91,6 +101,7 @@ export class ProjectRepo {
         p.mergeMode,
         p.editorCmd,
         p.integrationMode,
+        JSON.stringify(p.stack ?? EMPTY_STACK_CONFIG),
         createdAt,
       );
     return { ...p, id, createdAt };
@@ -102,7 +113,7 @@ export class ProjectRepo {
     const merged = { ...cur, ...patch };
     this.db
       .prepare(
-        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, optimization=?, merge_mode=?, editor_cmd=?, integration_mode=? WHERE id=?`,
+        `UPDATE projects SET name=?, path=?, default_branch=?, color=?, enabled_phases=?, verify_commands=?, automation=?, optimization=?, merge_mode=?, editor_cmd=?, integration_mode=?, stack=? WHERE id=?`,
       )
       .run(
         merged.name,
@@ -116,6 +127,7 @@ export class ProjectRepo {
         merged.mergeMode,
         merged.editorCmd,
         merged.integrationMode,
+        JSON.stringify(merged.stack ?? EMPTY_STACK_CONFIG),
         id,
       );
   }
@@ -157,6 +169,8 @@ interface FeatureRow {
   jira_key: string | null;
   jira_url: string | null;
   jira_imported_at: number | null;
+  review_rejected_at: number | null;
+  cleanup_error: string | null;
   created_at: number;
   archived_at: number | null;
 }
@@ -178,6 +192,8 @@ function toFeature(r: FeatureRow): Feature {
     ...(r.jira_key && r.jira_url
       ? { jiraRef: { key: r.jira_key, url: r.jira_url, importedAt: r.jira_imported_at ?? 0 } }
       : {}),
+    reviewRejectedAt: r.review_rejected_at ?? null,
+    cleanupError: r.cleanup_error ?? null,
     createdAt: r.created_at,
     archivedAt: r.archived_at,
   };
@@ -186,7 +202,7 @@ function toFeature(r: FeatureRow): Feature {
 export class FeatureRepo {
   constructor(private db: DB) {}
 
-  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt'>): Feature {
+  create(f: Omit<Feature, 'id' | 'createdAt' | 'archivedAt' | 'reviewRejectedAt' | 'cleanupError'>): Feature {
     const id = nanoid(10);
     const createdAt = Date.now();
     this.db
@@ -209,7 +225,7 @@ export class FeatureRepo {
         f.tasksTotal,
         createdAt,
       );
-    return { ...f, id, createdAt, archivedAt: null };
+    return { ...f, id, createdAt, archivedAt: null, reviewRejectedAt: null, cleanupError: null };
   }
 
   get(id: string): Feature | null {
@@ -245,6 +261,14 @@ export class FeatureRepo {
     this.db.prepare('UPDATE features SET integration=? WHERE id=?').run(stage, id);
   }
 
+  /**
+   * Offene Zurückweisung im Review (FR-026): Zeitstempel setzen bzw. mit null
+   * löschen, sobald der letzte Schritt erneut freigegeben wurde.
+   */
+  setReviewRejected(id: string, ts: number | null): void {
+    this.db.prepare('UPDATE features SET review_rejected_at=? WHERE id=?').run(ts, id);
+  }
+
   /** Integrations-Ziel der Review-Freigabe; null = Projekt-Default-Branch. */
   setIntegrationTarget(id: string, target: string | null): void {
     this.db.prepare('UPDATE features SET integration_target=? WHERE id=?').run(target, id);
@@ -252,6 +276,15 @@ export class FeatureRepo {
 
   setWorktree(id: string, worktreePath: string | null): void {
     this.db.prepare('UPDATE features SET worktree_path=? WHERE id=?').run(worktreePath, id);
+  }
+
+  /**
+   * Grund eines fehlgeschlagenen Aufräumens (FR-035); null löscht ihn, sobald das
+   * Entfernen nachgewiesen geklappt hat. Getrennt von `setWorktree`, damit der
+   * Pfad NICHT versehentlich mit dem Fehler zusammen geleert wird (FR-036).
+   */
+  setCleanupError(id: string, reason: string | null): void {
+    this.db.prepare('UPDATE features SET cleanup_error=? WHERE id=?').run(reason, id);
   }
 
   /**
@@ -269,6 +302,7 @@ export class FeatureRepo {
       this.db.prepare('DELETE FROM executions WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM agent_runs WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM attention WHERE feature_id=?').run(id);
+      this.db.prepare('DELETE FROM plausibility_state WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM sessions WHERE feature_id=?').run(id);
       this.db.prepare('DELETE FROM features WHERE id=?').run(id);
     })();
@@ -387,23 +421,64 @@ export interface ExecutionStartInput {
   kind: ExecutionRecord['kind'];
   phase: WorkflowPhase | null;
   logPath: string | null;
+  /**
+   * Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start.
+   * Hält den Lauf lesbar, nachdem der Schritt umbenannt oder gelöscht wurde.
+   */
+  label?: string | null;
   /** Transkript-Byte-Offset beim Start (Usage-Attribution, nur Phasen). */
   transcriptOffsetStart?: number | null;
   /** Snapshot der aktiven Optimierungs-Strategie (nur Phasen). */
   optContextStrategy?: ContextStrategy | null;
   optCompression?: CompressionMode | null;
+  /**
+   * Beginn des Laufs; Vorgabe ist der Zeitpunkt des Anlegens.
+   *
+   * Nur der Chat gibt ihn mit: Er legt seinen Lauf atomar beim Turn-Abschluss an und
+   * kennt den Beginn seines Turn-Fensters. Ohne dieses Feld ist `started_at` gleich
+   * `finished_at` — chat_work-Läufe hatten damit die Dauer 0 ms, und jede Beurteilung
+   * über die Dauer war für den Chat blind.
+   */
+  startedAt?: number;
 }
 
 /** Autoritative/geschätzte Verbrauchsdaten beim Abschluss eines Laufs. */
 export interface ExecutionUsageInput {
-  costUsd?: number | null;
   tokens?: number | null;
   inputTokens?: number | null;
   outputTokens?: number | null;
   cacheReadTokens?: number | null;
   cacheCreationTokens?: number | null;
   tokensSource?: ExecutionRecord['tokensSource'];
+  /** Von der CLI gemeldete Werte (Herkunft 'telemetry'). */
+  costMicros?: number | null;
+  subagentTokens?: number | null;
+  subagentCostMicros?: number | null;
+  model?: string | null;
+  telemetryFinalAt?: number | null;
 }
+
+/**
+ * Ergebnis eines Telemetrie-Nachtrags. `applied: false` heisst: die vorhandene Zahl
+ * war besser und bleibt stehen — der Grund gehört gemeldet, nicht verschluckt.
+ *
+ * Die Zahlen stehen strukturiert daneben, damit der Aufrufer sie nicht aus `reason`
+ * zurückparsen oder den Vergleich ein zweites Mal rechnen muss (mit einem zweiten
+ * SELECT, dessen Ergebnis inzwischen abweichen kann). `reason` selbst bleibt
+ * wortgleich — eine Meldung ersetzt kein Protokoll (FR-018).
+ */
+export type TelemetryUpdateOutcome =
+  | { applied: true }
+  | {
+      applied: false;
+      reason: string;
+      /** `lowered` = der Nachtrag würde die Tokenzahl senken; `price_loss` = er würde den Preis löschen. */
+      rejection: 'lowered' | 'price_loss';
+      existingTokens: number;
+      rejectedTokens: number;
+      /** `existingTokens / max(rejectedTokens, 1)` — siehe `meteringConflictFactor`. */
+      factor: number;
+    };
 
 export class ExecutionRepo {
   constructor(private db: DB) {}
@@ -412,17 +487,18 @@ export class ExecutionRepo {
     const id = nanoid(10);
     this.db
       .prepare(
-        `INSERT INTO executions (id, project_id, feature_id, kind, phase, status, started_at, log_path,
+        `INSERT INTO executions (id, project_id, feature_id, kind, label, phase, status, started_at, log_path,
            transcript_offset_start, opt_context_strategy, opt_compression)
-         VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         e.projectId,
         e.featureId,
         e.kind,
+        e.label ?? null,
         e.phase,
-        Date.now(),
+        e.startedAt ?? Date.now(),
         e.logPath,
         e.transcriptOffsetStart ?? null,
         e.optContextStrategy ?? null,
@@ -431,57 +507,114 @@ export class ExecutionRepo {
     return id;
   }
 
-  /** Schlanker Abschluss (Kosten/Tokens geschätzt, ohne Komponenten). */
-  finish(id: string, exitCode: number, costUsd: number | null = null, tokens: number | null = null): void {
-    this.finishWithUsage(id, exitCode, { costUsd, tokens });
-  }
-
-  /**
-   * Verbrauchszahlen eines BEREITS abgeschlossenen Laufs nachziehen. Status,
-   * exit_code und finished_at bleiben unangetastet — der Lauf ist fertig, nur seine
-   * Zahl wird vervollständigt (Nachtrag der Schlussnachricht, siehe
-   * Orchestrator.reconcileTranscriptTail).
-   */
-  updateUsage(id: string, usage: ExecutionUsageInput): void {
-    this.db
-      .prepare(
-        `UPDATE executions SET cost_usd=?, tokens=?, input_tokens=?, output_tokens=?,
-           cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
-         WHERE id=?`,
-      )
-      .run(
-        usage.costUsd ?? null,
-        usage.tokens ?? null,
-        usage.inputTokens ?? null,
-        usage.outputTokens ?? null,
-        usage.cacheReadTokens ?? null,
-        usage.cacheCreationTokens ?? null,
-        usage.tokensSource ?? null,
-        id,
-      );
+  /** Schlanker Abschluss (Tokens geschätzt, ohne Komponenten). */
+  finish(id: string, exitCode: number, tokens: number | null = null): void {
+    this.finishWithUsage(id, exitCode, { tokens });
   }
 
   /** Abschluss mit autoritativen Komponenten + Herkunft. */
   finishWithUsage(id: string, exitCode: number, usage: ExecutionUsageInput = {}): void {
     this.db
       .prepare(
-        `UPDATE executions SET status=?, finished_at=?, exit_code=?, cost_usd=?, tokens=?,
-           input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?
+        `UPDATE executions SET status=?, finished_at=?, exit_code=?, tokens=?,
+           input_tokens=?, output_tokens=?, cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?,
+           cost_micros=?, subagent_tokens=?, subagent_cost_micros=?, model=?, telemetry_final_at=?
          WHERE id=?`,
       )
       .run(
         exitCode === 0 ? 'succeeded' : 'failed',
         Date.now(),
         exitCode,
-        usage.costUsd ?? null,
         usage.tokens ?? null,
         usage.inputTokens ?? null,
         usage.outputTokens ?? null,
         usage.cacheReadTokens ?? null,
         usage.cacheCreationTokens ?? null,
         usage.tokensSource ?? null,
+        usage.costMicros ?? null,
+        usage.subagentTokens ?? null,
+        usage.subagentCostMicros ?? null,
+        usage.model ?? null,
+        usage.telemetryFinalAt ?? null,
         id,
       );
+  }
+
+  /**
+   * Nachtrag verspätet eingetroffener Telemetrie (FR-011): aktualisiert NUR die
+   * Verbrauchsfelder eines bereits abgeschlossenen Laufs. Status, exit_code und
+   * finished_at bleiben unangetastet — der Lauf ist fertig, seine Zahl wird nur
+   * vervollständigt. `telemetry_final_at` bleibt ebenfalls stehen, damit das
+   * Endgültigkeitsfenster durch einen Nachtrag nicht wandert (FR-012).
+   *
+   * Ein Nachtrag darf eine Messung nur VERVOLLSTÄNDIGEN, nie verschlechtern.
+   * Am 30.07.2026 wurde beobachtet, dass genau das passierte: der Nachtrag am Ende
+   * des Nachlauffensters summiert das Telemetrie-Fenster neu, findet aber einen
+   * Puffer, den `telemetryStore.sweep()` inzwischen um alles älter als 5 Minuten
+   * beschnitten hat. Neun Läufe wurden so um Faktor 2,9–16,8 nach unten
+   * geschrieben (uQ_RAMEn: 6'578'097 → 568'955 Tokens, $3.80 → $0.33); lag der
+   * Puffer ganz leer, fiel die Messung auf das Transkript zurück und verlor dabei
+   * den Preis (tMvPe72V: 272'685 → 5'947'193 Tokens, $0.25 → keine Kosten).
+   * Ergebnis war eine Zahl, die nicht mehr mit dem Aufwand stieg — der längste
+   * implement-Lauf des Tages wies weniger aus als der mittlere.
+   *
+   * Deshalb zwei Sperren. Sie ersetzen den eigentlichen Fix (monotoner Akkumulator
+   * je requestId + Sweep an der Lauflaufzeit statt am Alter) NICHT, machen aber aus
+   * stiller Beschädigung ein sichtbares Signal.
+   */
+  updateTelemetry(id: string, usage: ExecutionUsageInput): TelemetryUpdateOutcome {
+    const vorher = this.db.prepare('SELECT tokens, cost_micros FROM executions WHERE id=?').get(id) as
+      | { tokens: number | null; cost_micros: number | null }
+      | undefined;
+
+    if (vorher) {
+      const alt = vorher.tokens ?? 0;
+      const neu = usage.tokens ?? 0;
+      if (alt > 0 && neu < alt) {
+        return {
+          applied: false,
+          reason: `Nachtrag würde die Messung senken: ${alt} → ${neu} Tokens (Faktor ${(alt / Math.max(neu, 1)).toFixed(1)})`,
+          rejection: 'lowered',
+          existingTokens: alt,
+          rejectedTokens: neu,
+          factor: meteringConflictFactor(alt, neu),
+        };
+      }
+      if (vorher.cost_micros !== null && (usage.costMicros ?? null) === null) {
+        return {
+          applied: false,
+          reason: `Nachtrag würde den Preis löschen: ${(vorher.cost_micros / 1e6).toFixed(2)} USD vorhanden, Nachtrag ohne Kosten (Quelle ${usage.tokensSource ?? 'keine'})`,
+          rejection: 'price_loss',
+          existingTokens: alt,
+          rejectedTokens: neu,
+          // Erreichbar nur, wenn die Token-Prüfung davor NICHT griff (neu >= alt) —
+          // dieser Zweig kann den Melde-Faktor 2 also nie erreichen (research.md D10).
+          factor: meteringConflictFactor(alt, neu),
+        };
+      }
+    }
+
+    this.db
+      .prepare(
+        `UPDATE executions SET tokens=?, input_tokens=?, output_tokens=?,
+           cache_read_tokens=?, cache_creation_tokens=?, tokens_source=?,
+           cost_micros=?, subagent_tokens=?, subagent_cost_micros=?, model=?
+         WHERE id=?`,
+      )
+      .run(
+        usage.tokens ?? null,
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.cacheReadTokens ?? null,
+        usage.cacheCreationTokens ?? null,
+        usage.tokensSource ?? null,
+        usage.costMicros ?? null,
+        usage.subagentTokens ?? null,
+        usage.subagentCostMicros ?? null,
+        usage.model ?? null,
+        id,
+      );
+    return { applied: true };
   }
 
   /**
@@ -499,6 +632,22 @@ export class ExecutionRepo {
     this.db
       .prepare('UPDATE executions SET transcript_path=?, transcript_offset_end=? WHERE id=?')
       .run(path, offsetEnd, id);
+  }
+
+  /**
+   * Die aktuell als laufend geführten Läufe. Zwei Verwendungen, beide im Feature
+   * „Server-Ausfälle sichtbar machen": die betroffenen Läufe eines Ausfalls (FR-005)
+   * und die Zahl gleichzeitig arbeitender Features (D12).
+   *
+   * Reihenfolge ist entscheidend: nach `reapOrphans()` liefert diese Methode nichts
+   * mehr, weil der Reaper alles auf `orphaned` setzt. Wer den Ausfall zählen will,
+   * muss VORHER lesen (D3).
+   */
+  listRunning(): ExecutionRecord[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM executions WHERE status='running' ORDER BY started_at ASC`)
+      .all();
+    return (rows as Record<string, unknown>[]).map((r) => this.map(r));
   }
 
   /** Startup-Reaper: running-Leichen aus früheren Server-Läufen markieren. */
@@ -534,18 +683,23 @@ export class ExecutionRepo {
       projectId: r.project_id as string,
       featureId: r.feature_id as string | null,
       kind: r.kind as ExecutionRecord['kind'],
+      label: (r.label as string | null) ?? null,
       phase: r.phase as ExecutionRecord['phase'],
       status: r.status as ExecutionRecord['status'],
       startedAt: r.started_at as number,
       finishedAt: r.finished_at as number | null,
       exitCode: r.exit_code as number | null,
-      costUsd: r.cost_usd as number | null,
       tokens: (r.tokens as number | null) ?? null,
       inputTokens: (r.input_tokens as number | null) ?? null,
       outputTokens: (r.output_tokens as number | null) ?? null,
       cacheReadTokens: (r.cache_read_tokens as number | null) ?? null,
       cacheCreationTokens: (r.cache_creation_tokens as number | null) ?? null,
       tokensSource: (r.tokens_source as ExecutionRecord['tokensSource']) ?? null,
+      costMicros: (r.cost_micros as number | null) ?? null,
+      subagentTokens: (r.subagent_tokens as number | null) ?? null,
+      subagentCostMicros: (r.subagent_cost_micros as number | null) ?? null,
+      model: (r.model as string | null) ?? null,
+      telemetryFinalAt: (r.telemetry_final_at as number | null) ?? null,
       transcriptOffsetStart: (r.transcript_offset_start as number | null) ?? null,
       transcriptOffsetEnd: (r.transcript_offset_end as number | null) ?? null,
       transcriptPath: (r.transcript_path as string | null) ?? null,
@@ -641,30 +795,18 @@ export class AttentionRepo {
     sessionId?: string | null;
     conversationId?: string | null;
     message: string;
-    /** Trennt gleichartige Meldungen unterschiedlicher Quellen (z. B. Agent-Name). */
-    dedupKey?: string | null;
   }): AttentionItem {
-    // Dedup: gleiche offene Meldung (kind+feature/session/conversation+Quelle) nicht doppelt anlegen.
+    // Dedup: gleiche offene Meldung (kind+feature/session/conversation) nicht doppelt anlegen.
     const existing = this.db
       .prepare(
         `SELECT id FROM attention WHERE resolved_at IS NULL AND kind=? AND project_id=?
          AND COALESCE(feature_id,'')=COALESCE(?,'') AND COALESCE(session_id,'')=COALESCE(?,'')
-         AND COALESCE(conversation_id,'')=COALESCE(?,'') AND COALESCE(dedup_key,'')=COALESCE(?,'')`,
+         AND COALESCE(conversation_id,'')=COALESCE(?,'')`,
       )
-      .get(
-        a.kind,
-        a.projectId,
-        a.featureId ?? null,
-        a.sessionId ?? null,
-        a.conversationId ?? null,
-        a.dedupKey ?? null,
-      ) as { id: string } | undefined;
-    // Der Auslöser besteht fort, sein Text kann sich aber geändert haben (andere Frage,
-    // anderer Fehler). Nachziehen statt verschlucken — sonst zeigt die Inbox Altes an.
-    if (existing) {
-      this.db.prepare('UPDATE attention SET message=? WHERE id=?').run(a.message, existing.id);
-      return this.get(existing.id)!;
-    }
+      .get(a.kind, a.projectId, a.featureId ?? null, a.sessionId ?? null, a.conversationId ?? null) as
+      | { id: string }
+      | undefined;
+    if (existing) return this.get(existing.id)!;
 
     const item: AttentionItem = {
       id: nanoid(10),
@@ -679,8 +821,8 @@ export class AttentionRepo {
     };
     this.db
       .prepare(
-        `INSERT INTO attention (id, kind, project_id, feature_id, session_id, conversation_id, message, created_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attention (id, kind, project_id, feature_id, session_id, conversation_id, message, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         item.id,
@@ -691,19 +833,30 @@ export class AttentionRepo {
         item.conversationId,
         item.message,
         item.createdAt,
-        a.dedupKey ?? null,
       );
     return item;
   }
 
-  resolve(id: string): void {
-    this.db.prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL').run(Date.now(), id);
+  /**
+   * Ein Item auflösen. Sendet kein Ereignis — das ist Sache des Aufrufers
+   * (`emitAttentionResolved`).
+   *
+   * @returns true genau dann, wenn dieser Aufruf den Übergang offen → aufgelöst bewirkt hat.
+   *          false bei unbekannter id und bei einem bereits aufgelösten Item.
+   */
+  resolve(id: string): boolean {
+    const res = this.db
+      .prepare('UPDATE attention SET resolved_at=? WHERE id=? AND resolved_at IS NULL')
+      .run(Date.now(), id);
+    return res.changes > 0;
   }
 
   /**
    * Offene Items einer Session/eines Features/einer Unterhaltung auflösen (z.B. Input wurde gegeben).
-   * Liefert die betroffenen IDs, damit der Aufrufer je aufgelöster Meldung ein Event senden kann —
-   * nur so entfernt die UI exakt das, was serverseitig wirklich aufgelöst wurde.
+   * Sendet kein Ereignis — das ist Sache des Aufrufers (`emitAttentionResolved`).
+   *
+   * @returns die IDs der Items, deren resolved_at durch *diesen* Aufruf gesetzt wurde;
+   *          leer, wenn keines betroffen war. Bereits aufgelöste Items erscheinen nicht.
    */
   resolveFor(filter: {
     sessionId?: string;
@@ -729,14 +882,11 @@ export class AttentionRepo {
       conds.push(`kind IN (${filter.kinds.map(() => '?').join(',')})`);
       params.push(...filter.kinds);
     }
-    const where = conds.join(' AND ');
-    const ids = (this.db.prepare(`SELECT id FROM attention WHERE ${where}`).all(...params) as { id: string }[]).map(
-      (r) => r.id,
-    );
-    if (ids.length > 0) {
-      this.db.prepare(`UPDATE attention SET resolved_at=? WHERE ${where}`).run(Date.now(), ...params);
-    }
-    return ids;
+    return (
+      this.db
+        .prepare(`UPDATE attention SET resolved_at=? WHERE ${conds.join(' AND ')} RETURNING id`)
+        .all(Date.now(), ...params) as { id: string }[]
+    ).map((r) => r.id);
   }
 
   get(id: string): AttentionItem | null {
@@ -751,6 +901,37 @@ export class AttentionRepo {
         unknown
       >[]
     ).map(toAttention);
+  }
+
+  /**
+   * Gab es diese Art für dieses Projekt jemals — offen ODER aufgelöst?
+   *
+   * Für projektbezogene Meldungen, die höchstens einmal je Episode erscheinen
+   * dürfen. Die Dedup in `raise()` reicht dafür nicht: sie sieht nur offene
+   * Zeilen, ein abgehakter Eintrag entstünde beim nächsten Anlass erneut.
+   */
+  hasEver(f: { kind: AttentionKind; projectId: string }): boolean {
+    const r = this.db
+      .prepare('SELECT 1 AS x FROM attention WHERE kind=? AND project_id=? LIMIT 1')
+      .get(f.kind, f.projectId) as { x: number } | undefined;
+    return r !== undefined;
+  }
+
+  /**
+   * Alle Zeilen dieser Art des Projekts löschen (nicht auflösen) und die IDs der
+   * zuvor OFFENEN liefern — für `attention_resolved`.
+   *
+   * Löschen statt Auflösen, weil `hasEver()` sonst weiter wahr bliebe: nach dem
+   * Wegfall des Anlasses muss ein späteres Wiederauftreten wieder melden dürfen.
+   */
+  forget(f: { kind: AttentionKind; projectId: string }): string[] {
+    const offen = (
+      this.db
+        .prepare('SELECT id FROM attention WHERE kind=? AND project_id=? AND resolved_at IS NULL')
+        .all(f.kind, f.projectId) as { id: string }[]
+    ).map((r) => r.id);
+    this.db.prepare('DELETE FROM attention WHERE kind=? AND project_id=?').run(f.kind, f.projectId);
+    return offen;
   }
 }
 
@@ -788,7 +969,6 @@ interface ChatMessageRow {
   status: string;
   error: string | null;
   proposal_json: string | null;
-  cost_usd: number | null;
   tokens: number | null;
   created_at: number;
 }
@@ -814,7 +994,6 @@ function toChatMessage(r: ChatMessageRow): ChatMessage {
     status: r.status as ChatMessageStatus,
     error: r.error,
     proposal: r.proposal_json ? (JSON.parse(r.proposal_json) as FeatureProposal) : null,
-    costUsd: r.cost_usd,
     tokens: r.tokens,
     createdAt: r.created_at,
   };
@@ -905,7 +1084,6 @@ export class ChatRepo {
       status: m.status,
       error: null,
       proposal: null,
-      costUsd: null,
       tokens: null,
       createdAt: Date.now(),
     };
@@ -934,13 +1112,12 @@ export class ChatRepo {
       content?: string;
       error?: string | null;
       proposal?: FeatureProposal | null;
-      costUsd?: number | null;
       tokens?: number | null;
     },
   ): void {
     this.db
       .prepare(
-        `UPDATE chat_messages SET status=?, content=COALESCE(?, content), error=?, proposal_json=?, cost_usd=?, tokens=?
+        `UPDATE chat_messages SET status=?, content=COALESCE(?, content), error=?, proposal_json=?, tokens=?
          WHERE id=? AND status='streaming'`,
       )
       .run(
@@ -948,7 +1125,6 @@ export class ChatRepo {
         outcome.content ?? null,
         outcome.error ?? null,
         outcome.proposal ? JSON.stringify(outcome.proposal) : null,
-        outcome.costUsd ?? null,
         outcome.tokens ?? null,
         id,
       );
@@ -1101,5 +1277,58 @@ export class SettingsRepo {
       .prepare(`INSERT INTO settings (key, value) VALUES ('optimization', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
       .run(JSON.stringify(merged));
     return merged;
+  }
+
+  /**
+   * Wie `getJson`, aber ein defekter Wert liefert `null` statt zu werfen (A4.2).
+   * Eine kaputte Zeile in `settings` darf den Boot-Zustand nicht auf 500 legen.
+   */
+  private readJsonSafe(key: string): unknown {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key=?').get(key) as
+      | { value: string }
+      | undefined;
+    if (!r) return null;
+    try {
+      return JSON.parse(r.value) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Individuelle Einstellungen (Feature „persoenliche-einstellungen").
+   *
+   * Bewusst ZWEI Einträge (`sound`, `ticketSource`) statt eines Bündels: so
+   * bleibt die Vorauswahl der Ticket-Quelle getrennt von `jira.lastSelection`
+   * (E6). Die Regeln selbst leben ausschliesslich in `@sdd/shared` — der Server
+   * hält keine zweite Auslöser- oder Tonliste (A4.3).
+   */
+  getPersonal(): PersonalSettings {
+    return {
+      sound: normalizeSoundSettings(this.readJsonSafe('sound')),
+      ticketSource: normalizeTicketSource(this.readJsonSafe('ticketSource')),
+    };
+  }
+
+  /** Teilmengen-Semantik: nur mitgesandte Felder ändern sich (A2.1). */
+  setPersonal(patch: { sound?: unknown; ticketSource?: unknown }): PersonalSettings {
+    const sound = patch?.sound;
+    if (typeof sound === 'object' && sound !== null && !Array.isArray(sound)) {
+      const p = sound as Record<string, unknown>;
+      const cur = normalizeSoundSettings(this.readJsonSafe('sound'));
+      // `reactions` wird als GANZE Karte ersetzt, nicht je Schlüssel gemischt
+      // (A2.2) — nur so lässt sich ein Auslöser zurück auf Stille bringen.
+      const next: SoundSettings = normalizeSoundSettings({
+        enabled: 'enabled' in p ? p.enabled : cur.enabled,
+        volume: 'volume' in p ? p.volume : cur.volume,
+        reactions: 'reactions' in p ? p.reactions : cur.reactions,
+      });
+      this.setJson('sound', next);
+    }
+
+    // Ungültige Werte werden ignoriert, der Bestand bleibt stehen (A2.5).
+    if (isTicketSource(patch?.ticketSource)) this.setJson('ticketSource', patch.ticketSource);
+
+    return this.getPersonal();
   }
 }

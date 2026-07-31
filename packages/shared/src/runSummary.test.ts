@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRunSummaries, categorizeExecution } from './runSummary.js';
+import { buildRunSummaries, categorizeExecution, costPerTask } from './runSummary.js';
 import { initialPhases } from './phaseMachine.js';
 import type { ExecutionRecord, Feature } from './types.js';
 
@@ -11,18 +11,23 @@ function exec(patch: Partial<ExecutionRecord>): ExecutionRecord {
     projectId: 'p1',
     featureId: 'f1',
     kind: 'phase',
+    label: null,
     phase: 'specify',
     status: 'succeeded',
     startedAt: 1000 + seq,
     finishedAt: 2000 + seq,
     exitCode: 0,
-    costUsd: 0.1,
     tokens: 100,
     inputTokens: 10,
     outputTokens: 20,
     cacheReadTokens: 50,
     cacheCreationTokens: 20,
     tokensSource: 'transcript',
+    costMicros: null,
+    subagentTokens: null,
+    subagentCostMicros: null,
+    model: null,
+    telemetryFinalAt: null,
     transcriptOffsetStart: 0,
     transcriptOffsetEnd: null,
     transcriptPath: null,
@@ -47,6 +52,8 @@ function feature(patch: Partial<Feature>): Feature {
     optimization: {},
     tasksDone: 0,
     tasksTotal: 0,
+    reviewRejectedAt: null,
+    cleanupError: null,
     createdAt: 1,
     archivedAt: null,
     ...patch,
@@ -64,6 +71,12 @@ describe('categorizeExecution', () => {
     expect(categorizeExecution({ kind: 'conflict_resolution', phase: null })).toBe('overhead');
     expect(categorizeExecution({ kind: 'chat', phase: null })).toBe('chat');
     expect(categorizeExecution({ kind: 'chat_work', phase: null })).toBe('chat');
+  });
+
+  it('ordnet Lebenszyklus-Schritte dem Overhead zu — auch an einem Phasen-Auslöser', () => {
+    expect(categorizeExecution({ kind: 'lifecycle_step', phase: null })).toBe('overhead');
+    // Ein Schritt an einem Phasen-Auslöser trägt `phase`, ist aber keine Phasenarbeit.
+    expect(categorizeExecution({ kind: 'lifecycle_step', phase: 'implement' })).toBe('overhead');
   });
 });
 
@@ -146,5 +159,184 @@ describe('buildRunSummaries', () => {
     expect(run!.sourceMix.transcript).toBeCloseTo(1 / 11);
     const measured = run!.sourceMix.transcript + run!.sourceMix.parsed + run!.sourceMix.estimated;
     expect(measured).toBeLessThan(0.1); // der Rest ist ungemessen
+  });
+
+  it('der ausgelieferte Payload trägt kein costUsd, aber alle Token-Angaben', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [exec({ phase: 'plan', tokens: 200 }), exec({ kind: 'verify', phase: null, tokens: 50 })],
+    );
+    const payload = JSON.stringify(runs);
+
+    expect(payload.includes('costUsd')).toBe(false);
+    for (const key of [
+      'tokens',
+      'inputTokens',
+      'outputTokens',
+      'cacheReadTokens',
+      'cacheCreationTokens',
+      'sourceMix',
+    ]) {
+      expect(payload.includes(key)).toBe(true);
+    }
+  });
+
+  it('weist die Telemetrie-Herkunft im Messanteil aus (FR-018)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'plan', tokensSource: 'telemetry' }),
+        exec({ phase: 'implement', tokensSource: 'telemetry' }),
+        exec({ kind: 'verify', phase: null, tokensSource: 'estimated' }),
+        exec({ kind: 'review', phase: null, tokensSource: 'transcript' }),
+      ],
+    );
+    expect(runs[0]!.sourceMix.telemetry).toBeCloseTo(0.5, 10);
+    expect(runs[0]!.sourceMix.transcript).toBeCloseTo(0.25, 10);
+  });
+
+  it('Feature-Summe enthält die Subagenten-Anteile der Einzelläufe (FR-010, US2 Szenario 4)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'implement', tokens: 1000, subagentTokens: 600 }),
+        exec({ phase: 'plan', tokens: 400, subagentTokens: null }),
+      ],
+    );
+    expect(runs[0]!.total.tokens).toBe(1400);
+    expect(runs[0]!.total.subagentTokens).toBe(600);
+  });
+
+  it('summiert über die Läufe hinweg nur gemeldete Beträge (FR-024)', () => {
+    const runs = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'plan', costMicros: 90_000 }),
+        exec({ phase: 'implement', costMicros: null }),
+      ],
+    );
+    expect(runs[0]!.total.costMicros).toBe(90_000);
+    expect(runs[0]!.total.runsWithoutCost).toBe(1);
+  });
+});
+
+/**
+ * Feature "eigene-schritte-an-den-lebenszyklus-haengen": Schritt-Läufe sind eigene
+ * Steps eines Laufs, tragen aber nichts zur Messung bei — sie dürfen den
+ * Messanteil nicht drücken (FR-020).
+ */
+describe('buildRunSummaries — Lebenszyklus-Schritte', () => {
+  it('führt Schritt-Läufe als eigenen Step in der Kategorie overhead', () => {
+    const [run] = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ kind: 'lifecycle_step', label: 'Marker schreiben', phase: null, tokens: null, tokensSource: null }),
+        exec({ phase: 'specify', tokens: 100 }),
+      ],
+    );
+    const step = run!.byStep.find((s) => s.key === 'lifecycle_step');
+    expect(step).toBeDefined();
+    expect(step!.category).toBe('overhead');
+    expect(step!.rollup.runs).toBe(1);
+    expect(step!.rollup.tokens).toBe(0);
+  });
+
+  it('sortiert Schritt-Läufe nach den Phasen und vor die Integrations-Steps', () => {
+    const [run] = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ kind: 'verify', phase: null, tokensSource: null }),
+        exec({ kind: 'lifecycle_step', phase: null, tokensSource: null }),
+        exec({ phase: 'implement' }),
+      ],
+    );
+    expect(run!.byStep.map((s) => s.key)).toEqual(['implement', 'lifecycle_step', 'verify']);
+  });
+
+  it('Schritt-Läufe drücken den Messanteil nicht (nicht im Nenner der Herkunft)', () => {
+    const [run] = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'specify', tokens: 100, tokensSource: 'transcript' }),
+        // Fünf Schritt-Läufe ohne Herkunft: ohne Ausschluss stünde hier 1/6.
+        exec({ kind: 'lifecycle_step', phase: null, tokens: null, tokensSource: null }),
+        exec({ kind: 'lifecycle_step', phase: null, tokens: null, tokensSource: null }),
+        exec({ kind: 'lifecycle_step', phase: null, tokens: null, tokensSource: null }),
+        exec({ kind: 'lifecycle_step', phase: null, tokens: null, tokensSource: null }),
+        exec({ kind: 'lifecycle_step', phase: null, tokens: null, tokensSource: null }),
+      ],
+    );
+    expect(run!.sourceMix.transcript).toBe(1);
+    // Der Lauf selbst zählt weiterhin vollständig mit.
+    expect(run!.total.runs).toBe(6);
+  });
+
+  it('ein ungemessener Claude-Lauf drückt den Anteil weiterhin (Gegenprobe)', () => {
+    const [run] = buildRunSummaries(
+      [feature({})],
+      [
+        exec({ phase: 'specify', tokens: 100, tokensSource: 'transcript' }),
+        exec({ kind: 'review', phase: null, tokens: null, tokensSource: null }),
+      ],
+    );
+    expect(run!.sourceMix.transcript).toBeCloseTo(0.5);
+  });
+});
+
+describe('Aufgabenstand und Kosten pro Aufgabe (Story 3)', () => {
+  it('reicht tasksDone/tasksTotal unverändert vom Feature durch (FR-017)', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 68, tasksTotal: 76 })], [exec({})]);
+    expect(runs[0]!.tasksDone).toBe(68);
+    expect(runs[0]!.tasksTotal).toBe(76);
+  });
+
+  it('reicht auch eine widersprüchliche Zählung als Rohwert durch', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 80, tasksTotal: 76 })], [exec({})]);
+    expect(runs[0]!.tasksDone).toBe(80);
+    expect(runs[0]!.tasksTotal).toBe(76);
+  });
+
+  /** Bezugsgrösse aus einem Lauf bauen, ohne die ganze Aggregation zu brauchen. */
+  function run(costMicros: number, tasksDone: number, runsWithoutCost = 0) {
+    return { total: { ...emptyTotal(), costMicros, runsWithoutCost }, tasksDone };
+  }
+  function emptyTotal() {
+    const runs = buildRunSummaries([feature({})], [exec({})]);
+    return runs[0]!.total;
+  }
+
+  it('teilt den gemeldeten Betrag auf die erledigten Aufgaben', () => {
+    expect(costPerTask(run(6_800_000, 68)).micros).toBe(100_000);
+  });
+
+  it('rundet auf ganze Mikro-Beträge', () => {
+    expect(costPerTask(run(1_000_000, 3)).micros).toBe(333_333);
+  });
+
+  it('liefert einen Strich statt einer Division durch null (INV-5, FR-020)', () => {
+    expect(costPerTask(run(4_200_000, 0)).micros).toBeNull();
+  });
+
+  it('liefert einen Strich, wenn kein Betrag gemeldet wurde — nie 0 (INV-6)', () => {
+    expect(costPerTask(run(0, 68)).micros).toBeNull();
+  });
+
+  it('kennzeichnet den Wert als unvollständig, sobald eine Ausführung keinen Betrag meldete (FR-021)', () => {
+    expect(costPerTask(run(6_800_000, 68, 2)).incomplete).toBe(true);
+    expect(costPerTask(run(6_800_000, 68, 0)).incomplete).toBe(false);
+  });
+
+  it('kennzeichnet die Unvollständigkeit auch dort, wo kein Wert bestimmbar ist', () => {
+    expect(costPerTask(run(0, 0, 3))).toEqual({ micros: null, incomplete: true });
+  });
+
+  it('rechnet bei widersprüchlicher Zählung mit den Rohwerten weiter', () => {
+    expect(costPerTask(run(8_000_000, 80)).micros).toBe(100_000);
+  });
+
+  it('Läufe-Liste und Lauf-Dashboard bekommen denselben Wert (INV-7)', () => {
+    const runs = buildRunSummaries([feature({ tasksDone: 4, tasksTotal: 4 })], [exec({ costMicros: 400_000 })]);
+    expect(costPerTask(runs[0]!)).toEqual(costPerTask(runs[0]!));
+    expect(costPerTask(runs[0]!).micros).toBe(100_000);
   });
 });

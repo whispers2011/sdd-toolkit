@@ -82,6 +82,138 @@
   --color-sky-800: #bae6fd;
   --color-sky-900: #e0f2fe;
   --color-sky-950: #f0f9ff;
+
+  /* Akzent: teal — trägt „gemeldet" (Herkunft) und gemeldete Beträge */
+  --color-teal-50: #042f2e;
+  --color-teal-100: #134e4a;
+  --color-teal-200: #115e59;
+  --color-teal-300: #0f766e;
+  --color-teal-400: #0d9488;
+  --color-teal-500: #14b8a6;
+  --color-teal-600: #2dd4bf;
+  --color-teal-700: #5eead4;
+  --color-teal-800: #99f6e4;
+  --color-teal-900: #ccfbf1;
+  --color-teal-950: #f0fdfa;
+
+  /* Akzent: violet — trägt Subagenten-Anteil und die Kategorie „Chat" */
+  --color-violet-50: #2e1065;
+  --color-violet-100: #4c1d95;
+  --color-violet-200: #5b21b6;
+  --color-violet-300: #6d28d9;
+  --color-violet-400: #7c3aed;
+  --color-violet-500: #8b5cf6;
+  --color-violet-600: #a78bfa;
+  --color-violet-700: #c4b5fd;
+  --color-violet-800: #ddd6fe;
+  --color-violet-900: #ede9fe;
+  --color-violet-950: #f5f3ff;
+}
+
+/*
+ * Drittes Design „Dunkel, hoher Kontrast" (FR-021/FR-023, E1/E2).
+ * Gleicher Mechanismus, gleicher Schlüsselsatz wie der Light-Block: dieselben
+ * Farbtöne wie Dark, aber gespreizte Helligkeits- und Sättigungsstufen —
+ * Flächen dunkler, Schrift und Akzente heller. Wer hier einen Schlüssel
+ * vergisst, fällt auf die Dark-Basis zurück; genau das nagelt themeContract.test.ts
+ * als Schlüsselsatz-Parität fest (SC-007).
+ */
+:root[data-theme='high-contrast'] {
+  color-scheme: dark;
+
+  /* Neutral (zinc) — Flächen tiefer, Schrift heller als in Dark */
+  --color-zinc-50: #ffffff;
+  --color-zinc-100: #fafafa;
+  --color-zinc-200: #f4f4f5;
+  --color-zinc-300: #e4e4e7;
+  --color-zinc-400: #c7c7cf;
+  --color-zinc-500: #a1a1aa;
+  --color-zinc-600: #7c7c86;
+  --color-zinc-700: #55555f;
+  --color-zinc-800: #33333b;
+  --color-zinc-900: #17171c;
+  --color-zinc-925: #0b0b0e;
+  --color-zinc-950: #000000;
+
+  /* Akzent: emerald */
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-300: #6ee7b7;
+  --color-emerald-400: #34f5a3;
+  --color-emerald-500: #10e88b;
+  --color-emerald-600: #00c974;
+  --color-emerald-700: #00a35d;
+  --color-emerald-800: #007a46;
+  --color-emerald-900: #00522f;
+  --color-emerald-950: #002b19;
+
+  /* Akzent: amber */
+  --color-amber-50: #fffbeb;
+  --color-amber-100: #fef3c7;
+  --color-amber-200: #fde68a;
+  --color-amber-300: #fcd34d;
+  --color-amber-400: #ffc319;
+  --color-amber-500: #ffb000;
+  --color-amber-600: #e09400;
+  --color-amber-700: #b57600;
+  --color-amber-800: #8a5900;
+  --color-amber-900: #5c3b00;
+  --color-amber-950: #2e1e00;
+
+  /* Akzent: red */
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-300: #fca5a5;
+  --color-red-400: #ff8080;
+  --color-red-500: #ff5252;
+  --color-red-600: #f52525;
+  --color-red-700: #cc1414;
+  --color-red-800: #9c0f0f;
+  --color-red-900: #6b0a0a;
+  --color-red-950: #380505;
+
+  /* Akzent: sky */
+  --color-sky-50: #f0f9ff;
+  --color-sky-100: #e0f2fe;
+  --color-sky-200: #bae6fd;
+  --color-sky-300: #7dd3fc;
+  --color-sky-400: #45c4ff;
+  --color-sky-500: #14b2ff;
+  --color-sky-600: #0092e0;
+  --color-sky-700: #0075b5;
+  --color-sky-800: #00588a;
+  --color-sky-900: #003c5c;
+  --color-sky-950: #001f2e;
+
+  /* Akzent: teal — nachgetragen am 31.07.2026. Die Läufe-Ansicht benutzt teal und violet;
+     der Hellmodus invertiert sie seit „Review-Portal und Läufe: Sicht-Pass" mit, also muss
+     dieses Design denselben Schlüsselsatz führen. Der Paritätstest hat genau das gemeldet. */
+  --color-teal-50: #f0fdfa;
+  --color-teal-100: #ccfbf1;
+  --color-teal-200: #99f6e4;
+  --color-teal-300: #5eead4;
+  --color-teal-400: #2ff0d0;
+  --color-teal-500: #0ee0bc;
+  --color-teal-600: #00bd9c;
+  --color-teal-700: #00967d;
+  --color-teal-800: #00705e;
+  --color-teal-900: #004a3e;
+  --color-teal-950: #00251f;
+
+  /* Akzent: violet */
+  --color-violet-50: #f5f3ff;
+  --color-violet-100: #ede9fe;
+  --color-violet-200: #ddd6fe;
+  --color-violet-300: #c4b5fd;
+  --color-violet-400: #a78bfa;
+  --color-violet-500: #9061ff;
+  --color-violet-600: #7a3dff;
+  --color-violet-700: #6321e0;
+  --color-violet-800: #4b18ab;
+  --color-violet-900: #331075;
+  --color-violet-950: #1a083b;
 }
 
 /* Dark bleibt Basis; color-scheme wird zusätzlich inline vom FOUC-Guard gesetzt. */
@@ -154,18 +286,6 @@ body {
 }
 .sdd-prose li {
   @apply my-1 text-sm leading-relaxed text-zinc-300;
-}
-/* Verschachtelte Listen dürfen den Außenabstand nicht verdoppeln. */
-.sdd-prose li > ul,
-.sdd-prose li > ol {
-  @apply my-1;
-}
-/* GFM-Aufgabenlisten (`- [ ]`): die Checkbox IST der Marker — kein zusätzlicher Bullet. */
-.sdd-prose li:has(> input[type='checkbox']) {
-  @apply list-none;
-}
-.sdd-prose input[type='checkbox'] {
-  @apply mr-1.5 align-middle accent-emerald-600;
 }
 .sdd-prose a {
   @apply text-emerald-400 hover:underline;

@@ -16,9 +16,6 @@ export function ChatBubble() {
   // Öffnen-Signal aus der Inbox (Arbeits-Chat-Eintrag) konsumieren.
   useEffect(() => {
     if (state.openChat && state.openChat.projectId === projectId) setOpen(true);
-    // Absichtlich nur der Zeitstempel: das Panel soll bei einem NEUEN Signal aufgehen,
-    // nicht bei jeder Änderung des Signal-Objekts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.openChat?.ts, projectId]);
 
   if (!projectId) return null;

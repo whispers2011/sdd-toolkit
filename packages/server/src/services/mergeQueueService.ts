@@ -1,20 +1,49 @@
 import { join } from 'node:path';
 import { existsSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { isValidBranchName } from '@sdd/shared';
-import type { ApproveMergeRequest, Feature, IntegrationStage, Project } from '@sdd/shared';
+import {
+  ACTION_REASON,
+  alreadyIntegratingReason,
+  compileManualTestPrompt,
+  discardPhase,
+  isValidBranchName,
+  manualTestDueMessage,
+  mergedNotificationBody,
+  orderedPhases,
+  rejectTargetPhase,
+  reopenLastPhase,
+  reviewDueMessage,
+  taskProgressText,
+} from '@sdd/shared';
+import type {
+  ApproveMergeRequest,
+  Feature,
+  FeaturePhase,
+  IntegrationStage,
+  LifecycleStageId,
+  ManualTestRejection,
+  Project,
+} from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
 import { MergeEngine } from '../git/mergeEngine.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { git, isBranchMergedInto, isCleanWorkingTree, run, uncommittedFileCount } from '../git/git.js';
 import { runVerification } from './verifyService.js';
+import { hasUnmergedChanges } from './unmergedChanges.js';
 import { resolveConflicts } from './conflictResolver.js';
 import type { AgentGateService } from './agentGateService.js';
+import type { LifecycleStepService } from './lifecycleStepService.js';
+import type { StackRepo } from '../db/stackRepo.js';
 import { STAGE_FOR_KIND } from './attentionReconciler.js';
-import { bus } from '../events.js';
+import { raiseVerificationGap } from './verificationGap.js';
+import { bus, emitAttentionResolved } from '../events.js';
 
 const MAX_RESOLUTION_ATTEMPTS = 3;
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /** Validierungsfehler der Review-Freigabe (API antwortet 400/409 statt 500). */
 export class MergeApprovalError extends Error {
@@ -34,7 +63,36 @@ export interface MergeQueueDeps {
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   agentGate: AgentGateService;
+  lifecycleSteps: LifecycleStepService;
   dataDir: string;
+  /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
+  port: number;
+  /**
+   * Stack-Profile. Optional, damit bestehende Tests ohne Stack laufen; im Betrieb
+   * immer gesetzt. `down` läuft VOR dem Entfernen des Worktrees, weil ein
+   * laufender Dienst genau das Verzeichnis hält, dessen Entfernen scheiterte
+   * (research E9/E11).
+   */
+  stacks?: {
+    down(feature: Feature, project: Project, opts?: { quiet?: boolean }): Promise<void>;
+    probe(feature: Feature, project: Project, opts?: { refresh?: boolean }): Promise<{ url: string | null }>;
+    isConfigured(project: Project): boolean;
+  };
+  /** Entscheidungen der manuellen Abnahme (FR-028/FR-029). */
+  stackRepo?: StackRepo;
+}
+
+/**
+ * Der Teil des Orchestrators, den die Ablehnung der Abnahme braucht: einen
+ * Phasenlauf mit Auftrag starten. Bewusst schmal gehalten, damit die
+ * Spätverdrahtung nicht zur Hintertür in den ganzen Orchestrator wird.
+ */
+export interface PhaseRework {
+  startPhaseRun(
+    featureId: string,
+    phase: FeaturePhase,
+    extraPrompt?: string,
+  ): Promise<{ gateRunning: boolean }>;
 }
 
 /**
@@ -45,8 +103,18 @@ export interface MergeQueueDeps {
 export class MergeQueueService {
   private engine = new MergeEngine();
   private working = new Set<string>(); // projectIds mit aktivem Worker
+  private rework: PhaseRework | null = null;
 
   constructor(private deps: MergeQueueDeps) {}
+
+  /**
+   * Orchestrator nachreichen — dieselbe Spätverdrahtung wie
+   * `orchestrator.attachMergeQueue()`, weil sich beide gegenseitig brauchen.
+   * Nur die Ablehnung der Abnahme nutzt ihn (Neustart des Lebenszyklus).
+   */
+  attachRework(rework: PhaseRework): void {
+    this.rework = rework;
+  }
 
   /**
    * Nach Server-Neustart: unterbrochene Queue-Items wieder aufnehmen. Ein Worker,
@@ -138,23 +206,235 @@ export class MergeQueueService {
       }
     }
 
+    // Stack ZUERST abbauen (FR-017, research E9): ein laufender Dienst hält das
+    // Arbeitsverzeichnis — genau daran scheiterte das Entfernen, und danach wuchs
+    // ein 10-GB-Verzeichnis unauffindbar weiter. Scheitert der Abbau, wird der
+    // Pfad NICHT geleert; die Meldung steht in der Inbox, der Merge bleibt.
+    if (this.deps.stacks) {
+      try {
+        await this.deps.stacks.down(feature, project);
+      } catch (err) {
+        this.markCleanupFailed(feature, `Stack-Abbau fehlgeschlagen: ${errText(err)}`);
+        return false;
+      }
+    }
+
     const session = this.deps.ptys.forFeature(feature.id);
     if (session) await this.deps.ptys.terminate(session.id);
 
+    // Das Entfernen wird GEPRÜFT, nicht angenommen (FR-034). Bis 31.07.2026 stand
+    // hier `catch { prune }` und danach bedingungslos `setWorktree(id, null)` —
+    // ein fehlgeschlagenes Entfernen machte das Verzeichnis damit für das Toolkit
+    // unauffindbar (research E11, SC-004).
     if (feature.worktreePath) {
       try {
         await this.deps.worktrees.remove(project.path, feature.worktreePath, { force: true });
-      } catch {
+      } catch (err) {
         await git(project.path, ['worktree', 'prune']).catch(() => {});
+        if (existsSync(feature.worktreePath)) {
+          this.markCleanupFailed(feature, errText(err));
+          return false;
+        }
       }
     }
     if (branchExists) await this.engine.deleteBranch(project.path, feature.branch).catch(() => {});
 
+    // Erst nach nachgewiesenem Entfernen (FR-036).
     this.deps.features.setWorktree(feature.id, null);
+    this.deps.features.setCleanupError(feature.id, null);
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({ featureId: feature.id, kinds: ['worktree_cleanup_failed'] }),
+    );
     this.deps.ptys.snapshots.remove(feature.id);
     const fresh = this.deps.features.get(feature.id);
     if (fresh) bus.emitEvent('feature_updated', fresh);
     return true;
+  }
+
+  /**
+   * Fehlgeschlagenes Aufräumen sichtbar machen (FR-035): der Worktree-Pfad BLEIBT
+   * gesetzt, der Grund steht am Feature und als „Braucht dich"-Meldung. Der
+   * Vorgang ist über `retryCleanup()` wiederholbar (FR-037).
+   */
+  private markCleanupFailed(feature: Feature, reason: string): void {
+    this.deps.features.setCleanupError(feature.id, reason);
+    this.escalate(
+      feature,
+      'worktree_cleanup_failed',
+      [
+        `${feature.name}: Worktree konnte nach dem Merge nicht entfernt werden`,
+        reason,
+        `Ordner bleibt: ${feature.worktreePath ?? '—'}`,
+      ].join('\n'),
+    );
+    const fresh = this.deps.features.get(feature.id);
+    if (fresh) bus.emitEvent('feature_updated', fresh);
+  }
+
+  /**
+   * Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037) — über DENSELBEN Pfad,
+   * kein zweiter Weg. Kein Wurf bei erneutem Scheitern: der Aufruf hat korrekt
+   * funktioniert, das Ergebnis ist „geht nicht".
+   */
+  async retryCleanup(featureId: string): Promise<{ cleaned: boolean; worktreePath: string | null; cleanupError: string | null }> {
+    const feature = this.mustFeature(featureId);
+    const project = this.mustProject(feature.projectId);
+    const cleaned = await this.cleanupMerged(feature, project).catch((err: unknown) => {
+      this.markCleanupFailed(feature, errText(err));
+      return false;
+    });
+    const fresh = this.deps.features.get(featureId);
+    return {
+      cleaned,
+      worktreePath: fresh?.worktreePath ?? null,
+      cleanupError: fresh?.cleanupError ?? null,
+    };
+  }
+
+  // ---------- Manuelle Abnahme ----------
+
+  /** Adresse des Features für die Meldung; null, wenn nicht erreichbar (FR-033). */
+  private async stackUrlFor(feature: Feature, project: Project): Promise<string | null> {
+    if (!this.deps.stacks) return null;
+    return await this.deps.stacks
+      .probe(feature, project, { refresh: true })
+      .then((v) => v.url)
+      .catch(() => null);
+  }
+
+  /**
+   * Manuelle Abnahme bestätigen (FR-028). Der Weg aus der Stufe heraus ist
+   * IMMER menschlich — es gibt keinen automatischen Übergang.
+   */
+  async confirmManualTest(featureId: string): Promise<void> {
+    const feature = this.mustFeature(featureId);
+    const project = this.mustProject(feature.projectId);
+    if (feature.integration !== 'awaiting_manual_test') {
+      throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
+    }
+
+    const repo = this.deps.stackRepo;
+
+    // Ein offener Blocker sperrt die Annahme — der einzige Grund, aus dem ein
+    // Befund den Merge aufhält. „Nacharbeit" und „Hinweis" gehen mit durch,
+    // sonst blockiert jede Kleinigkeit und das Gate wird umgangen.
+    const blockers = (repo?.openFindingsFor(featureId) ?? []).filter((f) => f.severity === 'blocker');
+    if (blockers.length > 0) {
+      throw new MergeApprovalError(
+        `${blockers.length} offene(r) Blocker aus einer früheren Abnahme — beheben und abhaken oder herabstufen.`,
+      );
+    }
+
+    if (repo) {
+      repo.addDecision({
+        featureId,
+        decision: 'confirmed',
+        reason: null,
+        round: repo.currentRound(featureId),
+        decidedAt: Date.now(),
+      });
+    }
+
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'manual_test'))) return;
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
+
+    // Ab hier wie ohne Gate: entweder direkt in die Queue oder zum Review.
+    const automation = this.automationFor(feature);
+    if (automation.autoMerge) {
+      this.enqueue(this.mustFeature(featureId));
+      return;
+    }
+    if (!(await this.runStageSteps(this.mustFeature(featureId), project, 'before_stage', 'human_review'))) {
+      return;
+    }
+    this.setStage(feature, 'awaiting_human_review');
+    this.escalate(
+      feature,
+      'review_due',
+      reviewDueMessage(feature, { verificationConfigured: project.verifyCommands.length > 0 }),
+    );
+  }
+
+  /**
+   * Manuelle Abnahme ablehnen (FR-029): zurück auf `specify` — der GANZE
+   * Lebenszyklus läuft neu.
+   *
+   * Warum nicht zurück nach `implement` (so war es bis 31.07.2026): ein Feature
+   * erreicht die Abnahme nur, wenn Verifikation UND Review-Gate durch sind. Was
+   * beide maschinellen Tore passiert und woran ein Mensch dann beim
+   * Durchklicken scheitert, ist fast nie ein Umsetzungsfehler, sondern eine
+   * Aussage über die ABSICHT. Repariert man nur den Code, beschreibt die
+   * Spezifikation ab da etwas, das bewusst verworfen wurde — und jeder Agent,
+   * der sie danach als Kontext bekommt, erbt die Lüge.
+   *
+   * Die Befunde gehen deshalb als Auftrag in den `specify`-Lauf, mit der
+   * ausdrücklichen Anweisung, sie als Akzeptanzkriterium in die BESTEHENDE
+   * Spezifikation einzuarbeiten. Was nur im Prompt steht, ist nach einer Runde
+   * verloren; was in der Spec steht, ist das, wogegen die nächste Abnahme prüft.
+   */
+  async rejectManualTest(featureId: string, input: ManualTestRejection): Promise<void> {
+    const feature = this.mustFeature(featureId);
+    if (feature.integration !== 'awaiting_manual_test') {
+      throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
+    }
+
+    const comment = (input.comment ?? '').trim();
+    const fresh = (input.findings ?? []).filter((f) => f.text.trim() !== '');
+    // Mindestens ein Befund ODER eine Anmerkung: ohne beides wüsste der
+    // Wiedereinstieg nicht, was an der Spezifikation zu ändern ist.
+    if (fresh.length === 0 && comment === '') {
+      throw new MergeApprovalError('Ein Befund oder eine Anmerkung ist erforderlich.');
+    }
+
+    const repo = this.deps.stackRepo;
+    const now = Date.now();
+    const round = repo?.currentRound(featureId) ?? 1;
+
+    for (const f of fresh) {
+      repo?.addFinding({
+        featureId,
+        round,
+        where: f.where?.trim() ? f.where.trim() : null,
+        text: f.text.trim(),
+        severity: f.severity,
+        createdAt: now,
+      });
+    }
+    repo?.addDecision({
+      featureId,
+      decision: 'rejected',
+      reason: comment === '' ? null : comment,
+      round,
+      decidedAt: now,
+    });
+
+    this.deps.features.setIntegration(featureId, 'none');
+    this.deps.features.setIntegrationTarget(featureId, null);
+
+    // Rücksprung: `discardPhase` setzt die Zielphase auf `idle` und entwertet
+    // alles Nachgelagerte als `stale` — die Artefakte bleiben liegen, sie sollen
+    // überarbeitet und nicht neu erstellt werden. Der Zustand hängt bewusst
+    // NICHT am Orchestrator; ohne ihn (Tests) stimmt die Buchführung trotzdem.
+    // Dieselbe Regel, die die Workflow-Ansicht zeichnet (FR-013). `orderedPhases`
+    // filtert FEATURE_PHASES auf die vorhandenen Schlüssel — `'specify' in phases`
+    // und `orderedPhases(phases).includes('specify')` sind damit gleichbedeutend.
+    const target = rejectTargetPhase(orderedPhases(feature.phases));
+    this.deps.features.savePhases(
+      featureId,
+      target ? discardPhase(feature.phases, target).phases : reopenLastPhase(feature.phases).phases,
+    );
+    this.deps.features.setReviewRejected(featureId, now);
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
+
+    const updated = this.deps.features.get(featureId);
+    if (updated) bus.emitEvent('feature_updated', updated);
+
+    // Auftrag an den Agenten. Alle offenen Befunde gehen mit, nicht nur die
+    // dieser Runde — was aus Runde 1 nie abgehakt wurde, steht noch aus.
+    if (this.rework && target) {
+      const open = repo?.openFindingsFor(featureId) ?? [];
+      await this.rework.startPhaseRun(featureId, target, compileManualTestPrompt(open, comment, round));
+    }
   }
 
   /**
@@ -198,19 +478,64 @@ export class MergeQueueService {
    * Integration eines Features beginnen: Worktree committen, verifizieren,
    * dann (autoMerge) einreihen oder auf menschliches Review warten.
    */
-  async beginIntegration(featureId: string): Promise<void> {
+  /**
+   * Integrations-Pipeline starten. Die drei Vorprüfungen laufen VOR jeder
+   * Zustandsänderung, vor `reconcile()` und vor `commitWorktree()` (FR-004):
+   * eine Ablehnung lässt Feature-Zustand UND Arbeitsverzeichnis unverändert —
+   * insbesondere wird keine Arbeit festgeschrieben.
+   *
+   * Die Prüfung sitzt hier und nicht (nur) in der Route, damit auch der
+   * automatische Pfad (`PhaseEffect start_integration` bei autoVerify) ihr
+   * unterliegt. Zugleich schließt Prüfung 3 die Falle, dass ein änderungsfreier
+   * Branch in `reconcile()` als „bereits gemergt" gilt und über
+   * `finalizeMerged()` auf 'merged' rutscht — ein zweiter Weg in den
+   * Endzustand, den SC-003 ausschließt.
+   */
+  async beginIntegration(featureId: string): Promise<{ started: boolean; reason?: string; retryable?: boolean }> {
     const feature = this.mustFeature(featureId);
     const project = this.mustProject(feature.projectId);
 
-    // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
-    // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
-    if ((await this.reconcile(feature, project)) !== 'proceed') return;
-    if (!feature.worktreePath) throw new Error(`Feature ${feature.name} hat keinen Worktree`);
-    if (!hasAnyTaskDone(feature)) throw new Error(NO_TASKS_DONE);
+    if (feature.integration !== 'none') {
+      return { started: false, reason: alreadyIntegratingReason(feature.integration) };
+    }
+    if (!feature.worktreePath) {
+      return { started: false, reason: ACTION_REASON.noWorktree };
+    }
+    if (!(await this.hasIntegrableChanges(feature, project))) {
+      return { started: false, reason: ACTION_REASON.noChanges };
+    }
+    if (!hasAnyTaskDone(feature)) {
+      return { started: false, reason: ACTION_REASON.noTasksDone };
+    }
+    const arbeitet = this.sessionStillWorking(feature.id);
+    if (arbeitet !== null) {
+      // Kein endgültiges Nein: sobald der Agent still ist, darf es weitergehen.
+      return { started: false, reason: arbeitet, retryable: true };
+    }
 
-    this.setStage(feature, 'verifying');
+    // Die Stufe wird VOR dem Festschreiben gesetzt, damit kein Zeitfenster
+    // existiert, in dem eine Oberfläche „Verifikation läuft" zeigt, obwohl keine
+    // konfiguriert ist (FR-002). Die leere Kommandoliste ist kein Erfolg — sie
+    // bekommt ihren eigenen, persistierten Zustand (FR-001a).
+    this.setStage(feature, project.verifyCommands.length > 0 ? 'verifying' : 'verification_unconfigured');
     try {
+      // Festschreiben MUSS vor reconcile() laufen. Solange die Arbeit uncommittet
+      // ist, hat der Branch keinen eigenen Commit und ist damit trivial Vorfahre
+      // des Ziels — reconcile() hält ihn für „bereits gemergt" und eskaliert wegen
+      // der uncommitteten Dateien, ohne dass je committet würde. Der Schritt, der
+      // die Bedingung auflöst, lag hinter der Prüfung, die auf sie reagiert.
       await this.commitWorktree(feature);
+
+      // Selbstheilung: Zustand mit der Git-Realität abgleichen, bevor blind git im
+      // (evtl. entfernten/kaputten) Worktree ausgeführt wird.
+      if ((await this.reconcile(feature, project)) !== 'proceed') return { started: false };
+
+      // Stufe „Verifikation": Schritte vor der Arbeit; ein blockierender Fehlschlag
+      // lässt das Feature in der oben gesetzten Stufe stehen (`verifying` bzw.
+      // `verification_unconfigured`) — keine Verifikation, kein Gate.
+      if (!(await this.runStageSteps(feature, project, 'before_stage', 'verify'))) {
+        return { started: true };
+      }
 
       if (project.verifyCommands.length > 0) {
         const execId = this.deps.executions.start({
@@ -229,13 +554,24 @@ export class MergeQueueService {
         this.deps.executions.finish(execId, outcome.ok ? 0 : 1);
         if (!outcome.ok) {
           this.setStage(feature, 'verify_failed');
-          this.escalate(
-            feature,
-            'verify_failed',
-            `${feature.name}: Verifikation rot — Schritt '${outcome.results.at(-1)?.name ?? '?'}' fehlgeschlagen`,
-          );
-          return;
+          this.escalate(feature, 'verify_failed', `Verifikation fehlgeschlagen: ${outcome.results.at(-1)?.name}`);
+          return { started: true };
         }
+      } else {
+        // Punkt der Verifikation ohne Verifikation: die Lücke wird einmal je Projekt
+        // benannt (FR-004/FR-005). Hier — nach commitWorktree() und nach
+        // reconcile() === 'proceed' — statt beim Setzen der Stufe, damit ein an einer
+        // Vorprüfung gescheiterter Versuch nichts meldet.
+        //
+        // Bewusst nicht über escalate(): der Eintrag gehört dem Projekt, nicht dem
+        // Feature, und ist keine Eskalation — er blockiert und verzögert nichts (FR-010).
+        const gap = raiseVerificationGap({ attention: this.deps.attention, project });
+        if (gap) bus.emitEvent('attention_raised', gap);
+      }
+
+      // Nach grüner Verifikation.
+      if (!(await this.runStageSteps(feature, project, 'after_stage', 'verify'))) {
+        return { started: true };
       }
 
       const automation = this.automationFor(feature);
@@ -244,6 +580,10 @@ export class MergeQueueService {
       // blockierender FAIL eskaliert, beratende FAILs werden nur verbucht.
       if (automation.autoReviewAgents) {
         this.setStage(feature, 'review_gate');
+        // Schritte vor den Review-Agents (E8: Schritte bereiten vor, Agents urteilen).
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'review_gate'))) {
+          return { started: true };
+        }
         const gate = await this.deps.agentGate.runTrigger(this.mustFeature(featureId), project, {
           kind: 'review_gate',
         });
@@ -252,23 +592,66 @@ export class MergeQueueService {
         if (!gate.ok) {
           this.setStage(feature, 'gate_failed');
           this.escalate(feature, 'gate_failed', `${feature.name}: Review-Gate FAIL — ${gate.failedAgent}`);
-          return;
+          return { started: true };
         }
+        // Nach bestandenem Gate.
+        if (!(await this.runStageSteps(feature, project, 'after_stage', 'review_gate'))) {
+          return { started: true };
+        }
+      }
+
+      // Manuelles Test-Gate (FR-024): der Halt liegt VOR dem menschlichen Review
+      // und vor der Merge-Queue — ein Mensch klickt die laufende Anwendung durch.
+      // Der Schalter wird BEIM DURCHLAUF gelesen und nie rückwirkend angewandt;
+      // es gibt keinen Übergang zurück aus `awaiting_human_review` (Edge Case).
+      if (automation.manualTestGate) {
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'manual_test'))) {
+          return { started: true };
+        }
+        this.setStage(feature, 'awaiting_manual_test');
+        this.escalate(
+          feature,
+          'manual_test_due',
+          manualTestDueMessage(feature, await this.stackUrlFor(feature, project)),
+        );
+        return { started: true };
       }
 
       if (automation.autoMerge) {
         this.enqueue(feature);
       } else {
+        // Stufe „Menschliches Review": Schritte vor der Übergabe an den Menschen.
+        if (!(await this.runStageSteps(feature, project, 'before_stage', 'human_review'))) {
+          return { started: true };
+        }
         this.setStage(feature, 'awaiting_human_review');
-        this.escalate(feature, 'review_due', `${feature.name}: verifiziert — bereit für dein Review & Merge`);
+        // Der Text kommt aus dem geteilten Modul: er darf keine Verifikation
+        // behaupten, die nicht stattgefunden hat (FR-003), und trägt den
+        // Aufgabenstand an die Entscheidungsstelle (FR-012).
+        this.escalate(
+          feature,
+          'review_due',
+          reviewDueMessage(feature, { verificationConfigured: project.verifyCommands.length > 0 }),
+        );
       }
     } catch (err) {
       this.setStage(feature, 'verify_failed');
-      this.escalate(
-        feature,
-        'verify_failed',
-        `${feature.name}: Integration abgebrochen — ${(err as Error).message ?? String(err)}`,
-      );
+      this.escalate(feature, 'verify_failed', `Integration fehlgeschlagen: ${String(err)}`);
+    }
+    return { started: true };
+  }
+
+  /**
+   * Vorprüfung nach FR-027. Ein nicht lesbarer Worktree gilt bewusst NICHT als
+   * „nichts zu tun": `reconcile()` erkennt und meldet ihn danach mit klarer
+   * Eskalation, statt den Start hier stumm zu verschlucken.
+   */
+  private async hasIntegrableChanges(feature: Feature, project: Project): Promise<boolean> {
+    if (!feature.worktreePath) return false;
+    try {
+      return await hasUnmergedChanges(feature.worktreePath, feature.integrationTarget ?? project.defaultBranch);
+    } catch {
+      return true;
     }
   }
 
@@ -312,17 +695,68 @@ export class MergeQueueService {
       forceVerify = true;
     }
 
-    this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] });
+    // Stufe „Menschliches Review" ist erfolgreich beendet: Schritte laufen nach der
+    // Freigabe und VOR dem Einreihen. Ein blockierender Fehlschlag reiht nicht ein —
+    // das Feature bleibt sichtbar prüfbereit, die Meldung steht in der Inbox.
+    if (!(await this.runStageSteps(this.mustFeature(featureId), project, 'after_stage', 'human_review'))) {
+      return;
+    }
+
+    emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] }));
     this.enqueue(this.mustFeature(featureId), { forceVerify });
   }
 
+  /**
+   * Wiederaufnahme nach einer fehlgeschlagenen Integration (FR-015): die
+   * Pipeline beginnt von vorn. Die Fehlerstufe wird dafür zurückgesetzt, damit
+   * `beginIntegration()` denselben Vorprüfungen unterliegt wie ein Erststart —
+   * es gibt keinen zweiten, ungeprüften Einstieg in die Integration.
+   */
   retry(featureId: string): void {
-    this.mustFeature(featureId); // wirft, wenn das Feature nicht (mehr) existiert
-    this.deps.attention.resolveFor({
-      featureId,
-      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
+    const feature = this.mustFeature(featureId);
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({
+        featureId,
+        kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed'],
+      }),
+    );
+    this.setStage(feature, 'none');
+    void this.beginIntegration(featureId).then((r) => {
+      if (!r.started && r.reason) {
+        console.warn(`[merge-queue] ${feature.name}: Wiederaufnahme abgelehnt — ${r.reason}`);
+      }
     });
-    void this.beginIntegration(featureId);
+  }
+
+  /**
+   * Lebenszyklus-Schritte einer Pipeline-Stufe ausführen. `false` = ein blockierender
+   * Schritt ist fehlgeschlagen: die Stufe hält an UND der Queue-Worker stoppt —
+   * dieselbe Wirkung wie jede bestehende Eskalation („eskaliert → Queue anhalten bis
+   * Mensch eingreift"). Das Inbox-Item hat der Schritt-Service schon erzeugt.
+   *
+   * Ein Infrastrukturfehler (Worktree unerwartet weg) ist kein fachlicher Fehlschlag:
+   * er meldet sich als behebbar und hält ebenfalls an, damit nichts halb Gemergtes
+   * weiterläuft.
+   */
+  private async runStageSteps(
+    feature: Feature,
+    project: Project,
+    kind: 'before_stage' | 'after_stage',
+    stage: LifecycleStageId,
+  ): Promise<boolean> {
+    const trigger = { kind, stage } as const;
+    if (!this.deps.lifecycleSteps.hasStepsFor(project.id, feature.id, trigger)) return true;
+    try {
+      const outcome = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      return outcome.ok;
+    } catch (err) {
+      this.escalate(
+        feature,
+        'agent_errored',
+        `${feature.name}: Schritte ${kind === 'before_stage' ? 'vor' : 'nach'} Stufe '${stage}' fehlgeschlagen — ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   private enqueue(feature: Feature, opts: { forceVerify?: boolean } = {}): void {
@@ -400,6 +834,10 @@ export class MergeQueueService {
     this.deps.queue.setStage(queueId, 'merging');
     this.emitQueue(projectId);
 
+    // Stufe „Merge-Queue": Schritte vor dem Rebase. Ein blockierender Fehlschlag
+    // verhindert Rebase und Merge und hält den Worker an.
+    if (!(await this.runStageSteps(feature, project, 'before_stage', 'merge_queue'))) return false;
+
     // 1) Rebase auf das Ziel (neuer Ziel-Branch existiert noch nicht → identische
     //    Basis ist der Default-Branch), Konflikte agentisch auflösen.
     const rebaseBase = (await this.engine.branchExists(project.path, target))
@@ -429,9 +867,11 @@ export class MergeQueueService {
         conflictFiles: rebase.files,
         logDir: join(this.deps.dataDir, 'logs'),
         executionId: execId,
+        dataDir: this.deps.dataDir,
+        port: this.deps.port,
       });
       await this.captureDiff(feature.worktreePath, execId, 'post');
-      this.deps.executions.finish(execId, res.exitCode, res.costUsd, res.tokens);
+      this.deps.executions.finish(execId, res.exitCode, res.tokens);
       if (res.exitCode !== 0) break;
 
       rebase = await this.engine.continueRebase(feature.worktreePath);
@@ -499,14 +939,30 @@ export class MergeQueueService {
       return false;
     }
 
+    // Merge ist durch, der Worktree existiert noch: erst die Schritte NACH der
+    // Merge-Queue-Stufe, dann die VOR der Abschluss-Stufe — letzte Gelegenheit, im
+    // Worktree zu arbeiten, bevor das Cleanup ihn entfernt.
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'merge_queue'))) return false;
+    if (!(await this.runStageSteps(feature, project, 'before_stage', 'merged'))) return false;
+
     // 4) Cleanup: Session beenden, Worktree + Branch entfernen, DB angleichen.
     await this.cleanupMerged(feature, project);
+
+    // Nach dem Cleanup, VOR dem Abschluss-Vermerk (cwd = Haupt-Checkout, der
+    // Worktree ist weg). Ein blockierender Fehlschlag lässt den Merge bestehen,
+    // vermerkt den Abschluss aber NICHT: das Feature bleibt davor stehen und meldet
+    // sich in der Inbox. Der bestehende Selbstheilungspfad (reconcile → „Branch
+    // bereits im Ziel" → finalizeMerged) führt es beim nächsten Anstoßen zu Ende.
+    if (!(await this.runStageSteps(feature, project, 'after_stage', 'merged'))) return false;
+
     this.setStage(feature, 'merged');
     this.deps.queue.remove(queueId);
     this.emitQueue(projectId);
     bus.emitEvent('notification', {
+      // Auf dem Auto-Merge-Pfad ist das die einzige Gelegenheit, den Aufgabenstand
+      // zu sehen — es gibt dort kein menschliches Review-Halt (FR-012a).
       title: 'Feature gemergt',
-      body: `${feature.name} → ${target}`,
+      body: mergedNotificationBody(feature, target),
       featureId,
       kind: 'merged',
     });
@@ -560,7 +1016,9 @@ export class MergeQueueService {
     this.emitQueue(project.id);
     bus.emitEvent('notification', {
       title: 'PR erstellt',
-      body: `${feature.name}: ${pr.stdout.trim().split('\n').at(-1) ?? feature.branch}`,
+      // Der PR-Pfad hat ebenfalls kein menschliches Review-Halt — der Aufgabenstand
+      // gehört auch hierher (FR-012a). Die PR-URL bleibt am Anfang stehen.
+      body: `${feature.name}: ${pr.stdout.trim().split('\n').at(-1) ?? feature.branch} · ${taskProgressText(feature)}`,
       featureId: feature.id,
       kind: 'merged',
     });
@@ -576,6 +1034,9 @@ export class MergeQueueService {
   /** Uncommittete Änderungen im Worktree committen. */
   private async commitWorktree(feature: Feature, message?: string): Promise<void> {
     if (!feature.worktreePath) return;
+    // Fehlender Worktree ist kein Commit-Fehler: reconcile() meldet ihn danach
+    // mit der genauen Ursache. Ohne diesen Ausstieg würde git hier werfen.
+    if (!existsSync(feature.worktreePath)) return;
     if (await isCleanWorkingTree(feature.worktreePath)) return;
     await git(feature.worktreePath, ['add', '-A']);
     const r = await git(feature.worktreePath, [
@@ -645,14 +1106,12 @@ export class MergeQueueService {
     this.deps.ptys.snapshots.remove(feature.id);
     const item = this.deps.queue.listByProject(feature.projectId).find((i) => i.featureId === feature.id);
     if (item) this.deps.queue.remove(item.id);
-    // Auflösung je Meldung melden — sonst bleiben review_due & Co. bis zum Reload in der Inbox
-    // stehen (setStage findet sie danach nicht mehr, sie sind hier bereits aufgelöst).
-    for (const id of this.deps.attention.resolveFor({
-      featureId: feature.id,
-      kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed', 'review_due'],
-    })) {
-      bus.emitEvent('attention_resolved', id);
-    }
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({
+        featureId: feature.id,
+        kinds: ['merge_conflict_escalated', 'verify_failed', 'gate_failed', 'review_due'],
+      }),
+    );
     this.setStage(feature, 'merged');
     this.emitQueue(feature.projectId);
   }
@@ -677,8 +1136,7 @@ export class MergeQueueService {
       if (it.featureId !== feature.id) continue;
       const wanted = STAGE_FOR_KIND[it.kind];
       if (wanted !== undefined && wanted !== stage) {
-        this.deps.attention.resolve(it.id);
-        bus.emitEvent('attention_resolved', it.id);
+        if (this.deps.attention.resolve(it.id)) emitAttentionResolved([it.id]);
       }
     }
   }
@@ -698,6 +1156,24 @@ export class MergeQueueService {
     bus.emitEvent('queue_updated', { projectId, items: this.deps.queue.listByProject(projectId) });
   }
 
+  /**
+   * Schreibt der Agent dieses Features noch? Ausgabe ist der verlässliche Beweis —
+   * der Zustandsautomat führt eine denkende oder lange bauende Session nach
+   * `WORKING_STALL_SECONDS` nicht mehr als `working` (Sicherheitsnetz für die
+   * ANZEIGE, siehe sessionManager.lastOutputAt).
+   *
+   * Liefert den Grund als Satz, wenn integriert werden darf — sonst `null`.
+   */
+  private sessionStillWorking(featureId: string): string | null {
+    const session = this.deps.ptys.forFeature(featureId);
+    if (!session || session.exited) return null;
+    const seit = Date.now() - session.lastOutputAt;
+    if (session.lastOutputAt === 0 || seit >= INTEGRATION_QUIET_MS) return null;
+    return `Der Agent arbeitet noch — letzte Ausgabe vor ${Math.round(seit / 1000)} s. Integration erst, wenn er ${Math.round(
+      INTEGRATION_QUIET_MS / 1000,
+    )} s still ist.`;
+  }
+
   private mustFeature(id: string): Feature {
     const f = this.deps.features.get(id);
     if (!f) throw new Error(`Feature ${id} nicht gefunden`);
@@ -711,19 +1187,15 @@ export class MergeQueueService {
   }
 }
 
-/** Ablehnungsgrund, wortgleich in Oberfläche und HTTP-Antwort. */
-export const NO_TASKS_DONE =
-  'Kein einziger Task aus tasks.md ist erledigt — die Umsetzung hat offenbar nicht stattgefunden.';
-
 /**
  * Zweite Verteidigungslinie gegen ein Feature, dessen Umsetzung nie stattfand.
  *
  * Am 27.07.2026 lief ein Feature vollständig durch die Pipeline — Verifikation grün,
- * Review-Gate bestanden — und trug im Commit ausschliesslich Markdown: die
+ * Review-Gate bestanden — und trug im Commit ausschließlich Markdown: die
  * implement-Phase war fälschlich als abgeschlossen verbucht worden. Sichtbar war das
  * allein an `tasksDone/tasksTotal = 0/56`, und dieser Wert floss in keine
  * Freigabeentscheidung ein. Die Verifikation kann den Fall prinzipiell nicht erkennen:
- * sie prüft „baut und testet das Repository“, und das ist bei einem reinen
+ * sie prüft „baut und testet das Repository", und das ist bei einem reinen
  * Markdown-Commit trivial erfüllt (dieselben Tests wie auf main).
  *
  * Greift bewusst nur im pathologischen Fall — Tasks vorhanden und KEINER erledigt.
@@ -732,3 +1204,21 @@ export const NO_TASKS_DONE =
 export function hasAnyTaskDone(feature: Pick<Feature, 'tasksDone' | 'tasksTotal'>): boolean {
   return feature.tasksTotal === 0 || feature.tasksDone > 0;
 }
+
+/**
+ * So lange muss die Ausgabe einer Session ruhen, bevor die Integration beginnt.
+ *
+ * Grund (30.07.2026, Befund A12): eine implement-Phase galt nach 30 Sekunden als
+ * fertig und freigegeben, während der Agent noch 37 Minuten weiterarbeitete — nur
+ * an der Ausgabe sichtbar, in der Datenbank stand kein Lauf. Der automatische
+ * Integrationsstart wurde damals allein vom Task-Guard aufgehalten (0 von 50
+ * Aufgaben erledigt); wäre eine einzige abgehakt gewesen, hätte die Strecke
+ * committet, verifiziert und gemergt, WÄHREND der Agent dieselben Dateien schrieb.
+ * Genau diese Konstellation hat am 24.07.2026 31 Dateien Arbeit gekostet.
+ *
+ * Der Auslöser der verfrühten Freigabe ist aus den erhaltenen Spuren nicht
+ * bestimmbar (im Hook-Strom folgt dem implement-Prompt kein `Stop`). Deshalb sichert
+ * diese Sperre die FOLGE ab, nicht die Turn-Erkennung: unabhängig davon, warum eine
+ * Phase als fertig gilt, wird nicht integriert, solange der Agent schreibt.
+ */
+export const INTEGRATION_QUIET_MS = 20_000;

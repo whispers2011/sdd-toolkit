@@ -13,7 +13,26 @@ export interface ServerConfig {
   dataDir: string;
   /** Gebautes Web-Bundle, das der Server im Prod-Modus mit ausliefert; null = Dev (Vite liefert das Web). */
   webDir: string | null;
+  /** Erster vergebbarer Port der Blockvergabe (SDD_PORT_RANGE_START). */
+  portRangeStart: number;
+  /** Letzter vergebbarer Blockanfang (SDD_PORT_RANGE_END). */
+  portRangeEnd: number;
+  /** Breite eines Blocks (SDD_PORT_BLOCK_SIZE). */
+  portBlockSize: number;
+  /** Warnschwelle für freien Plattenplatz in Bytes (SDD_DISK_WARN_BYTES). */
+  diskWarnBytes: number;
 }
+
+/**
+ * Vorgabewerte der Portvergabe. 21000 liegt oberhalb der üblichen
+ * Entwicklungsports (3000/4000/5173/8080) und unterhalb des ephemeren Bereichs,
+ * den macOS ab 49152 vergibt; 20 Ports fassen ein Sieben-Dienste-Projekt mit
+ * Reserve. Start 21000 / Ende 29980 / Breite 20 ergibt 449 Blöcke.
+ */
+export const PORT_RANGE_DEFAULTS = { start: 21000, end: 29980, blockSize: 20 } as const;
+
+/** Vorgabe der Plattenwarnung: 10 GiB freier Platz. */
+export const DISK_WARN_BYTES_DEFAULT = 10 * 1024 ** 3;
 
 export function loadConfig(): ServerConfig {
   const dataDir = process.env.SDD_DATA_DIR ?? join(homedir(), '.sdd-toolkit');
@@ -28,7 +47,18 @@ export function loadConfig(): ServerConfig {
     allowedOrigins: buildAllowedOrigins([port, webPort], process.env.SDD_ALLOWED_ORIGINS),
     dataDir,
     webDir: resolveWebDir(),
+    portRangeStart: positiveInt(process.env.SDD_PORT_RANGE_START, PORT_RANGE_DEFAULTS.start),
+    portRangeEnd: positiveInt(process.env.SDD_PORT_RANGE_END, PORT_RANGE_DEFAULTS.end),
+    portBlockSize: positiveInt(process.env.SDD_PORT_BLOCK_SIZE, PORT_RANGE_DEFAULTS.blockSize),
+    diskWarnBytes: positiveInt(process.env.SDD_DISK_WARN_BYTES, DISK_WARN_BYTES_DEFAULT),
   };
+}
+
+/** Ganzzahl > 0 aus der Umgebung; alles andere fällt auf den Vorgabewert zurück. */
+function positiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
 /**

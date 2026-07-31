@@ -1,20 +1,40 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Feature } from '@sdd/shared';
+import { CHAT_HYGIENE_LIMITS, type Feature } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import { isCleanWorkingTree } from '../git/git.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import type { Orchestrator } from './orchestrator.js';
-import { ChatWorkService, CHAT_IDLE_TIMEOUT_MS } from './chatWorkService.js';
+import { ChatWorkService } from './chatWorkService.js';
+import { RunMeter } from './core/runMeter.js';
+import { SessionCore } from './core/sessionCore.js';
+
+/** Session sicherstellen und Turn messen liegen im gemeinsamen Kern (FR-001/FR-002). */
+const meterFor = (executions: ExecutionRepo, telemetry?: unknown) =>
+  new RunMeter({ executions, ...(telemetry ? { telemetry: telemetry as never } : {}) });
+const coreFor = (db: DB, ptys: unknown, worktrees: unknown) =>
+  new SessionCore({
+    sessions: new SessionRepo(db),
+    ptys: ptys as PtySessionManager,
+    worktrees: worktrees as WorktreeManager,
+  });
 
 // Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
 vi.mock('../git/git.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../git/git.js')>();
   return { ...actual, isCleanWorkingTree: vi.fn() };
+});
+
+// Verlaufsgröße steuerbar machen (sie liegt sonst im echten ~/.claude/projects);
+// die übrigen Transkript-Funktionen bleiben real.
+vi.mock('../pty/transcriptWatcher.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../pty/transcriptWatcher.js')>();
+  return { ...actual, locateTranscript: vi.fn(), transcriptSize: vi.fn() };
 });
 
 const marker = (feats: { name: string; description: string }[]) =>
@@ -61,6 +81,8 @@ describe('ChatWorkService — Feature-Vorschläge aus der Session', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, {}),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -146,7 +168,7 @@ describe('ChatWorkService — Neustart (restart)', () => {
     wt = { remove: 0, deleteBranch: [] };
 
     const worktrees = {
-      pathFor: (pid: string, name: string) => join(dataDir, 'worktrees', pid, name),
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'worktrees', p.id, name),
       remove: async () => {
         wt.remove++;
       },
@@ -161,6 +183,8 @@ describe('ChatWorkService — Neustart (restart)', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, worktrees),
       settings: new SettingsRepo(db),
       worktrees,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -243,6 +267,8 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       conversationId: 'c1',
       machine: { state: { kind: 'ready' } },
       lastActiveAt: 0,
+      lastUsedAt: 0,
+      subscribers: new Set(),
       ...over,
     }) as unknown as LiveSession;
 
@@ -278,6 +304,8 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys,
@@ -293,30 +321,55 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
 
   it('beendet eine inaktive Chat-Session nach Ablauf der Leerlaufzeit', () => {
     sessions = [mkSession({ id: 'idle-old', lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
     expect(terminated).toEqual(['idle-old']);
   });
 
   it('würgt eine arbeitende Session nie ab', () => {
     sessions = [mkSession({ id: 'busy', machine: { state: { kind: 'working' } } as LiveSession['machine'], lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS * 10);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs * 10);
     expect(terminated).toEqual([]);
   });
 
+  /**
+   * Der Fall, der den Chat regelmäßig abbrechen ließ: Der Agent hat vor langer Zeit
+   * geantwortet (`lastActiveAt` alt), der Nutzer liest und tippt gerade (`lastUsedAt`
+   * frisch). Am alten Maß gemessen war das „seit Ewigkeiten inaktiv".
+   */
+  it('verschont eine Session, der sich der Nutzer gerade zuwendet', () => {
+    const now = CHAT_HYGIENE_LIMITS.idleMs * 10;
+    sessions = [mkSession({ id: 'lesend', lastActiveAt: 0, lastUsedAt: now - 1000 })];
+    svc.reapIdleSessions(now);
+    expect(terminated).toEqual([]);
+  });
+
+  it('verschont eine Session mit offenem Panel, egal wie lange sie still ist', () => {
+    sessions = [mkSession({ id: 'beobachtet', lastUsedAt: 0, subscribers: new Set([{}]) as LiveSession['subscribers'] })];
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs * 100);
+    expect(terminated).toEqual([]);
+  });
+
+  it('beendet eine Session, die niemand mehr offen hat und der sich niemand zuwendet', () => {
+    sessions = [mkSession({ id: 'vergessen', lastUsedAt: 0, subscribers: new Set() })];
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
+    expect(terminated).toEqual(['vergessen']);
+  });
+
   it('lässt eine noch frische Session in Ruhe', () => {
-    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000 })];
-    svc.reapIdleSessions(1_000 + CHAT_IDLE_TIMEOUT_MS - 1);
+    // dispatch() setzt beide Marken gemeinsam, wenn der Agent zu arbeiten beginnt.
+    sessions = [mkSession({ id: 'fresh', lastActiveAt: 1_000, lastUsedAt: 1_000 })];
+    svc.reapIdleSessions(1_000 + CHAT_HYGIENE_LIMITS.idleMs - 1);
     expect(terminated).toEqual([]);
   });
 
   it('ignoriert Nicht-Chat-Sessions (Feature/Shell)', () => {
     sessions = [mkSession({ id: 'feat', kind: 'feature', lastActiveAt: 0 })];
-    svc.reapIdleSessions(CHAT_IDLE_TIMEOUT_MS + 1);
+    svc.reapIdleSessions(CHAT_HYGIENE_LIMITS.idleMs + 1);
     expect(terminated).toEqual([]);
   });
 });
 
-describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
+describe('ChatWorkService — pauseState (Pausiert-Signal fürs Panel)', () => {
   let db: DB;
   let dataDir: string;
   let projectId: string;
@@ -338,6 +391,8 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
     svc = new ChatWorkService({
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: sessionsRepo,
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
       worktrees: {} as unknown as WorktreeManager, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
     });
   });
@@ -349,26 +404,769 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
 
   const conv = () => new ChatRepo(db).createConversation(projectId, 'work');
 
-  it('false, wenn eine Session live ist', () => {
+  /** Beendete Vorgänger-Session der Unterhaltung — der Fall nach dem Leerlauf-Reap. */
+  const beendeteSession = (conversationId: string) => {
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId, projectId, kind: 'chat_work', pid: 123 });
+    sessionsRepo.setClaudeSessionId('s1', 'claude-abc');
+    sessionsRepo.end('s1');
+    return (db.prepare('SELECT ended_at AS e FROM sessions WHERE id=?').get('s1') as { e: number }).e;
+  };
+
+  it('nicht pausiert, wenn eine Session live ist', () => {
     const c = conv();
     live = { id: 's1' } as unknown as LiveSession;
-    expect(svc.workPaused(c)).toBe(false);
+    expect(svc.pauseState(c).paused).toBe(false);
   });
 
-  it('false für eine frische Unterhaltung ohne je gestartete Session', () => {
-    expect(svc.workPaused(conv())).toBe(false);
+  it('nicht pausiert für eine frische Unterhaltung ohne je gestartete Session', () => {
+    expect(svc.pauseState(conv()).paused).toBe(false);
   });
 
-  it('true, wenn keine Session läuft, aber eine frühere mit Claude-Session-ID existiert (fortsetzbar)', () => {
+  it('pausiert, wenn keine Session läuft, aber eine frühere mit Claude-Session-ID existiert', () => {
+    const c = conv();
+    const ende = beendeteSession(c.id);
+    const state = svc.pauseState(c, ende + 60_000);
+    expect(state.paused).toBe(true);
+    expect(state.idleMs).toBe(60_000);
+    expect(state.resumable).toBe(true); // eine Minute Pause → fortsetzbar
+  });
+
+  it('nicht pausiert, wenn die frühere Session nie eine Claude-Session-ID erhielt', () => {
+    const c = conv();
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
+    expect(svc.pauseState(c).paused).toBe(false);
+  });
+
+  it('kurz vor Ablauf der Pause noch fortsetzbar, danach nicht mehr', () => {
+    const c = conv();
+    const ende = beendeteSession(c.id);
+    expect(svc.pauseState(c, ende + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs - 1).resumable).toBe(true);
+    expect(svc.pauseState(c, ende + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs).resumable).toBe(false);
+  });
+
+  it('ohne ended_at zählt der Beginn der Session (harter Absturz)', () => {
     const c = conv();
     sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
     sessionsRepo.setClaudeSessionId('s1', 'claude-abc');
-    expect(svc.workPaused(c)).toBe(true);
+    const start = (db.prepare('SELECT created_at AS c FROM sessions WHERE id=?').get('s1') as { c: number }).c;
+    expect(svc.pauseState(c, start + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 1).resumable).toBe(false);
+  });
+});
+
+/**
+ * Öffnen nach langer Pause: Der Verlauf wird nicht fortgesetzt, sondern eine frische
+ * Unterhaltung begonnen — sonst läse jeder weitere Turn den alten Verlauf erneut mit.
+ * Verworfen wird dabei nichts: Nachrichten bleiben, und eine dirty Arbeitskopie bleibt
+ * stehen (hier fragt niemand, also wird auch nichts weggeräumt).
+ */
+describe('ChatWorkService — abgelaufene Pause beim Öffnen (ensure)', () => {
+  let db: DB;
+  let chat: ChatRepo;
+  let dataDir: string;
+  let projectId: string;
+  let altConvId: string;
+  let svc: ChatWorkService;
+  let wt: { removed: string[]; deletedBranches: string[] };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-stale-'));
+    db = openMemoryDatabase();
+    chat = new ChatRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    altConvId = chat.createConversation(projectId, 'work').id;
+    wt = { removed: [], deletedBranches: [] };
+
+    const worktrees = {
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'worktrees', p.id, name),
+      create: async () => join(dataDir, 'worktrees', 'neu'),
+      remove: async (_p: string, path: string) => {
+        wt.removed.push(path);
+      },
+      deleteBranch: async (_p: string, branch: string) => {
+        wt.deletedBranches.push(branch);
+      },
+    } as unknown as WorktreeManager;
+    const ptys = {
+      forConversation: () => undefined,
+      spawn: async () => ({ id: 'neue-session', pty: { pid: 4711 }, conversationId: null }),
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: chat, sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, worktrees),
+      worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
+    vi.mocked(locateTranscript).mockReturnValue('/tmp/transkript.jsonl'); // Resume-Kandidat lebt
   });
 
-  it('false, wenn die frühere Session nie eine Claude-Session-ID erhielt', () => {
-    const c = conv();
-    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
-    expect(svc.workPaused(c)).toBe(false);
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Pausierte Vorgänger-Session, deren Ende `vorMs` zurückliegt. */
+  const pausierteSession = (vorMs: number) => {
+    const sessions = new SessionRepo(db);
+    sessions.create({ id: 'alt', featureId: null, conversationId: altConvId, projectId, kind: 'chat_work', pid: 1 });
+    sessions.setClaudeSessionId('alt', 'claude-alt');
+    sessions.end('alt');
+    db.prepare('UPDATE sessions SET ended_at=? WHERE id=?').run(Date.now() - vorMs, 'alt');
+  };
+
+  it('beginnt nach abgelaufener Pause eine frische Unterhaltung und meldet es', async () => {
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 60_000);
+    chat.createMessage({ conversationId: altConvId, role: 'user', content: 'BANANE', status: 'complete' });
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(true);
+    expect(chat.getActive(projectId)!.id).not.toBe(altConvId);
+    expect(chat.getConversation(altConvId)!.endedAt).not.toBeNull();
+    expect(chat.listMessages(altConvId).map((m) => m.content)).toContain('BANANE'); // Verlauf bleibt
+    expect(wt.deletedBranches).toEqual([`chat/${altConvId}`]); // saubere Arbeitskopie abgeräumt
+  });
+
+  it('lässt eine dirty Arbeitskopie stehen, statt sie ungefragt zu verwerfen', async () => {
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(false);
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 60_000);
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(true);
+    // Die alte Arbeitskopie bleibt samt Branch stehen (die Anlage der neuen räumt nur ihren
+    // eigenen, nicht vorhandenen Pfad auf).
+    expect(wt.removed).not.toContain(join(dataDir, 'worktrees', projectId, `chat-${altConvId}`));
+    expect(wt.deletedBranches).toEqual([]);
+  });
+
+  it('setzt eine noch fortsetzbare Pause fort — dieselbe Unterhaltung, kein Hinweis', async () => {
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs - 60_000);
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(false);
+    expect(chat.getActive(projectId)!.id).toBe(altConvId);
+  });
+});
+
+/**
+ * Metering eines Chat-Turns. Vorher wurde aus dem Terminal-Scrollback geschätzt —
+ * also ausgerechnet die Größe, die kaum kostet: In einem Chat vom 28.07.2026 standen
+ * 7,0 Mio. gelesene Cache-Tokens 45k Ausgabe-Tokens gegenüber, erfasst waren 94k
+ * Tokens und 0 $ statt real gut 5 $. Vorrang haben jetzt die Meldungen der CLI.
+ */
+describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let executions: ExecutionRepo;
+  let svc: ChatWorkService;
+
+  const telemetryEvent = (sessionId: string) => ({
+    sessionId,
+    timestamp: Date.now(),
+    origin: 'main' as const,
+    model: 'claude-opus-5',
+    tokens: 7_175_597,
+    inputTokens: 135,
+    outputTokens: 45_096,
+    cacheReadTokens: 7_016_059,
+    cacheCreationTokens: 114_307,
+    costMicros: 5_350_524,
+  });
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-meter-'));
+    db = openMemoryDatabase();
+    executions = new ExecutionRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  const build = (telemetry?: unknown) =>
+    new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions, settings: new SettingsRepo(db),
+      worktrees: {} as unknown as WorktreeManager,
+      ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
+      orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator, dataDir,
+      meter: meterFor(executions, telemetry),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, {}),
+    });
+
+  const session = (): LiveSession =>
+    ({
+      id: 's1',
+      projectId,
+      cwd: '/tmp/demo',
+      scrollback: 'Antwort des Agenten.\n',
+      machine: { state: { kind: 'turn_done' } },
+    }) as unknown as LiveSession;
+
+  it('rechnet über die Meldungen der CLI ab — inklusive Kosten und Cache-Tokens', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [telemetryEvent(live.id)] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('telemetry');
+    expect(run.costMicros).toBe(5_350_524);
+    expect(run.cacheReadTokens).toBe(7_016_059);
+    expect(run.tokens).toBe(7_175_597);
+  });
+
+  it('fällt ohne Meldungen und ohne Transkript auf die Scrollback-Schätzung zurück', () => {
+    const live = session();
+    svc = build({ eventsFor: () => [] });
+
+    svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+
+    const [run] = executions.listAll();
+    expect(run.tokensSource).toBe('estimated');
+    expect(run.tokens).toBeGreaterThan(0);
+  });
+});
+
+// ---------- Kontext-Hygiene (Kostenprofil und Neustart-Angebot) ----------
+
+const MB = 1024 * 1024;
+/** Referenzfall 28.07.2026: 16,8 MB Verlauf, ~265'000 gelesene Tokens je Turn, ~300 erzeugte. */
+const REFERENZ_VERLAUF = Math.round(16.8 * MB);
+
+interface TurnVerbrauch {
+  cacheReadTokens: number;
+  outputTokens: number;
+  costMicros?: number;
+}
+
+/** Projekt + aktive Unterhaltung + steuerbare Session, Verlaufsgröße und Verbrauchsmeldungen. */
+function hygieneSetup() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-hygiene-'));
+  const db = openMemoryDatabase();
+  const chatRepo = new ChatRepo(db);
+  const sessionsRepo = new SessionRepo(db);
+  const projectId = new ProjectRepo(db).create({
+    name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+    verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+  }).id;
+  const convId = chatRepo.createConversation(projectId, 'work').id;
+
+  const ctx = {
+    db,
+    dataDir,
+    chatRepo,
+    sessionsRepo,
+    projectId,
+    convId,
+    /** Verbrauchsmeldungen des laufenden Turns (leer = die CLI hat nichts gemeldet). */
+    events: [] as Record<string, unknown>[],
+    live: undefined as LiveSession | undefined,
+    svc: null as unknown as ChatWorkService,
+  };
+
+  ctx.svc = new ChatWorkService({
+    projects: new ProjectRepo(db),
+    chatRepo,
+    sessions: sessionsRepo,
+    attention: new AttentionRepo(db),
+    executions: new ExecutionRepo(db),
+    settings: new SettingsRepo(db),
+    worktrees: {
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'wt', p.id, name),
+      remove: async () => {},
+      deleteBranch: async () => {},
+    } as unknown as WorktreeManager,
+    ptys: { forConversation: () => ctx.live } as unknown as PtySessionManager,
+    orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator,
+    dataDir,
+    // `hold`/`release` gehören zur Anmeldung des Ereignispuffers, die der Chat mit dem
+    // gemeinsamen Kern neu erhält (FR-007).
+    meter: meterFor(new ExecutionRepo(db), {
+      eventsFor: () => ctx.events,
+      hold: vi.fn(),
+      release: vi.fn(),
+    }),
+    sessionCore: coreFor(db, { forConversation: () => ctx.live }, {}),
+  });
+  ctx.svc.ensure = async () => ({ sessionId: 's-neu' });
+  vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
+  return ctx;
+}
+
+type Hygiene = ReturnType<typeof hygieneSetup>;
+
+const hygieneSession = (ctx: Hygiene, over: Record<string, unknown> = {}): LiveSession =>
+  ({
+    id: 's1',
+    projectId: ctx.projectId,
+    conversationId: ctx.convId,
+    cwd: '/tmp/demo',
+    claudeSessionId: 'claude-abc',
+    scrollback: 'Antwort des Agenten.\n',
+    machine: { state: { kind: 'turn_done' } },
+    ...over,
+  }) as unknown as LiveSession;
+
+/** Verlaufsgröße, die `historyBytesFor()` findet (`null` = kein Transkript auffindbar). */
+const setzeVerlauf = (bytes: number | null) => {
+  vi.mocked(locateTranscript).mockReturnValue(bytes === null ? null : '/tmp/transkript.jsonl');
+  vi.mocked(transcriptSize).mockReturnValue(bytes ?? 0);
+};
+
+/** Einen Turn beenden; `null` = für diesen Turn war nichts messbar. */
+const beendeTurn = (ctx: Hygiene, verbrauch: TurnVerbrauch | null) => {
+  ctx.events = verbrauch
+    ? [
+        {
+          sessionId: 's1',
+          requestId: `req-${Math.random()}`,
+          at: Date.now(),
+          origin: 'main',
+          model: 'claude-opus-5',
+          tokens: verbrauch.cacheReadTokens + verbrauch.outputTokens,
+          inputTokens: 0,
+          outputTokens: verbrauch.outputTokens,
+          cacheReadTokens: verbrauch.cacheReadTokens,
+          cacheCreationTokens: 0,
+          costMicros: verbrauch.costMicros ?? 890_000,
+        },
+      ]
+    : [];
+  // Ohne Meldungen UND ohne Ausgabe im Scrollback gibt der Turn nichts her → Verbrauch unbekannt.
+  const live = hygieneSession(ctx, verbrauch ? {} : { scrollback: '' });
+  ctx.svc.handleStatusChange(live, [{ kind: 'turn_completed' }] as never);
+};
+
+const profil = (ctx: Hygiene) => ctx.svc.costProfileFor(ctx.chatRepo.getActive(ctx.projectId)!);
+
+/** Die Unterhaltung pausieren lassen: frühere Session mit Claude-ID, keine laufende. */
+const pausiere = (ctx: Hygiene) => {
+  ctx.sessionsRepo.create({
+    id: 's-alt', featureId: null, conversationId: ctx.convId, projectId: ctx.projectId,
+    kind: 'chat_work', pid: 123,
+  });
+  ctx.sessionsRepo.setClaudeSessionId('s-alt', 'claude-abc');
+};
+
+const TEUER: TurnVerbrauch = { cacheReadTokens: 265_673, outputTokens: 300 };
+const GUENSTIG: TurnVerbrauch = { cacheReadTokens: 12_000, outputTokens: 600 };
+
+/**
+ * Messung an der Turn-Grenze: der Verbrauch des Turns und die Verlaufsgröße werden für die
+ * Unterhaltung festgehalten — auch dann, wenn nichts messbar war (dann als „unbekannt",
+ * nie als 0, FR-016).
+ */
+describe('ChatWorkService — Kostenprofil an der Turn-Grenze', () => {
+  let ctx: Hygiene;
+
+  beforeEach(() => {
+    ctx = hygieneSetup();
+    setzeVerlauf(300 * 1024);
+  });
+
+  afterEach(() => {
+    ctx.db.close();
+    rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  it('vor dem ersten Turn gibt es kein Profil', () => {
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('Turn-Ende schreibt Verbrauch und Verlaufsgröße fest', () => {
+    setzeVerlauf(2 * MB);
+    beendeTurn(ctx, { cacheReadTokens: 90_000, outputTokens: 1_500, costMicros: 42_000 });
+
+    const p = profil(ctx)!;
+    expect(p.lastTurn).toEqual({
+      cacheReadTokens: 90_000,
+      outputTokens: 1_500,
+      costMicros: 42_000,
+      tokens: 91_500,
+      measured: true,
+    });
+    expect(p.historyBytes).toBe(2 * MB);
+    expect(p.ratio).toEqual({ kind: 'value', ratio: 60 });
+  });
+
+  it('ein Turn ohne messbaren Verbrauch landet als unbekannt, nicht als 0 (FR-016)', () => {
+    beendeTurn(ctx, null);
+
+    const p = profil(ctx)!;
+    expect(p.lastTurn).toEqual({
+      cacheReadTokens: null, outputTokens: null, costMicros: null, tokens: null, measured: false,
+    });
+    expect(p.ratio).toEqual({ kind: 'unknown' });
+    expect(p.reasons).toEqual([]);
+  });
+
+  it('die Zahlen beziehen sich stets auf den zuletzt beendeten Turn', () => {
+    beendeTurn(ctx, { cacheReadTokens: 90_000, outputTokens: 100 });
+    beendeTurn(ctx, { cacheReadTokens: 11_000, outputTokens: 800 });
+
+    expect(profil(ctx)!.lastTurn?.cacheReadTokens).toBe(11_000);
+  });
+
+  it('der Ringpuffer hält nur die letzten drei Turns', () => {
+    for (const v of [GUENSTIG, GUENSTIG, GUENSTIG, TEUER, TEUER, TEUER]) beendeTurn(ctx, v);
+    // Die günstigen Turns sind herausgefallen — drei teure in Folge lösen das Verhältnis aus.
+    expect(profil(ctx)!.reasons).toContain('context_ratio');
+
+    for (const v of [TEUER, TEUER, TEUER, GUENSTIG]) beendeTurn(ctx, v);
+    // Ein günstiger Turn im Fenster genügt, damit das Verhältnis nicht mehr gilt.
+    expect(profil(ctx)!.reasons).not.toContain('context_ratio');
+  });
+
+  it('nicht ermittelbare Verlaufsgröße bleibt unbekannt und löst nichts aus', () => {
+    setzeVerlauf(null);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.historyBytes).toBeNull();
+    expect(p.reasons).toEqual([]);
+  });
+
+  it('nach einem Neustart beginnt die Bewertung der frischen Unterhaltung bei null (FR-012)', async () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    expect(profil(ctx)!.offerOpen).toBe(true);
+
+    await ctx.svc.restart(ctx.projectId, { confirm: true });
+
+    expect(ctx.chatRepo.getActive(ctx.projectId)!.id).not.toBe(ctx.convId);
+    expect(profil(ctx)).toBeNull();
+  });
+});
+
+/**
+ * Der zweite Auslöser derselben Entscheidung: nicht „5 Minuten Leerlauf", sondern „der
+ * Verlauf ist teuer geworden". Gemessen am Fall vom 28.07.2026 — dort lasen sechs Turns je
+ * ~265'000 Tokens Kontext, um 100–400 Tokens zu erzeugen.
+ */
+describe('ChatWorkService — Neustart-Angebot aus Kosten', () => {
+  let ctx: Hygiene;
+
+  beforeEach(() => {
+    ctx = hygieneSetup();
+    setzeVerlauf(300 * 1024);
+  });
+
+  afterEach(() => {
+    ctx.db.close();
+    rmSync(ctx.dataDir, { recursive: true, force: true });
+  });
+
+  it('bietet bei großem Verlauf an, ohne dass eine Leerlaufzeit abläuft (AC1/SC-001)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['history_size']);
+    expect(p.reasons).not.toContain('idle');
+    expect(p.message).toContain('16,8 MB');
+  });
+
+  it('bietet bei hohem gelesenen Kontext an, obwohl der Verlauf klein ist (AC2)', () => {
+    setzeVerlauf(200 * 1024);
+    beendeTurn(ctx, TEUER);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['context_per_turn']);
+    expect(p.message).toContain("265'673");
+  });
+
+  it('während ein Turn arbeitet, entsteht kein Angebot (AC5/FR-007)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    const arbeitend = hygieneSession(ctx, { machine: { state: { kind: 'working' } } });
+
+    ctx.svc.handleStatusChange(arbeitend, [] as never);
+
+    // Auch der Abruf über GET /chat erzeugt nichts — es gibt noch keine Turn-Grenze.
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('ein frischer Chat mit kurzem Verlauf bekommt über mehrere Turns nichts angeboten (AC6/SC-004)', () => {
+    setzeVerlauf(400 * 1024);
+    for (let i = 0; i < 9; i++) beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(false);
+    expect(p.reasons).toEqual([]);
+    expect(p.message).toBeNull();
+  });
+
+  it('Ablehnen unterdrückt das Angebot; im selben Turn erscheint kein zweites (AC4/SC-006)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    expect(profil(ctx)!.offerOpen).toBe(true);
+
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(false);
+    expect(p.reasons).toEqual([]);
+    expect(p.message).toBeNull();
+    // Die Zahlen bleiben ablesbar — abgelehnt ist das Angebot, nicht die Messung (FR-014).
+    expect(p.lastTurn?.cacheReadTokens).toBe(265_673);
+  });
+
+  it('nach der Ablehnung bleibt es still, solange der Verlauf nur wenig wächst (FR-009)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    setzeVerlauf(REFERENZ_VERLAUF + 2 * MB);
+    beendeTurn(ctx, GUENSTIG);
+    expect(profil(ctx)!.offerOpen).toBe(false);
+  });
+
+  it('nach Wachstum um eine weitere Schwellenstufe wird erneut angeboten (FR-009)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, GUENSTIG);
+    ctx.svc.dismissOffer(ctx.projectId);
+
+    setzeVerlauf(REFERENZ_VERLAUF + CHAT_HYGIENE_LIMITS.historyBytes);
+    beendeTurn(ctx, GUENSTIG);
+
+    const p = profil(ctx)!;
+    expect(p.offerOpen).toBe(true);
+    expect(p.reasons).toEqual(['history_size']);
+  });
+
+  it('Ablehnen ohne vorherige Messung tut nichts (kein Zustand aus dem Nichts)', () => {
+    ctx.svc.dismissOffer(ctx.projectId);
+    expect(profil(ctx)).toBeNull();
+  });
+
+  it('pausiert UND teuer ergibt EINEN Text, der beide Gründe nennt (AC7/FR-013)', () => {
+    setzeVerlauf(REFERENZ_VERLAUF);
+    beendeTurn(ctx, TEUER);
+    pausiere(ctx);
+
+    const p = profil(ctx)!;
+    expect(ctx.svc.pauseState(ctx.chatRepo.getActive(ctx.projectId)!).paused).toBe(true);
+    expect(p.reasons).toEqual(['idle', 'history_size', 'context_per_turn']);
+    expect(p.message).toContain('keine Aktivität');
+    expect(p.message).toContain('16,8 MB');
+    expect(p.message).toContain("265'673");
+    expect(p.message?.match(/\./g)).toHaveLength(1); // ein Satz, nicht zwei Karten-Texte
+  });
+
+  it('pausiert und günstig nennt nur den Leerlauf', () => {
+    setzeVerlauf(400 * 1024);
+    beendeTurn(ctx, GUENSTIG);
+    pausiere(ctx);
+
+    const p = profil(ctx)!;
+    expect(p.reasons).toEqual(['idle']);
+    expect(p.offerOpen).toBe(false); // die bestehende Karte trägt den Leerlauf, kein Streifen
+  });
+});
+
+/**
+ * Doppelstart-Schutz. Zwischen „läuft schon eine Session?" und dem Spawn liegt ein
+ * `await` auf die Worktree-Anlage — zwei gleichzeitige Aufrufe lasen beide „keine"
+ * und spawnten beide eine. Am 28.07.2026 fünfmal beobachtet, zuletzt mit zwei
+ * arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+ */
+describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let spawns: number;
+  let svc: ChatWorkService;
+  let erstellt: { featureName: string; branch: string; projectPath: string; defaultBranch: string }[];
+  let entfernt: [string, string][];
+  let anlageScheitert: boolean;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-ensure-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    spawns = 0;
+
+    erstellt = [];
+    entfernt = [];
+    anlageScheitert = false;
+
+    const worktrees = {
+      // Verzögert wie die echte Worktree-Anlage — genau hier klaffte das Zeitfenster.
+      create: async (o: { featureName: string; branch: string; projectPath: string; defaultBranch: string }) => {
+        await new Promise((r) => setTimeout(r, 10));
+        if (anlageScheitert) throw new Error('kein Platz auf dem Gerät');
+        erstellt.push(o);
+        return join(dataDir, 'wt');
+      },
+      pathFor: () => join(dataDir, 'wt'),
+      // Der Chat räumt jetzt einen verwaisten Eintrag auf, bevor er neu anlegt (W2) —
+      // die Erholung, die vorher nur der Phasen-Pfad hatte.
+      remove: async (repo: string, pfad: string) => {
+        entfernt.push([repo, pfad]);
+      },
+    } as unknown as WorktreeManager;
+
+    const ptys = {
+      forConversation: () => undefined, // nie eine laufende Session sehen: der Race-Fall
+      spawn: async () => {
+        spawns++;
+        return { id: `s${spawns}`, pty: { pid: 1000 + spawns } } as unknown as LiveSession;
+      },
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, worktrees),
+      worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('drei gleichzeitige ensure() erzeugen genau eine Session', async () => {
+    const results = await Promise.all([svc.ensure(projectId), svc.ensure(projectId), svc.ensure(projectId)]);
+
+    expect(spawns).toBe(1);
+    expect(new Set(results.map((r) => r.sessionId)).size).toBe(1);
+  });
+
+  it('nach Abschluss ist der Schutz wieder frei (kein dauerhaft blockiertes Projekt)', async () => {
+    await svc.ensure(projectId);
+    await svc.ensure(projectId);
+    // Zweiter Aufruf läuft neu, weil der erste abgeschlossen ist — Koaleszenz gilt nur währenddessen.
+    expect(spawns).toBe(2);
+  });
+
+  /**
+   * US3: Chat und Feature legen ihre Arbeitskopie über denselben Weg an. Der Chat
+   * bekommt damit die Waisen-Erholung, die vorher nur der Phasen-Pfad hatte.
+   */
+  describe('Arbeitskopie über den gemeinsamen Weg (US3)', () => {
+    it('legt sie mit Chat-Namen und Chat-Zweig an — genau einmal (Szenario 1)', async () => {
+      await svc.ensure(projectId);
+
+      const conv = new ChatRepo(db).getActive(projectId)!;
+      expect(erstellt).toHaveLength(1);
+      expect(erstellt[0]).toMatchObject({
+        featureName: `chat-${conv.id}`,
+        branch: `chat/${conv.id}`,
+        projectPath: '/tmp/demo',
+        defaultBranch: 'main',
+      });
+    });
+
+    it('räumt einen verwaisten Eintrag auf und legt neu an (Szenario 2, W2)', async () => {
+      // `pathFor` liefert einen Pfad, den es auf der Platte nicht gibt — genau der Fall,
+      // in dem `worktree add` sonst an einem unsichtbaren Registry-Eintrag scheitert.
+      await svc.ensure(projectId);
+
+      expect(entfernt).toEqual([['/tmp/demo', join(dataDir, 'wt')]]);
+      expect(erstellt).toHaveLength(1); // nach dem Aufräumen neu angelegt
+    });
+
+    it('lässt eine vorhandene Arbeitskopie unangetastet (W1)', async () => {
+      mkdirSync(join(dataDir, 'wt'), { recursive: true });
+
+      await svc.ensure(projectId);
+
+      expect(entfernt).toEqual([]); // nichts aufzuräumen
+      expect(erstellt).toHaveLength(1);
+    });
+
+    it('antwortet bei gescheiterter Anlage unverändert mit 503 (Szenario 3, FR-005)', async () => {
+      anlageScheitert = true;
+
+      await expect(svc.ensure(projectId)).rejects.toMatchObject({
+        statusCode: 503,
+        message: 'Arbeitskopie konnte nicht erstellt werden: kein Platz auf dem Gerät',
+      });
+    });
+  });
+});
+
+/**
+ * Regression: Eine Session, die noch arbeitet, darf nie abgeräumt werden — auch dann
+ * nicht, wenn der Zustandsautomat sie nicht mehr als `working` führt. Nach
+ * WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+ * zurück (Sicherheitsnetz für die Anzeige). Ein Agent, der länger nachdenkt oder auf
+ * einen langen Build wartet, wurde dadurch mitten in der Arbeit beendet.
+ */
+describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
+  let db: DB;
+  let dataDir: string;
+  let projectId: string;
+  let terminated: string[];
+  let sessions: LiveSession[];
+  let svc: ChatWorkService;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-stall-'));
+    db = openMemoryDatabase();
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    terminated = [];
+    sessions = [];
+
+    const ptys = {
+      list: () => sessions,
+      terminate: async (id: string) => { terminated.push(id); },
+      remove: () => {},
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
+      worktrees: {} as unknown as WorktreeManager, ptys,
+      orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('verschont eine Session, die Ausgabe liefert, obwohl der Automat sie als ready führt', () => {
+    const now = CHAT_HYGIENE_LIMITS.idleMs * 10;
+    sessions = [
+      {
+        id: 'denkt-nach', kind: 'chat_work', exited: false, projectId, conversationId: 'c1',
+        machine: { state: { kind: 'ready' } }, // stall_timeout hat working bereits zurückgesetzt
+        lastActiveAt: 0,
+        lastUsedAt: now - 5_000, // ...aber vor 5 Sekunden kam noch Ausgabe
+        subscribers: new Set(),
+      } as unknown as LiveSession,
+    ];
+
+    svc.reapIdleSessions(now);
+
+    expect(terminated).toEqual([]);
   });
 });

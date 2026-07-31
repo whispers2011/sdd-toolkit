@@ -41,6 +41,7 @@ export function FileEditor({
       })
       .catch((e: Error) => setLoadError(e.message));
   };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [featureId, path]);
 
   const save = () => {
@@ -62,7 +63,7 @@ export function FileEditor({
     return <p className="p-4 text-sm text-amber-400">{loadError}</p>;
   }
   if (content === null) {
-    return <p className="p-4 text-sm text-zinc-600">Lade {path} …</p>;
+    return <p className="p-4 text-sm text-zinc-400">Lade {path} …</p>;
   }
 
   return (
@@ -110,7 +111,7 @@ export function FileEditor({
             setDirty(true);
           }}
           spellCheck={false}
-          className="min-h-0 flex-1 resize-none bg-[#0a0a0c] p-3 font-mono text-xs leading-5 text-zinc-300 outline-none"
+          className="min-h-0 flex-1 resize-none bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-300 outline-none"
         />
       )}
     </div>

@@ -46,7 +46,7 @@ export function CommentsPanel({
           Kommentare ({open.length})
         </h3>
         {comments.some((c) => c.line !== null) && (
-          <span className="text-[10px] text-zinc-600" title="Neue Commits können Zeilen-Anker verschieben.">
+          <span className="text-[10px] text-zinc-400" title="Neue Commits können Zeilen-Anker verschieben.">
             Anker evtl. veraltet
           </span>
         )}
@@ -56,14 +56,14 @@ export function CommentsPanel({
           <li
             key={c.id}
             className={`rounded border px-2 py-1.5 text-xs ${
-              c.status === 'resolved' ? 'border-zinc-800/60 text-zinc-600' : 'border-zinc-800 text-zinc-300'
+              c.status === 'resolved' ? 'border-zinc-800/60 text-zinc-400' : 'border-zinc-800 text-zinc-300'
             }`}
           >
             <div className="flex items-center gap-1">
               {c.filePath ? (
                 <button
                   onClick={() => onJump(c)}
-                  className="truncate font-mono text-[10px] text-sky-400 hover:underline"
+                  className="truncate font-mono text-[10px] text-sky-300 hover:underline"
                   title="Zum Anker springen"
                 >
                   {c.filePath}
@@ -71,19 +71,19 @@ export function CommentsPanel({
                   {c.side === 'old' && ' (alt)'}
                 </button>
               ) : (
-                <span className="text-[10px] text-zinc-500">Allgemein</span>
+                <span className="text-[10px] text-zinc-400">Allgemein</span>
               )}
               <span className="ml-auto flex shrink-0 gap-1">
                 <button
                   onClick={() => setStatus(c, c.status === 'open' ? 'resolved' : 'open')}
-                  className="rounded px-1 text-[10px] text-zinc-500 hover:bg-zinc-800"
+                  className="rounded px-1 text-[10px] text-zinc-400 hover:bg-zinc-800"
                   title={c.status === 'open' ? 'Als erledigt markieren' : 'Wieder öffnen'}
                 >
                   {c.status === 'open' ? '✓' : '↺'}
                 </button>
                 <button
                   onClick={() => remove(c)}
-                  className="rounded px-1 text-[10px] text-zinc-500 hover:bg-zinc-800"
+                  className="rounded px-1 text-[10px] text-zinc-400 hover:bg-zinc-800"
                   title="Löschen"
                 >
                   🗑
@@ -94,7 +94,7 @@ export function CommentsPanel({
           </li>
         ))}
         {comments.length === 0 && (
-          <li className="py-2 text-xs text-zinc-600">
+          <li className="py-2 text-xs text-zinc-400">
             Noch keine Kommentare. Im Diff auf „+" neben einer Zeile klicken.
           </li>
         )}

@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useStore } from './store.js';
+import { useStore, type View } from './store.js';
 import { Sidebar } from './components/Sidebar.js';
 import { KanbanBoard } from './components/KanbanBoard.js';
 import { FeatureConsole } from './components/FeatureConsole.js';
@@ -11,11 +11,15 @@ import { ShellConsole } from './components/ShellConsole.js';
 import { QuickSwitcher } from './components/QuickSwitcher.js';
 import { KnowledgePanel } from './components/KnowledgePanel.js';
 import { AgentsPanel } from './components/AgentsPanel.js';
+import { LifecycleStepsPanel } from './components/LifecycleStepsPanel.js';
 import { ReviewOverview } from './components/ReviewOverview.js';
 import { WorkflowOverview } from './components/WorkflowOverview.js';
+import { WorktreeOverview } from './components/WorktreeOverview.js';
 import { ChatBubble } from './components/ChatBubble.js';
+import { SystemStatus } from './components/SystemStatus.js';
 import { ThemeToggle } from './components/ThemeToggle.js';
 import { TooltipLayer } from './components/Tooltip.js';
+import { InsightsIcon } from './components/icons.js';
 import { api } from './api.js';
 
 export function App() {
@@ -78,18 +82,6 @@ export function App() {
               Grid
             </TabButton>
             <TabButton
-              active={state.view.kind === 'workflow'}
-              onClick={() => dispatch({ type: 'set_view', view: { kind: 'workflow' } })}
-            >
-              Workflow
-            </TabButton>
-            <TabButton
-              active={state.view.kind === 'executions'}
-              onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
-            >
-              Läufe
-            </TabButton>
-            <TabButton
               active={state.view.kind === 'review'}
               onClick={() => dispatch({ type: 'set_view', view: { kind: 'review' } })}
             >
@@ -113,10 +105,42 @@ export function App() {
             </TabButton>
           </nav>
           <div className="ml-auto flex items-center gap-2">
+            {/* Links stehen die Modi der täglichen Arbeit. Die Übersichten sind
+                Nachschlagewerk, nicht Arbeitsmodus — darum rechts bei den übrigen
+                Werkzeugen, als Icon wie Theme-Umschalter und Automation-Dial. */}
+            <button
+              onClick={() => dispatch({ type: 'set_view', view: { kind: 'executions' } })}
+              title="Übersichten — Läufe, Workflow, Worktrees"
+              aria-label="Übersichten"
+              aria-current={isOverview(state.view.kind) ? 'page' : undefined}
+              className={`rounded-md p-1.5 transition-colors ${
+                isOverview(state.view.kind)
+                  ? 'bg-zinc-800 text-zinc-100'
+                  : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100'
+              }`}
+            >
+              <InsightsIcon className="h-5 w-5" />
+            </button>
+            {/* Ressourcendruck vor den Werkzeugen: die Warnung muss im Blick sein,
+                BEVOR ein weiteres Feature gestartet wird (SC-007, D17). */}
+            <SystemStatus />
             <ThemeToggle />
             <AutomationDial />
           </div>
         </header>
+        {isOverview(state.view.kind) && (
+          <nav className="flex gap-1 border-b border-zinc-800 bg-zinc-950/40 px-4 py-1.5">
+            {OVERVIEWS.map((o) => (
+              <TabButton
+                key={o.kind}
+                active={state.view.kind === o.kind}
+                onClick={() => dispatch({ type: 'set_view', view: { kind: o.kind } })}
+              >
+                {o.label}
+              </TabButton>
+            ))}
+          </nav>
+        )}
         {state.error && (
           <div className="flex items-center justify-between bg-red-950 px-4 py-1.5 text-sm text-red-300">
             {state.error}
@@ -132,11 +156,13 @@ export function App() {
           {state.view.kind === 'executions' && <ExecutionsView />}
           {state.view.kind === 'review' && <ReviewOverview />}
           {state.view.kind === 'workflow' && <WorkflowOverview />}
+          {state.view.kind === 'worktrees' && <WorktreeOverview />}
           {state.view.kind === 'grid' && <GridView />}
           {state.view.kind === 'console' && <FeatureConsole featureId={state.view.featureId} />}
           {state.view.kind === 'shell' && <ShellConsole projectId={state.view.projectId} />}
           {state.view.kind === 'knowledge' && <KnowledgePanel projectId={state.view.projectId} />}
           {state.view.kind === 'agents' && <AgentsPanel projectId={state.view.projectId} />}
+          {state.view.kind === 'lifecycle_steps' && <LifecycleStepsPanel projectId={state.view.projectId} />}
         </main>
       </div>
     </div>
@@ -179,6 +205,20 @@ function SpecKitBanner() {
       ))}
     </div>
   );
+}
+
+/**
+ * Die drei Übersichten hinter dem Menüpunkt „Übersichten". Reihenfolge = Reihenfolge
+ * in der Unterleiste; `executions` ist der Einstieg beim Klick auf den Menüpunkt.
+ */
+const OVERVIEWS = [
+  { kind: 'executions', label: 'Läufe' },
+  { kind: 'workflow', label: 'Workflow' },
+  { kind: 'worktrees', label: 'Worktrees' },
+] as const;
+
+function isOverview(kind: View['kind']): boolean {
+  return OVERVIEWS.some((o) => o.kind === kind);
 }
 
 function TabButton({

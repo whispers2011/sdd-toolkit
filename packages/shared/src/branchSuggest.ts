@@ -41,9 +41,7 @@ export function isValidBranchName(name: string): boolean {
   if (name.endsWith('.') || name.endsWith('.lock')) return false;
   if (name === '@' || name.includes('@{')) return false;
   if (name.includes('..') || name.includes('//')) return false;
-  // Steuerzeichen, Leerzeichen und git-Sonderzeichen (~ ^ : ? * [ \) — die
-  // Steuerzeichen sind hier der Prüfgegenstand, nicht ein Versehen.
-  // eslint-disable-next-line no-control-regex
+  // Steuerzeichen, Leerzeichen und git-Sonderzeichen (~ ^ : ? * [ \)
   if (/[\x00-\x20\x7f~^:?*[\\]/.test(name)) return false;
   // Keine Komponente darf leer sein, mit '.' beginnen oder auf '.lock' enden
   if (name.split('/').some((part) => part === '' || part.startsWith('.') || part.endsWith('.lock'))) return false;

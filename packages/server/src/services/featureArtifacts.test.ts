@@ -74,7 +74,8 @@ describe('listFeatureArtifactSteps', () => {
   it('markiert nur vorhandene Artefakte als verfügbar', () => {
     writeArtifact('spec.md', '# Spec');
     const steps = listFeatureArtifactSteps(makeProject(), makeFeature());
-    expect(steps.map((s) => s.phase)).toEqual(['specify', 'plan', 'tasks', 'checklist']);
+    // Reihenfolge folgt den SDD-Lanes (FEATURE_PHASES): checklist vor tasks.
+    expect(steps.map((s) => s.phase)).toEqual(['specify', 'plan', 'checklist', 'tasks']);
     const specify = steps.find((s) => s.phase === 'specify')!;
     expect(specify.available).toBe(true);
     expect(specify.files).toEqual([{ id: 'spec.md', label: 'Spec', relPath: 'spec.md' }]);

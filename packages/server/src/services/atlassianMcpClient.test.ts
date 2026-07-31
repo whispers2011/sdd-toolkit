@@ -12,8 +12,8 @@ import {
   type McpTransportFactory,
 } from './atlassianMcpClient.js';
 
-const USER = { name: 'Ada Lovelace', email: 'ada@example.com' };
-const SITES = [{ id: 'site-1', name: 'Example', url: 'https://example.atlassian.net' }];
+const USER = { name: 'Louis Michel', email: 'l.michel@iwf.ch' };
+const SITES = [{ id: 'site-1', name: 'IWF', url: 'https://iwf.atlassian.net' }];
 
 /** Fake-Transport: verbindet nur bei vorhandenen Tokens; sonst Browser-Flow. */
 function fakeTransport(
@@ -100,7 +100,7 @@ describe('AtlassianMcpClient — Verbindungslebenszyklus (US1)', () => {
     const status = await client.getStatus();
     expect(status.state).toBe('connected');
     expect(status.account).toEqual(USER);
-    expect(status.site).toEqual({ id: 'site-1', name: 'Example', url: 'https://example.atlassian.net' });
+    expect(status.site).toEqual({ id: 'site-1', name: 'IWF', url: 'https://iwf.atlassian.net' });
   });
 
   it('handleCallback lehnt einen falschen state-Parameter ab', async () => {
@@ -201,10 +201,10 @@ describe('parseToolResult', () => {
     expect(parseToolResult({})).toBeNull();
   });
   it('überspringt vorangestellte [Hinweis]-Blöcke vor JSON-Objekten (Rovo-Deprecation-Notiz)', () => {
-    const text = '[IMPORTANT: After 30th June 2026, usage of the HTTP+SSE transport endpoint will no longer be supported.]\n{"name":"Ada Lovelace","email":"ada@example.com"}';
+    const text = '[IMPORTANT: After 30th June 2026, usage of the HTTP+SSE transport endpoint will no longer be supported.]\n{"name":"Louis Michel","email":"l@iwf.ch"}';
     expect(parseToolResult({ content: [{ type: 'text', text }] })).toEqual({
-      name: 'Ada Lovelace',
-      email: 'ada@example.com',
+      name: 'Louis Michel',
+      email: 'l@iwf.ch',
     });
   });
   it('überspringt vorangestellte [Hinweis]-Blöcke vor JSON-Arrays', () => {

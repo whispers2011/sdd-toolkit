@@ -1,234 +1,296 @@
-# SDD Toolkit — Spec-Driven Development über mehrere Repositories
+# SDD Toolkit
 
-Ein Worktree pro Feature. Eine Claude-Session pro Worktree. Eine Merge-Queue, die im
-Zweifel eskaliert statt zu mergen.
-
-> **English:** Local orchestrator that runs the
-> [spec-kit](https://github.com/github/spec-kit) workflow as real Claude Code sessions,
-> isolates every feature in its own git worktree, and merges through a queue with
-> agent-based conflict resolution. Docs and code comments are in German.
->
-> ⚠️ **Localhost only — no authentication.** See [SECURITY.md](SECURITY.md).
-
-![Board](docs/images/board.png)
-
-*Alle Bilder zeigen ein Demo-Projekt mit erfundenen Daten.*
-
-## Inhalt
-
-- [Funktionen](#funktionen) · [Voraussetzungen](#voraussetzungen) · [Installation](#installation) · [Quickstart](#quickstart)
-- [Ablauf](#ablauf) · [Ansichten](#ansichten) · [Automation-Dial](#automation-dial)
-- [Konfiguration](#konfiguration) · [Wofür geeignet](#wofür-geeignet) · [Architektur](#architektur) · [Sicherheit](#sicherheit)
-
-## Funktionen
-
-- **Worktree-Isolation** — Jedes Feature bekommt Branch und Worktree. Beliebig viele Agenten parallel, Haupt-Checkout unberührt.
-- **Konsole pro Feature** — Dauerhafte Claude-Code-Session im Worktree. Läuft am Server weiter, wenn der Tab zugeht.
-- **Merge-Queue mit Konfliktauflösung** — Rebase, Konflikte löst ein Headless-Agent mit der Spec beider Seiten, danach erneute Verifikation.
-- **Exception-Inbox** — Nur Meldungen, deren Zustand noch besteht. Erledigtes verschwindet von selbst.
-- **Agenten-Gates** — Frei belegbar vor und nach jeder Phase, blockierend oder beratend.
-- **Projektwissen** — Selektiv pro Phase injiziert statt pauschal in den Kontext geladen.
-- **Jira-Import** — Ticket zu Feature, mit vollem Ticketkontext im Worktree.
-- **Token-Messung** — Autoritativ aus dem Claude-Transkript, nicht geschätzt.
-
-## Voraussetzungen
-
-| Anforderung | Version | Hinweis |
-|---|---|---|
-| Node | ≥ 22 | |
-| git | ≥ 2.40 | Worktree-Unterstützung |
-| Claude Code | aktuell | `claude` muss im PATH sein |
-| pnpm | 10 | via `corepack enable` |
-| spec-kit | aktuell | im **Ziel-Repo**, nicht hier |
-
-## Installation
-
-```bash
-git clone https://github.com/whispers2011/sdd-toolkit.git
-cd sdd-toolkit
-pnpm install
-```
-
-Ziel-Repos brauchen spec-kit für die `/speckit-*`-Kommandos:
-
-```bash
-uvx --from git+https://github.com/github/spec-kit.git specify init --here --integration claude
-```
-
-Danach committen, damit Feature-Worktrees die Skills erben. Alternativ übernimmt das der
-Banner im Tool.
+Lokale Web-App, die den **spec-kit-SDD-Workflow über mehrere Projekte** orchestriert —
+mit **Worktree-Isolation pro Feature**, einer **echten Konsole pro Feature** und einer
+**Merge-Queue mit automatischer Konfliktauflösung**. Ziel: Level 2 (Orchestrator) und
+Level 3 (Supervised Autonomy) der AI-Adoption vollumfänglich unterstützen — umschaltbar
+über den Automation-Dial.
 
 ## Quickstart
 
-1. **Starten**
-   ```bash
-   pnpm dev                    # Server 4820, Web-UI 4830
-   open http://localhost:4830
-   ```
-
-2. **Projekt hinzufügen** — Sidebar → „+ Projekt", Pfad zum Git-Repo. Vorhandene
-   `specs/<feature>`-Ordner werden als Features importiert.
-
-3. **Feature anlegen** — Name und Beschreibung. Es entstehen Branch, Worktree und eine
-   Claude-Session; optional startet direkt `/speckit-specify`.
-
-4. **Phasen durchlaufen** — Per Drag-and-drop im Board, über die Phasenleiste oder direkt
-   in der Konsole.
-
-5. **Integrieren** — Nach `implement` laufen Verifikation, Gates und Review. Freigabe
-   schiebt das Feature in die Merge-Queue.
-
-## Ablauf
-
-```
-Feature anlegen ─▶ specify ─▶ clarify ─▶ plan ─▶ tasks ─▶ implement ─▶ Verifikation ─▶ Review ─▶ Merge
-       │                                                                    │            │         │
-       ▼                                                                    ▼            ▼         ▼
-  Branch, Worktree,                                                  Test/Build/Lint  Mensch   Rebase, Konflikt
-  Claude-Session                                                      pro Projekt   entscheidet  per Agent, Cleanup
+```bash
+pnpm install
+pnpm dev          # Server (Port 4820) + Web-UI (Port 4830)
+open http://localhost:4830
 ```
 
-| Schritt | Was passiert |
-|---|---|
-| **Anlegen** | Branch `feature/<name>`, Worktree unter `~/.sdd-toolkit/worktrees/`, persistente Claude-Session. |
-| **Phasen** | spec-kit-Kommandos in dieser Session. Vor jeder Phase wird passendes Projektwissen injiziert. |
-| **Gates** | Agenten prüfen mit `VERDICT: PASS/FAIL` — etwa ein DoR-Gate vor `implement`. |
-| **Verifikation** | Pro Projekt konfigurierte Kommandos (Test, Build, Lint). |
-| **Review** | Diff, Kommentare, Audit-Ergebnisse, Ziel-Branch-Wahl. Reviewer-Änderungen erzwingen erneute Verifikation. |
-| **Merge** | Rebase auf das Ziel. Konflikt → Headless-Agent mit Spec-Kontext → erneut verifizieren → mergen, Worktree entfernen. |
-| **Ausnahme** | Scheitert irgendetwas, geht es in „Braucht dich". Kein Blind-Merge. |
+Voraussetzungen: Node ≥ 22, git ≥ 2.40, Claude Code CLI (`claude`) im PATH.
+Ziel-Repos brauchen [spec-kit](https://github.com/github/spec-kit) für Claude Code
+(`/speckit-*`-Kommandos) — Initialisierung über den Banner im Tool oder manuell:
+`uvx --from git+https://github.com/github/spec-kit.git specify init --here --integration claude`
+(danach committen, damit Feature-Worktrees die Skills erben). Ältere Installationen
+mit `/speckit.*`-Punktnotation werden automatisch erkannt.
 
-## Ansichten
+## Arbeitsweise
 
-| Ansicht | Zweck |
-|---|---|
-| **Board** | Eine Bahn pro Schritt plus Integration. Drag-and-drop, Task-Fortschritt, Artefakt-Icons. |
-| **Grid** | Bis zu 9 Konsolen nebeneinander, automatisch die aktiven. |
-| **Workflow** | Die geltende Pipeline: Kommandos, Wissens-Injektion, Freigaben, Gates. |
-| **Läufe** | Tokens und Kosten pro Schritt, nach Spezifikation/Coding/Overhead aufgeschlüsselt. |
-| **Review** | Diff gegen den Ziel-Branch, zeilengenaue Kommentare, Agent-Audits. |
-| **Braucht dich** | Rückfragen, rote Tests, gescheiterte Gates, eskalierte Konflikte, fällige Reviews. |
+1. **Projekt hinzufügen** (Sidebar → „+ Projekt", Pfad zum Git-Repo). Vorhandene
+   `specs/<feature>`-Ordner werden automatisch als Features importiert (Brownfield).
+2. **Feature anlegen** → das Tool erstellt `feature/<name>`-Branch + git-Worktree
+   (unter `~/.sdd-toolkit/worktrees/`) und öffnet eine persistente Claude-Session
+   im Worktree — die **Konsole pro Feature**. Optional startet die Beschreibung
+   direkt `/speckit.specify`.
+3. **Phasen** laufen als Slash-Commands in dieser Session: specify → clarify → plan →
+   tasks → implement. Steuerung per Kanban (Drag-to-Advance), Phasen-Leiste über der
+   Konsole oder direkt in der Konsole. Über das **ℹ-Icon im Lane-Header** lässt sich die
+   spec-kit-Definition jedes Schritts einsehen und direkt bearbeiten („Was macht dieser
+   Schritt?") — inkl. Konfliktschutz und Sperre bei laufendem Agenten. Auf der
+   **Feature-Kachel** zeigen kompakte **Ergebnis-Icons** (Specify/Plan/Tasks/Checklist)
+   die pro Feature erzeugten Artefakte: Klick öffnet ein Modal, das `spec.md`, `plan.md`
+   (+ Begleitartefakte), `tasks.md` bzw. Checklisten **lesbar (WYSIWYG, kein Markdown-
+   Quelltext)** darstellt und direkt bearbeiten lässt — strukturerhaltend zurückgeschrieben,
+   konflikt- und sperrgeschützt; optional als Split-Screen neben der Feature-Konsole.
+4. **Integration**: implement fertig → Verifikations-Pipeline (Test/Build/Lint, pro
+   Projekt konfigurierbar) → Merge-Queue: rebase auf main → **Konflikte löst ein
+   Headless-Claude mit Spec-Kontext beider Seiten** → erneute Verifikation → Merge →
+   Worktree-Cleanup. Scheitert etwas → Eskalation in die Exception-Inbox, nie Blind-Merge.
+5. **„Braucht dich"-Inbox**: Agent-Fragen, Permission-Requests, rote Tests, eskalierte
+   Konflikte — Monitoring by exception. Klick springt in die richtige Konsole.
 
-**Grid** — Eingabe direkt in die Konsole, fokussierte Pane streamt live, Rest gedrosselt.
+## Projektspezifisches Wissen
 
-![Grid](docs/images/grid.png)
+Pro Projekt verwaltbares, verschachteltes Wissen (**Bundles → Einträge**), das die
+Feature-Sessions **selektiv** konsumieren — nicht jeder Kontext wird sofort eingelesen.
+Aufruf über das 📚-Icon je Projekt (Sidebar) bzw. je Feature (Konsolen-Header).
 
-**Workflow** — Jeder Schritt mit Kommando, Gates und Freigabepunkt, direkt bearbeitbar.
+- **Verwalten**: Bundles/Einträge anlegen, verschachteln, mit **Anwendbarkeit**
+  (Freitext + Tags) versehen; bestehende Repo-Dateien importieren/referenzieren.
+- **Index**: kompakte, immer aktuelle Projektion (Titel + Anwendbarkeit, ohne Inhalte) —
+  als abgeleitete Sicht, daher nie veraltet.
+- **Selektiv bei der Feature-Erstellung**: Vor jeder Phase wird nur das relevante Wissen
+  nach `<worktree>/.sdd/knowledge/` materialisiert (git-excluded) und per kompakter
+  Präambel referenziert; Relevanz automatisch aus Anwendbarkeit vorgeschlagen, pro
+  Feature manuell übersteuerbar.
 
-![Workflow](docs/images/workflow.png)
+Speicherung projekt-gescopt in SQLite (`knowledge_*`-Tabellen), Transport on-demand via
+REST + `knowledge_updated`-WS-Event.
 
-**Läufe** — Gemessen aus dem Transkript; Ungemessenes wird als solches ausgewiesen.
+## Projekt-Chat (vollwertige Claude-Session)
 
-![Läufe](docs/images/laeufe.png)
+Die **Sprechblase unten rechts** (sichtbar bei geöffnetem Projekt) öffnet eine **vollwertige,
+interaktive Claude-Code-Session** als echte Konsole (xterm) — man **tippt direkt in die
+Konsole**, kein separates Eingabefeld. Die Session läuft in einer **isolierten Arbeitskopie**
+(git-Worktree auf Branch `chat/<id>`, eine pro Projekt), sodass die Haupt-Arbeitskopie unberührt
+bleibt; sie kann lesen, Dateien ändern und Kommandos ausführen. Freigaben laufen über denselben
+Permission-/„Braucht dich"-Fluss und erben den **Automation-Dial** wie Feature-Sessions. Das
+Panel ist **frei größenverstellbar** (Griff oben links). Schließen beendet die Session nicht —
+sie läuft am Server weiter (`--resume` + Snapshot-Replay), Turns erscheinen als `chat_work`-Läufe
+im Verbrauchs-Audit.
 
-**Review** — Freigeben schiebt in die Queue, Zurückweisen gibt die Kommentare an die Session zurück.
+**Feature-Anlage aus dem Gespräch:** Kristallisiert sich in der Unterhaltung ein (oder mehrere)
+Feature(s) heraus, weist die Session darauf hin und gibt einen `<sdd:features>`-Marker aus. Das
+Toolkit zeigt daraufhin eine **Bestätigungskarte** mit den vorgeschlagenen Features (auswählbar) —
+per Klick werden die gewählten über den normalen Weg angelegt (eigener Worktree/Branch, optional
+direkt `/speckit-specify`) und erscheinen im Board.
 
-![Review](docs/images/review.png)
+Beschreibt eine Nachricht eine **feature-würdige Anforderung**, weist der Assistent
+darauf hin und schlägt per Karte ein Feature vor. „Feature anlegen …" öffnet den
+bekannten Anlege-Dialog, vorbefüllt mit Namensvorschlag und der im Chat erarbeiteten
+Beschreibung — die Anlage läuft über denselben Weg wie manuell angelegte Features
+(Worktree, Branch, optional direkt `/speckit.specify`). Ablehnen oder Dialog-Abbruch
+haben keine Seiteneffekte.
 
-**Braucht dich** — Meldungen verschwinden automatisch, sobald ihr Zustand nicht mehr besteht.
+## Jira-Import
 
-![Braucht dich](docs/images/braucht-dich.png)
+Features lassen sich direkt aus Jira-Cloud-Tickets erstellen — die Übernahme ist ein
+**Schnappschuss** (keine Synchronisation) und mündet in den normalen Feature-Workflow
+(Worktree, Branch, `/speckit-specify` mit dem Ticketinhalt als Ausgangsmaterial).
 
-**Projektwissen** — Bundles mit Anwendbarkeit; vor jeder Phase wird nur das Relevante nach
-`<worktree>/.sdd/knowledge/` materialisiert.
+**Voraussetzungen:** Jira-Cloud-Konto mit Zugriff auf mindestens ein Projekt. Die Anbindung
+läuft über den **offiziellen Atlassian MCP** (Rovo MCP, `mcp.atlassian.com`) mit
+OAuth-Freigabe im Browser — das Toolkit speichert weder Jira-Passwörter noch eigene
+API-Token.
 
-![Wissen](docs/images/wissen.png)
+**Verbindung einrichten:** Sidebar → **Benutzereinstellungen → Jira-Verbindung** →
+„Mit Jira verbinden". Die Freigabe wird im Browser erteilt; danach zeigt der Bereich
+Konto + Jira-Instanz. Die Autorisierung gilt **auf Nutzerebene** (alle Toolkit-Projekte),
+überlebt Neustarts und liegt unter `~/.sdd-toolkit/atlassian-mcp.json` — „Verbindung
+trennen" entfernt genau diese Datei. Läuft die Autorisierung ab, bieten die Einstellungen
+direkt „Erneut autorisieren" an.
 
-## Weitere Funktionen
+**Tickets übernehmen:** In der Sidebar am Projekt **„Aus Jira importieren" (⬇J)** →
+Site, Projekt und Sprint wählen (aktive + zukünftige Sprints aller Boards zusammengeführt;
+Projekte ohne Sprints zeigen die Backlog-/Projektsicht). Ein oder mehrere Tickets per
+Checkbox auswählen → „Übernehmen (n)". Je Ticket entsteht **genau ein Feature** mit
+Ticket-Titel, -Beschreibung und dauerhaft sichtbarem Jira-Key (klickbarer Link auf Karte
+und Konsole). Bereits übernommene Tickets sind markiert; ein Re-Import verlangt eine
+ausdrückliche Bestätigung und erzeugt ein weiteres, unabhängiges Feature. Fehler einzelner
+Tickets stoppen die übrigen nicht — das Ergebnis wird pro Ticket ausgewiesen.
 
-| Funktion | Beschreibung |
-|---|---|
-| **Projekt-Chat** | Vollwertige Claude-Session in isolierter Arbeitskopie (`chat/<id>`). Schlägt Features vor, die per Klick real werden. |
-| **Jira-Import** | Via Atlassian MCP mit OAuth, keine eigenen Token. Auswahl nach Site, Projekt, Sprint. Ticketkontext landet unter `specs/<slug>/jira/`. Schnappschuss, keine Synchronisation. |
-| **Artefakt-Ansicht** | `spec.md`, `plan.md`, `tasks.md` und Checklisten lesbar gerendert und bearbeitbar. |
-| **Brownfield-Import** | Vorhandene `specs/`-Ordner werden beim Hinzufügen als Features erkannt. |
-| **PR-Modus** | Statt lokalem Merge einen GitHub-PR eröffnen, pro Projekt schaltbar. |
-| **Komfort** | Projekt-Terminal, Change-Guard, ⌘K-Switcher, klickbare Dateipfade, Bild-Paste, Spracheingabe, Dark Mode. |
+**Ticketkontext:** Die Übernahme liest den vollständigen Kontext ein: alle ausgefüllten
+Standard-/Custom-Felder, sämtliche Kommentare (Autor + Zeitpunkt) und alle zugänglichen
+Anhänge. Im Feature-Worktree liegt das Material unter `specs/<slug>/jira/` (`ticket.md`
+als Markdown-Dossier, `attachments/` mit den Dateien); nicht abrufbare Anhänge werden im
+Dossier mit Name + Quell-URL vermerkt.
 
-## Automation-Dial
+## Automation-Dial (Level 2 ↔ Level 3)
 
-Global einstellbar, pro Projekt und Feature überschreibbar.
-
-| | Level 2 | Level 3 |
+| Automation | Level 2 (aus) | Level 3 (an) |
 |---|---|---|
-| Phasen | manuell gestartet | laufen durch |
-| Verifikation | manuell | automatisch nach `implement` |
-| Merge | manuell freigegeben | Queue arbeitet selbstständig |
+| `autoProgressUntil` | jede Phase manuell | Phase fertig → nächste startet |
+| `autoVerify` | manuell testen | Pipeline nach implement |
+| `autoMerge` | manuell mergen | Merge-Queue automatisch |
 
-Level 3 startet Agenten mit `bypassPermissions` — bewusste Entscheidung pro Projekt.
-
-## Konfiguration
-
-| Variable | Default | Zweck |
-|---|---|---|
-| `SDD_PORT` | `4820` | API und WebSockets |
-| `SDD_WEB_PORT` | `4830` | Web-UI im Entwicklungsmodus |
-| `SDD_HOST` | `127.0.0.1` | Bind-Adresse |
-| `SDD_DATA_DIR` | `~/.sdd-toolkit` | Datenbank, Logs, Worktrees |
-| `SDD_ALLOWED_ORIGINS` | — | zusätzliche Browser-Origins, kommagetrennt |
-
-> ⚠️ `SDD_HOST` nicht setzen. Die API ist nicht authentifiziert und kann Shells starten,
-> Kommandos ausführen und Dateien schreiben. Ein Reverse-Proxy hilft nicht; für
-> Fernzugriff einen SSH-Tunnel nutzen.
-
-## Wofür geeignet
-
-**Passt:**
-- Mehrere Repositories parallel, mehrere Features gleichzeitig
-- Arbeit, die eine Spec verdient — mehrere Phasen, nachvollziehbare Entscheidungen
-- Teams, die Agenten laufen lassen wollen, ohne blind zu mergen
-
-**Passt nicht:**
-- Einzeiler und triviale Fixes — der Overhead lohnt nicht
-- Exploratives Prototyping ohne Ziel
-- Alles, was nicht auf dem eigenen Rechner läuft (siehe Sicherheit)
+Global im Header einstellbar, pro Projekt/Feature überschreibbar (`automation`-Feld).
 
 ## Architektur
 
 ```
 packages/
-├── shared/   Typen + pure State-Machines (Phasen, Session-Status)
-├── server/   Fastify + WS, node-pty, better-sqlite3 (WAL), git-Engine
-└── web/      React + Vite + Tailwind, xterm.js, Kanban, Inbox
+├── shared/   Domain: Typen + pure State-Machines (Phasen-Workflow, Session-Status)
+├── server/   Fastify + WebSockets, node-pty, better-sqlite3 (WAL), Git-Engine
+└── web/      React + Vite + Tailwind, xterm.js-Konsolen, Kanban, Inbox
 ```
 
-| Entscheidung | Warum |
+Kernideen (aus der Analyse von WhisperM8 & speckit-assistant destilliert):
+
+- **Hook-Bridge statt Output-Parsing**: Claude startet mit `--settings <datei>`;
+  Hooks appenden jedes Event in ein JSONL, der Server watcht es. `PermissionRequest`/
+  `AskUserQuestion`/`ExitPlanMode` → „wartet auf dich", `Stop` → „Turn fertig".
+- **Pure State-Machines** (`packages/shared`): Phasen-Reducer inkl. Downstream-Staleness
+  und Session-Status-Reducer mit Effekt-Dedup — vollständig unit-getestet.
+- **PTYs leben am Server**: Browser-Tab zu ≠ Session weg; xterm.js reconnected mit
+  Scrollback-Replay. Nach Server-Neustart: `claude --resume` statt Prozess-Leichen.
+- **Startup-Reaper**: verwaiste `running`-Zustände werden beim Boot bereinigt
+  (behebt die Persistenz-Schwäche des speckit-assistant).
+- **SQLite (WAL)** für Orchestrierungs-State; die Spec-Wahrheit bleibt als Dateien
+  im Ziel-Repo (`specs/`), `~/.claude/` wird strikt read-only behandelt.
+
+## macOS-App
+
+Statt `pnpm dev` lässt sich das Toolkit als installierbare `.app` bauen — Electron-Fenster,
+Dock-Icon, Menüleiste. Server und Web-UI stecken im Bundle; ein zweiter Prozess
+(Electron-Binary im Node-Modus) trägt den Fastify-Server.
+
+```bash
+pnpm app          # bauen und direkt starten (Entwicklung)
+pnpm app:dist     # → packages/desktop/release/SDD Toolkit-<version>-arm64.dmg
+```
+
+**Zwei Betriebsarten.** Antwortet auf Port 4820 bereits ein SDD-Server (typisch eine laufende
+`pnpm dev`-Instanz), hängt sich die App nur an dessen UI an und lässt ihn beim Beenden in Ruhe —
+zwei Prozesse auf derselben SQLite-Datei wären ein Datenrisiko. Sonst startet sie einen eigenen
+Server und beendet ihn per `SIGTERM` sauber mit (Snapshots werden gesichert, Sitzungen beendet).
+Das Datenverzeichnis ist dasselbe wie im Dev-Betrieb: `~/.sdd-toolkit`.
+
+Fenster schließen beendet die App **nicht** (macOS-Konvention) — der Server läuft weiter,
+laufende Claude-Sitzungen bleiben unberührt. Erst „SDD Toolkit beenden" (⌘Q) fährt herunter.
+Serverausgaben landen in `~/.sdd-toolkit/logs/desktop-server.log`, erreichbar über
+das Menü „Hilfe".
+
+### Aufbau des Builds
+
+| Schritt | Ergebnis |
 |---|---|
-| **Hook-Bridge statt Output-Parsing** | Claude läuft mit `--settings`; Hooks schreiben Events in ein JSONL. Kein Raten anhand von Terminalausgabe. |
-| **Pure State-Machines in `shared`** | Fachliche Entscheidungen ohne Mocks testbar. |
-| **PTYs leben am Server** | Tab zu ≠ Session weg. Reconnect mit Scrollback-Replay, nach Neustart `claude --resume`. |
-| **SQLite nur für Orchestrierung** | Die Spec-Wahrheit sind Dateien in `specs/`, versioniert mit dem Code. `~/.claude/` ist read-only. |
+| `packages/desktop/build.mjs` | staged `app/` — Hauptprozess, Server-Bundle, Web-Bundle, native Module |
+| `electron-builder.yml` | packt `app/` zu `.app` + `.dmg` |
+
+Die nativen Module (`better-sqlite3`, `node-pty`) liegen in `app/node_modules` als **eigene, mit
+npm installierte Kopie** und werden dort gegen die Electron-ABI gebaut. Grund: pnpm teilt eine
+physische Kopie zwischen allen Paketen — ein Rebuild an Ort und Stelle würde das Modul zerschießen,
+das `pnpm dev` benutzt (`NODE_MODULE_VERSION mismatch`). Ein Rebuild läuft nur, wenn sich Versionen,
+Electron-Version oder Architektur geändert haben (`app/.native-stamp`).
+
+Gebaut wird für **arm64**. Für Intel-Macs muss in `electron-builder.yml` `arch` um `x64` ergänzt
+und `build.mjs` je Architektur durchlaufen werden.
+
+Icon ändern: `packages/desktop/assets/icon.svg` bearbeiten, dann `pnpm --filter @sdd/desktop icon`
+(braucht `brew install librsvg`). Das erzeugte `build/icon.icns` ist eingecheckt.
+
+### Verteilung an andere Macs
+
+`pnpm app:dist` erzeugt derzeit ein **ad-hoc signiertes** Bundle: läuft auf diesem Mac, wird auf
+fremden Macs aber von Gatekeeper blockiert. Für die Weitergabe im IWF fehlen nur noch die
+Zertifikate — die Build-Konfiguration (Hardened Runtime, Entitlements) ist fertig:
+
+1. Apple-Developer-Account (99 $/Jahr), Zertifikat **Developer ID Application** erzeugen und in
+   die Schlüsselbundverwaltung importieren.
+2. App-spezifisches Passwort für die Apple-ID anlegen (appleid.apple.com).
+3. Notarisiert bauen:
+
+```bash
+export APPLE_ID="l.michel@iwf.ch"
+export APPLE_APP_SPECIFIC_PASSWORD="xxxx-xxxx-xxxx-xxxx"
+export APPLE_TEAM_ID="<Team-ID>"
+pnpm --filter @sdd/desktop dist:signed
+```
+
+electron-builder signiert dann mit der gefundenen Developer-ID, lädt das Ergebnis bei Apple
+zur Notarisierung hoch und heftet das Ticket an die `.dmg`. Prüfen mit
+`spctl -a -vvv -t install "SDD Toolkit.app"`.
+
+## Konfiguration
+
+| Env | Default | Zweck |
+|---|---|---|
+| `SDD_PORT` | 4820 | API/WS-Port |
+| `SDD_HOST` | 127.0.0.1 | Bind-Adresse (bewusst nur lokal) |
+| `SDD_DATA_DIR` | `~/.sdd-toolkit` | DB, Logs, Hook-Events, Worktrees |
+
+Verifikations-Kommandos pro Projekt: `PATCH /api/projects/:id` mit
+`{"verifyCommands":[{"name":"test","command":"pnpm test"}]}` (UI folgt, P1).
+
+## Verbrauchsmessung
+
+Tokens und Kosten meldet die Claude-CLI selbst — das Toolkit rechnet sie nicht mehr aus einer
+Protokolldatei zurück.
+
+**Wie es läuft.** Jeder Claude-Prozess, den das Toolkit startet, bekommt die
+OpenTelemetry-Variablen und eine eigene Marke (`sdd.session.id` bzw. `sdd.run.id`) mit. Die CLI
+schickt daraufhin alle 5 s ihre Ereignisse an `POST /v1/logs` auf demselben Server. Ausgewertet
+wird ausschliesslich `claude_code.api_request`; es trägt Input-, Output-, Cache-Read- und
+Cache-Creation-Tokens, den Betrag, das Modell und die Herkunft (Hauptagent, Subagent,
+Hilfsanfrage). Zugeordnet wird über das Zeitfenster des Laufs — damit gehört zu einem Lauf
+genau das, was zwischen seinem Start und seinem Ende gemeldet wurde.
+
+Nichts davon muss konfiguriert werden, und die eigene OTel-Konfiguration des Nutzers bleibt
+unangetastet: Die Variablen landen nur in den Kindprozessen des Toolkits.
+
+**Woran man erkennt, ob es greift.** In den Projekt-Einstellungen unter „Verbrauchsmessung"
+stehen Zustand, Zählerstand und Empfangsadresse. In der Läufe-Ansicht trägt jeder Lauf seine
+Herkunft: **von der CLI gemeldet** > gemessen > geparst > geschätzt. Kommt keine Telemetrie an
+(ältere CLI, Empfang gestört), misst das Toolkit wie bisher aus dem Transkript und
+kennzeichnet den Lauf entsprechend — kein Lauf bleibt ohne Zahl.
+
+**Was erfasst wird.** Ausschliesslich Zähl- und Zuordnungsangaben. Prompt-Texte, Antworttexte
+und Werkzeug-Inhalte sind abgeschaltet und werden auch nicht ausgewertet; personenbezogene
+Attribute der CLI (E-Mail, Konto-, Organisations-ID) werden nicht gelesen. Alles bleibt auf
+dem Rechner — der Empfang ist an `127.0.0.1` gebunden, es geht nichts nach aussen.
+
+**Beträge.** Angezeigt wird nur, was die CLI gemeldet hat, gekennzeichnet als gemeldet. Es gibt
+keine Preistabelle im Toolkit; Läufe ohne gemeldeten Betrag zeigen keinen, und Summen weisen
+aus, wie viele Läufe darin keinen Betrag beitragen.
+
+## Roadmap
+
+- **P1 (umgesetzt, 2026-07-22)**: Transkript-Fallback (ESC-Abbruch-Erkennung), Snapshots +
+  Resume-Recovery, Cost-/Token-Metering, Review-Gate (Code/Security mit VERDICT),
+  Human-Review-Portal inkl. Konfliktauflösungs-Transparenz, Executions-View, Projekt-
+  Einstellungen-UI, Grid-View (9 Panes, Feed-Drosselung), Notification-Feinschliff,
+  klickbare Links, Projekt-Terminal + spec-kit-Init, Change-Guard, PR-Modus,
+  native Ordnerauswahl, Voice-Eingabe (Web Speech / Whisper / Groq), ⌘K-Switcher,
+  Bild-Paste, Confirm-Dialoge
+- **Token-Reduktion (2026-07)**: autoritative Token-Messung pro Phase aus dem Claude-
+  Transkript (statt Terminal-Schätzung; inkl. `cache_read` = akkumulierter Kontext),
+  Token-Aufschlüsselung je Phase/Art mit Quelle-Badge (`GET /api/features/:id/cost-breakdown`,
+  Executions-View), plus ein **Optimierungs-Dial** (global → Projekt → Feature): Kontext-Reset
+  vor Downstream-Phasen (`compact`/`fresh`) und deterministische Verdichtung signalarmer
+  Inhalte. Default `full`/`off` = unverändertes Verhalten (reversibel).
+- **P2**: Multi-Provider (Codex/Gemini), CLI-Fernsteuerung (`sdd`), Tab-Management,
+  DAG-Ansicht, MCP-Management, Routinen, Kosten-Dashboard — siehe
+  `docs/funktionsuebernahme.md` §3 und `docs/implementation-prompt.md` (P2-Folgeprompt)
 
 ## Entwicklung
 
 ```bash
-pnpm lint         # ESLint, keine Warnungen erlaubt
-pnpm typecheck
-pnpm test         # 471 Tests
-pnpm build
+pnpm test         # alle Tests (Domain-Machines + Git-Integration)
+pnpm typecheck    # alle Pakete
+pnpm --filter @sdd/server dev   # nur Server
+pnpm --filter @sdd/web dev      # nur Web-UI
+pnpm --filter @sdd/desktop app  # macOS-App bauen und starten
 ```
 
-Alles, was git anfasst, wird gegen echte Repositories in `mkdtemp` getestet. Migrationen
-zusätzlich auf dem Aufstiegspfad: bestehende Datenbank mit Daten, von jedem Zwischenstand
-auf aktuell, mit Nachweis des Datenerhalts.
+Pakete: `@sdd/server` (Fastify, SQLite, PTY, Git), `@sdd/web` (React/Vite),
+`@sdd/shared` (Typen, Zustandsmaschinen), `@sdd/desktop` (Electron-Hülle).
 
-Beispiel-Artefakte unter `specs/braucht-dich-meldungen-optimieren/` — das Werkzeug
-entwickelt sich selbst damit. Agent-Prompts unter `docs/agents/`.
-
-## Sicherheit
-
-Lokales Werkzeug **ohne Authentifizierung**. Es kann Shells starten, Kommandos ausführen
-und Dateien schreiben; im Auto-Modus mit `bypassPermissions`.
-
-HTTP-API und WebSockets akzeptieren nur erlaubte Origins, der `Host`-Header muss lokal
-sein (DNS-Rebinding). Das ersetzt keine Authentifizierung — es verhindert nur, dass eine
-fremde Browser-Seite die lokale API fernsteuert.
-
-Nur auf `127.0.0.1` betreiben. Bedrohungsmodell, Betriebsregeln und Meldeweg:
-[SECURITY.md](SECURITY.md).
-
-## Lizenz
-
-[MIT](LICENSE) © 2026 whispers2011 · enthält Dateien aus
-[github/spec-kit](https://github.com/github/spec-kit) (MIT), siehe
-[THIRD-PARTY.md](THIRD-PARTY.md).
+Referenz-Analysen und Anforderungen: `docs/` (Inventare beider Referenz-Repos,
+Level-3-Anforderungen, Funktionsumfang mit Prioritäten).

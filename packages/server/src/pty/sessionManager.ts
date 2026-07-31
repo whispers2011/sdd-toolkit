@@ -15,8 +15,10 @@ import { existsSync } from 'node:fs';
 import { loginShellEnv } from './loginShellEnv.js';
 import { ensureSpawnHelperExecutable } from './ptyFix.js';
 import { HookEventWatcher, writeHookSettings, type HookSetup } from './hookBridge.js';
+import { telemetryEnvFor } from '../telemetry/telemetryEnv.js';
 import { TranscriptWatcher, locateTranscript } from './transcriptWatcher.js';
 import { SnapshotStore, snapshotReplayBanner } from './snapshotStore.js';
+import { killProcessGroup } from '../services/stepRunner.js';
 import {
   bracketedPaste,
   KILL_LINE,
@@ -61,6 +63,28 @@ export interface LiveSession {
   readyTimer: NodeJS.Timeout | null;
   /** Letzter Aktivitätszeitpunkt: gesetzt beim Start, aktualisiert bei working/awaiting_input. */
   lastActiveAt: number;
+  /**
+   * Letzte Nutzung: wie `lastActiveAt`, zusätzlich aber bei jeder Zuwendung durch den
+   * Nutzer (Tastatureingabe, abgeschickter Prompt, geöffnetes Panel). Der Leerlauf-Reaper
+   * misst hieran — `lastActiveAt` allein beschreibt nur, wann der Agent zuletzt gearbeitet
+   * hat, und würde eine Session abräumen, während davor jemand liest und nachdenkt.
+   */
+  lastUsedAt: number;
+  /**
+   * Letzte Ausgabe der Session — AUSSCHLIESSLICH aus `pty.onData`, ohne jede
+   * Nutzerzuwendung. Beantwortet die Frage „arbeitet der Agent gerade?", während
+   * `lastUsedAt` die Frage „braucht die Session noch jemand?" beantwortet und
+   * `lastActiveAt` die Grid-Sortierung trägt.
+   *
+   * Drei Felder für drei Fragen, absichtlich getrennt: am 28.07.2026 hat der
+   * Leerlauf-Reaper `lastActiveAt` als Lebensbeweis benutzt, für den es nie gebaut
+   * war, und Sessions mitten in der Arbeit abgeräumt. Am 30.07.2026 galt eine
+   * implement-Phase nach 30 Sekunden als fertig, während der Agent noch 37 Minuten
+   * weiterarbeitete — sichtbar allein an der Ausgabe.
+   */
+  lastOutputAt: number;
+  /** Startzeitpunkt dieser Session — unveränderlich, für Anlauf-Karenzen. */
+  startedAt: number;
 }
 
 /**
@@ -97,7 +121,8 @@ export interface SessionCallbacks {
   /**
    * Ein Prompt wurde nachweislich angenommen (Gegenstück zu onSubmitFailed).
    * Der Orchestrator markiert damit den Phasenprompt als zugestellt — erst danach
-   * darf ein `Stop` als Abschluss DIESER Phase gelten.
+   * darf ein `Stop` als Abschluss DIESER Phase gelten. Ohne das beendet der Stop
+   * eines vorgeschalteten Reset-Kommandos die Phase, bevor sie begonnen hat.
    */
   onSubmitConfirmed?: (session: LiveSession, text: string) => void;
 }
@@ -112,6 +137,8 @@ export class PtySessionManager {
 
   constructor(
     private dataDir: string,
+    /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen (127.0.0.1). */
+    private serverPort: number,
     private callbacks: SessionCallbacks,
   ) {
     this.snapshots = new SnapshotStore(dataDir);
@@ -135,10 +162,18 @@ export class PtySessionManager {
     }
     const env = await loginShellEnv();
 
+    // Verbrauchsmeldungen dieser Session tragen ihre Marke, damit jede Meldung
+    // eindeutig dieser Session gehört — unabhängig davon, ob die Claude-Session-ID
+    // beim Start schon bekannt ist. Genau das ersetzt die frühere Rekonstruktion
+    // der Startmarke aus Byte-Positionen (Feature "token-und-kostenmessung...").
+    const telemetryEnv = telemetryEnvFor({ sessionId: id }, this.serverPort, env);
+
     let hookSetup: HookSetup | null = null;
     let argv = opts.argv;
     if (opts.withHooks) {
-      hookSetup = writeHookSettings(this.dataDir, id);
+      // Der env-Block der Settings-Datei schlägt die Prozessumgebung (research.md D5) —
+      // ohne ihn könnte eine gegenläufige ~/.claude/settings.json die Messung abschalten.
+      hookSetup = writeHookSettings(this.dataDir, id, telemetryEnv);
       // --settings wird vom Aufrufer via Platzhalter erwartet:
       argv = argv.map((a) => (a === '__SETTINGS__' ? hookSetup!.settingsPath : a));
     }
@@ -150,7 +185,9 @@ export class PtySessionManager {
       cols: 120,
       rows: 32,
       cwd: opts.cwd,
-      env: { ...env, SDD_SESSION_ID: id },
+      // Zusätzlich zur Settings-Datei: kostet nichts und trägt, falls die Datei
+      // einmal fehlt (withHooks=false, z. B. Shell-Sessions).
+      env: { ...env, ...telemetryEnv, SDD_SESSION_ID: id },
     });
 
     const snapshotKey =
@@ -184,11 +221,22 @@ export class PtySessionManager {
       submitTimer: null,
       readyTimer: null,
       lastActiveAt: Date.now(),
+      lastUsedAt: Date.now(),
+      lastOutputAt: 0, // noch keine Ausgabe gesehen
+      startedAt: Date.now(),
     };
     this.sessions.set(id, session);
 
     pty.onData((data) => {
       session.scrollback = (session.scrollback + data).slice(-SCROLLBACK_LIMIT);
+      // Ausgabe ist der verlässlichste Lebensbeweis: Sie kommt auch dann, wenn der
+      // Zustandsautomat die Session nicht mehr als `working` führt. Nach
+      // WORKING_STALL_SECONDS ohne Transkript-Schreibvorgang fällt `working` auf `ready`
+      // zurück — ein Sicherheitsnetz für die ANZEIGE. Der Leerlauf-Reaper las das als
+      // „arbeitet nicht" und beendete Sessions mitten im Denken oder in einem langen
+      // Build. Solange Ausgabe fließt, lebt die Session.
+      session.lastUsedAt = Date.now();
+      session.lastOutputAt = session.lastUsedAt;
       for (const sub of session.subscribers) {
         if (sub.focused) {
           sub.send(data);
@@ -286,6 +334,7 @@ export class PtySessionManager {
     // „Zuletzt aktiv" = begann zu arbeiten oder stellte eine Rückfrage (Grid-Sortierung).
     if (machine.state.kind === 'working' || machine.state.kind === 'awaiting_input') {
       session.lastActiveAt = Date.now();
+      session.lastUsedAt = session.lastActiveAt;
     }
     if (before !== machine.state || effects.length > 0) {
       this.callbacks.onStatusChange(session, effects);
@@ -324,6 +373,7 @@ export class PtySessionManager {
     if (s.scrollback) onData(s.scrollback);
     const sub: Subscriber = { send: onData, focused: true, buffer: '', timer: null };
     s.subscribers.add(sub);
+    s.lastUsedAt = Date.now(); // Panel geöffnet — jemand wendet sich der Session zu
     return {
       unsubscribe: () => {
         if (sub.timer) clearTimeout(sub.timer);
@@ -349,7 +399,10 @@ export class PtySessionManager {
   }
 
   write(id: string, data: string): void {
-    this.sessions.get(id)?.pty.write(data);
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.lastUsedAt = Date.now(); // Tastatureingabe im Panel zählt als Zuwendung
+    s.pty.write(data);
   }
 
   /**
@@ -361,6 +414,7 @@ export class PtySessionManager {
   sendPrompt(id: string, text: string): void {
     const s = this.sessions.get(id);
     if (!s || s.exited) return;
+    s.lastUsedAt = Date.now();
     s.pendingPrompts.push(text);
     this.pump(s);
   }
@@ -477,7 +531,25 @@ export class PtySessionManager {
     if (s.exited) return;
     safe(() => s.pty.write('\x03'));
     await delay(1200);
-    safe(() => s.pty.kill());
+
+    // Die eigene PROZESSGRUPPE beenden, nicht nur das PTY-Handle (FR-040/FR-041).
+    //
+    // node-pty startet das Kind über forkpty(); es wird damit Sessionführer UND
+    // Gruppenführer. `kill(-pid)` trifft deshalb genau die Prozesse DIESER Session
+    // — einschließlich eines darin gestarteten Dev-Servers. `pty.kill()` allein
+    // beendete nur die Shell: der Enkel überlebte und hielt das Arbeitsverzeichnis,
+    // woran anschließend das Entfernen des Worktrees scheiterte (research E11/E12).
+    //
+    // Ein Beenden über Namensmuster (`pkill`/`killall`) findet NICHT statt: es träfe
+    // gleichnamige Prozesse anderer Features und Sitzungen — und im SDD-Toolkit den
+    // Server, dessen Kindprozess die eigene Arbeit ist.
+    const pid = s.pty.pid;
+    if (!killProcessGroup(pid, 'SIGTERM')) safe(() => s.pty.kill());
+    await delay(300);
+    if (s.exited) return;
+    // Nach der Gnadenfrist hart — SIGTERM zuerst gab dem Dev-Server die Gelegenheit,
+    // seine eigenen Kinder abzuräumen.
+    if (!killProcessGroup(pid, 'SIGKILL')) safe(() => s.pty.kill());
   }
 
   displayStatusOf(id: string): ReturnType<typeof displayStatus> | null {

@@ -1,44 +1,50 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
+  CHAT_HYGIENE_LIMITS,
+  CHAT_NOT_PAUSED,
   displayStatus,
-  meter,
+  evaluateChatHygiene,
+  evaluateChatPause,
   parseSessionFeatures,
   resolveAutomation,
+  restartOfferMessage,
   type ChatConversation,
+  type ChatCostProfile,
   type ChatFeatureProposal,
-  type ChatWorkAdoptBlocked,
-  type ChatWorkAdoptResult,
+  type ChatOfferWatermark,
+  type ChatPauseState,
+  type ChatRestartReason,
+  type ChatTurnUsage,
+  type ChatWorkEnsureResult,
   type ChatWorkRestartNeedsConfirm,
   type ChatWorkRestartResult,
   type ChatWorkSessionInfo,
-  type ChatWorktreeSync,
   type Feature,
   type Project,
   type SessionEffect,
 } from '@sdd/shared';
-import type { AttentionRepo, ChatRepo, ExecutionRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
+import type {
+  AttentionRepo,
+  ChatRepo,
+  ExecutionRepo,
+  ExecutionUsageInput,
+  ProjectRepo,
+  SessionRepo,
+  SettingsRepo,
+} from '../db/repos.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import { awaitingMessage, type Orchestrator } from './orchestrator.js';
-import { locateTranscript } from '../pty/transcriptWatcher.js';
-import { behindCount, git, isCleanWorkingTree } from '../git/git.js';
-import { MergeEngine } from '../git/mergeEngine.js';
-import { collectUnmergedChanges } from './unmergedChanges.js';
-import { buildClaudeArgv } from '../pty/commandBuilder.js';
+import type { Orchestrator } from './orchestrator.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
+import type { RunMeter } from './core/runMeter.js';
+import type { SessionCore, SpawnStage } from './core/sessionCore.js';
+import { isCleanWorkingTree } from '../git/git.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import { ChatError } from './chatService.js';
-import { bus } from '../events.js';
-
-/**
- * Ein Projekt-Chat ohne Aktivität für diese Dauer wird automatisch beendet, damit
- * keine Leerlauf-Session im Hintergrund weiterläuft. Der Verlauf bleibt erhalten:
- * Das Panel zeigt danach eine „Pausiert"-Karte (`workPaused`), über die der Nutzer
- * fortsetzen (`ensure()` → Scrollback-Snapshot + Claude-Resume) oder frisch beginnen kann.
- */
-export const CHAT_IDLE_TIMEOUT_MS = 5 * 60_000;
+import { bus, emitAttentionResolved } from '../events.js';
 
 export interface ChatWorkDeps {
   projects: ProjectRepo;
@@ -51,9 +57,43 @@ export interface ChatWorkDeps {
   ptys: PtySessionManager;
   /** Feature-Anlage läuft über den kanonischen Pfad (Worktree, optional /speckit-specify). */
   orchestrator: Orchestrator;
+  /**
+   * Turn messen — derselbe Baustein wie im Phasen-Pfad (FR-002). Mit ihm erbt der Chat
+   * die Puffer-Anmeldung, den monotonen Akkumulator, das Nachlauffenster, die Sperre
+   * gegen verschlechternde Nachträge samt Inbox-Meldung, den Subagenten-Anteil und die
+   * Fallunterscheidung der Transkript-Startmarke.
+   */
+  meter: RunMeter;
+  /** Session sicherstellen — derselbe Baustein wie im Phasen-Pfad (FR-001). */
+  sessionCore: SessionCore;
   dataDir: string;
   model?: string;
 }
+
+/**
+ * Kontext-Hygiene einer Unterhaltung: die letzten Turns, die Verlaufsgröße, ein etwaiger
+ * Ablehnungs-Wasserstand und das daraus an der Turn-Grenze gebildete Urteil.
+ */
+interface ChatHygieneState {
+  /** Ringpuffer, jüngster Turn zuletzt — höchstens `CHAT_HYGIENE_LIMITS.ratioTurns` Einträge. */
+  turns: ChatTurnUsage[];
+  historyBytes: number | null;
+  watermark: ChatOfferWatermark | null;
+  profile: ChatCostProfile | null;
+}
+
+/**
+ * Gemessener Verbrauch → Turn-Verbrauch der Bewertung. `null` heißt „für diesen Turn war nichts
+ * messbar" und wird als `measured: false` festgehalten, nicht als Nullmessung (FR-016). Die
+ * Schätz-Rückfallebene liefert keinen Cache-Read/Output-Split — die fehlenden Felder bleiben `null`.
+ */
+const toChatTurnUsage = (usage: ExecutionUsageInput | null): ChatTurnUsage => ({
+  cacheReadTokens: usage?.cacheReadTokens ?? null,
+  outputTokens: usage?.outputTokens ?? null,
+  costMicros: usage?.costMicros ?? null,
+  tokens: usage?.tokens ?? null,
+  measured: usage !== null,
+});
 
 /**
  * Projekt-Chat als vollwertige Claude-Code-Session: eine interaktive, persistente Session pro
@@ -64,19 +104,21 @@ export interface ChatWorkDeps {
  */
 export class ChatWorkService {
   private notify = new NotificationThrottle();
-  /** Scrollback-Länge an der letzten Turn-Grenze — für Kosten-Metering pro Turn. */
-  private turnStart = new Map<string, number>(); // sessionId → scrollback-Offset
   /** Offener Feature-Vorschlag je Unterhaltung (im Speicher; überlebt Panel-Öffnen). */
   private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
   /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
   private lastMarker = new Map<string, string>();
+  /**
+   * Kostenprofil je Unterhaltung (im Speicher, überlebt Panel-Öffnen, nicht den
+   * Server-Neustart). Nach einem Neustart des Servers wird an der ersten Turn-Grenze neu
+   * bewertet; ein dann erneut erscheinendes Angebot ist sachlich richtig — der Verlauf ist ja
+   * groß. Kein DB-Feld, keine Migration.
+   */
+  private hygiene = new Map<string, ChatHygieneState>(); // conversationId → Bewertung
   /** Laufender Neustart je Projekt — koalesziert schnelle Doppelklicks (FR-008). */
   private restarting = new Map<string, Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm>>();
   /** Sessions, die für einen Neustart absichtlich beendet werden — kein Fehler-Alarm beim Exit. */
   private terminating = new Set<string>();
-  /** Stand der Arbeitskopie je Unterhaltung, ermittelt beim Start/Fortsetzen der Session. */
-  private syncState = new Map<string, ChatWorktreeSync>(); // conversationId → Stand
-  private engine = new MergeEngine();
 
   constructor(private deps: ChatWorkDeps) {
     mkdirSync(join(deps.dataDir, 'logs'), { recursive: true });
@@ -84,172 +126,96 @@ export class ChatWorkService {
 
   // ---------- Session-Lifecycle ----------
 
-  /** Session sicherstellen (idempotent): Worktree anlegen + interaktive Claude-Session spawnen. */
-  async ensure(projectId: string): Promise<{ sessionId: string }> {
-    const project = this.mustProject(projectId);
-    const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
+  /**
+   * Session sicherstellen (idempotent): Arbeitskopie anlegen + interaktive Claude-Session
+   * spawnen. Beides über den gemeinsamen Kern (FR-001/FR-003) — der Chat erbt damit die
+   * Waisen-Erholung der Arbeitskopie, die er vorher nicht hatte.
+   *
+   * Der Schlüssel ist das Projekt, nicht die Unterhaltung: Der Chat hat höchstens eine
+   * aktive Unterhaltung je Projekt, und die wird erst INNERHALB des Schutzes ermittelt.
+   * Zwei gleichzeitige Aufrufe — Panel-Öffnen und reconnectender Client — lasen sonst
+   * beide „keine Session" und spawnten beide eine: am 28.07.2026 fünfmal beobachtet,
+   * zuletzt mit zwei arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+   */
+  async ensure(projectId: string): Promise<ChatWorkEnsureResult> {
+    let startedFresh = false;
+    const live = await this.deps.sessionCore.ensure(`chat:${projectId}`, async () => {
+      const project = this.mustProject(projectId);
+      // Zu lange pausiert → die alte Unterhaltung endet hier, `ensureActive` legt gleich
+      // darauf eine frische an: Öffnen startet dann automatisch einen neuen Chat.
+      startedFresh = await this.retireStaleConversation(project);
+      const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
+      const worktreeName = `chat-${conv.id}`;
 
-    const existing = this.deps.ptys.forConversation(conv.id);
-    if (existing) return { sessionId: existing.id };
-
-    const worktreeName = `chat-${conv.id}`;
-    const branch = this.branchFor(conv.id);
-    let worktreePath: string;
-    try {
-      worktreePath = await this.deps.worktrees.create({
-        projectId: project.id,
-        projectPath: project.path,
-        featureName: worktreeName,
-        branch,
-        defaultBranch: project.defaultBranch,
-      });
-    } catch (err) {
-      throw new ChatError(503, `Arbeitskopie konnte nicht erstellt werden: ${(err as Error).message}`);
-    }
-
-    // Arbeitskopie an den Default-Branch heranführen, BEVOR die Session startet. Ohne das
-    // bleibt der Chat-Branch für immer auf dem Commit stehen, an dem die Unterhaltung begann —
-    // nach jedem Merge nach main argumentiert der Chat über veralteten Code und sein Diff
-    // macht neuere Arbeit rückgängig.
-    this.syncState.set(conv.id, await this.syncWorktree(project.id, worktreePath));
-
-    // Resume-Recovery: nie blind auf eine tote Session-ID resumen.
-    const prev = this.deps.sessions.latestForConversation(conv.id);
-    let resumeId = prev?.claude_session_id ?? undefined;
-    if (resumeId && prev && !locateTranscript(worktreePath, resumeId)) {
-      this.deps.sessions.setClaudeSessionId(prev.id, null);
-      resumeId = undefined;
-    }
-
-    const automation = resolveAutomation(this.deps.settings.getAutomation(), project.automation, {});
-    const argv = buildClaudeArgv({
-      ...(resumeId ? { resume: resumeId } : {}),
-      settingsPath: '__SETTINGS__',
-      appendSystemPrompt: buildChatWorkSystemPrompt(project),
-      ...(this.deps.model ? { model: this.deps.model } : {}),
-      permissionMode: automation.autoMode ? 'bypassPermissions' : 'acceptEdits',
-    });
-
-    let session: LiveSession;
-    try {
-      session = await this.deps.ptys.spawn({
-        projectId: project.id,
+      return {
+        project,
         featureId: null,
         conversationId: conv.id,
-        kind: 'chat_work',
-        cwd: worktreePath,
-        argv,
-        withHooks: true,
-      });
-    } catch (err) {
-      throw new ChatError(503, `Session konnte nicht gestartet werden: ${(err as Error).message}`);
-    }
-    this.turnStart.set(session.id, 0);
-    this.deps.sessions.create({
-      id: session.id,
-      featureId: null,
-      conversationId: conv.id,
-      projectId: project.id,
-      kind: 'chat_work',
-      pid: session.pty.pid,
-    });
-    return { sessionId: session.id };
-  }
-
-  /**
-   * Arbeitskopie auf den Default-Branch nachziehen. Sauber und veraltet → Rebase; dirty →
-   * unangetastet lassen (die Arbeit des Nutzers hat Vorrang) und den Zustand melden, damit
-   * das Panel es sichtbar macht statt still auf altem Stand weiterzuarbeiten.
-   */
-  async syncWorktree(projectId: string, worktreePath: string): Promise<ChatWorktreeSync> {
-    const project = this.mustProject(projectId);
-    const dirty = await isCleanWorkingTree(worktreePath).then(
-      (clean) => !clean,
-      () => false,
-    );
-    const behind = await behindCount(worktreePath, project.defaultBranch, 'HEAD');
-    if (behind === 0) return { behind: 0, dirty, state: 'current' };
-    if (dirty) return { behind, dirty, state: 'blocked_dirty' };
-
-    const rebase = await this.engine.rebaseOnto(worktreePath, project.defaultBranch);
-    if (rebase.ok) {
-      console.log(`[chat] Arbeitskopie ${behind} Commit(s) auf '${project.defaultBranch}' nachgezogen`);
-      return { behind: 0, dirty: false, state: 'rebased' };
-    }
-    // Konflikt lässt den Rebase stehen — zurückrollen, sonst startet die Session mitten drin.
-    if (rebase.kind === 'conflict') await this.engine.abortRebase(worktreePath).catch(() => {});
-    return { behind, dirty: false, state: 'conflict' };
-  }
-
-  /**
-   * Arbeit des Wissens-Chats in den Default-Branch übernehmen: uncommittetes festschreiben,
-   * auf den Default-Branch rebasen, dort mergen. Erst damit gibt es einen sauberen Weg aus der
-   * Arbeitskopie heraus — ohne ihn wandert dieselbe Änderung von Hand nach main und existiert
-   * anschließend zweimal (einmal in main, einmal weiter im Chat-Branch).
-   * Verändert bei jedem Blocker NICHTS.
-   */
-  async adopt(projectId: string): Promise<ChatWorkAdoptResult | ChatWorkAdoptBlocked> {
-    const project = this.mustProject(projectId);
-    const conv = this.deps.chatRepo.getActive(projectId);
-    if (!conv) throw new ChatError(404, 'Keine aktive Unterhaltung');
-
-    const worktreePath = this.deps.worktrees.pathFor(project.id, `chat-${conv.id}`);
-    if (!existsSync(worktreePath)) {
-      return { blocked: 'nothing', message: 'Es gibt keine Arbeitskopie zu übernehmen.' };
-    }
-
-    // Ein laufender Turn schreibt gerade Dateien — mitten hinein zu committen übernähme
-    // einen halben Stand (genau das Problem, das die Übernahme lösen soll).
-    const live = this.deps.ptys.forConversation(conv.id);
-    if (live && displayStatus(live.machine.state) === 'working') {
-      return { blocked: 'running', message: 'Der Chat arbeitet gerade — warte, bis der Turn fertig ist.' };
-    }
-
-    const diff = await collectUnmergedChanges(worktreePath, project.defaultBranch);
-    if (diff.files.length === 0 && diff.commits.length === 0) {
-      return {
-        blocked: 'nothing',
-        message: `Die Arbeitskopie enthält keine Änderungen gegenüber '${project.defaultBranch}'.`,
+        kind: 'chat_work' as const,
+        existing: this.deps.ptys.forConversation(conv.id),
+        workspace: {
+          project,
+          name: worktreeName,
+          branch: this.branchFor(conv.id),
+          recordedPath: this.deps.worktrees.pathFor(project, worktreeName),
+        },
+        previous: this.deps.sessions.latestForConversation(conv.id),
+        automation: resolveAutomation(this.deps.settings.getAutomation(), project.automation, {}),
+        appendSystemPrompt: buildChatWorkSystemPrompt(project),
+        ...(this.deps.model ? { model: this.deps.model } : {}),
+        // Fehlerbild bleibt beim Pfad (FR-005): der Chat antwortet weiterhin mit 503.
+        wrapError: (stage: SpawnStage, err: Error) =>
+          stage === 'worktree'
+            ? new ChatError(503, `Arbeitskopie konnte nicht erstellt werden: ${err.message}`)
+            : new ChatError(503, `Session konnte nicht gestartet werden: ${err.message}`),
       };
-    }
-
-    const committed = diff.hasUncommitted;
-    if (committed) {
-      await git(worktreePath, ['add', '-A']);
-      const c = await git(worktreePath, ['commit', '-m', `feat(chat): Übernahme aus dem Wissens-Chat`]);
-      if (c.code !== 0) {
-        return { blocked: 'merge', message: `Commit in der Arbeitskopie fehlgeschlagen: ${c.stderr.trim()}` };
-      }
-    }
-
-    const rebase = await this.engine.rebaseOnto(worktreePath, project.defaultBranch);
-    if (!rebase.ok) {
-      if (rebase.kind === 'conflict') {
-        await this.engine.abortRebase(worktreePath).catch(() => {});
-        return {
-          blocked: 'conflict',
-          message: `Konflikte gegen '${project.defaultBranch}' — im Chat auflösen und erneut übernehmen.`,
-          files: rebase.files,
-        };
-      }
-      return { blocked: 'merge', message: rebase.message };
-    }
-
-    const merge = await this.engine.mergeIntoTarget({
-      projectPath: project.path,
-      branch: this.branchFor(conv.id),
-      target: project.defaultBranch,
-      mode: project.mergeMode,
-      message: `feat(chat): Übernahme aus dem Wissens-Chat`,
-      tmpWorktreeDir: join(this.deps.dataDir, 'merge-tmp'),
     });
-    if (!merge.ok) return { blocked: 'merge', message: merge.message };
+    if (startedFresh && live.conversationId) {
+      bus.emitEvent('chat_updated', { projectId, conversationId: live.conversationId });
+    }
+    return { sessionId: live.id, startedFresh };
+  }
 
-    // Nach dem Merge ist die Arbeitskopie deckungsgleich mit dem Ziel — der Chat läuft
-    // auf dem übernommenen Stand weiter, statt seine Kopie parallel weiterzuführen.
-    this.syncState.set(conv.id, { behind: 0, dirty: false, state: 'current' });
-    bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
-    return { target: project.defaultBranch, files: diff.files.length, committed };
+  /**
+   * Eine zu lange pausierte Unterhaltung beenden, damit `ensure()` eine frische beginnt.
+   * Der Verlauf bleibt lesbar (Nachrichten in der DB, Transkript auf der Platte) — verworfen
+   * wird nur die Fortsetzung, die jeden weiteren Turn mit dem alten Kontext belastet hätte.
+   *
+   * Die Arbeitskopie wird nur abgeräumt, wenn nichts Unbestätigtes darin steht. Anders als
+   * beim ausgelösten Neustart (FR-006) fragt hier niemand — also wird auch nichts verworfen:
+   * Eine dirty Arbeitskopie bleibt samt Branch liegen und ist über die Worktree-Übersicht
+   * erreichbar.
+   *
+   * @returns ob eine Unterhaltung beendet wurde
+   */
+  private async retireStaleConversation(project: Project): Promise<boolean> {
+    const conv = this.deps.chatRepo.getActive(project.id);
+    if (!conv) return false;
+    const pause = this.pauseState(conv);
+    if (!pause.paused || pause.resumable) return false;
+
+    const worktreePath = this.deps.worktrees.pathFor(project, `chat-${conv.id}`);
+    let clean: boolean;
+    try {
+      clean = await isCleanWorkingTree(worktreePath);
+    } catch {
+      clean = true; // Worktree existiert nicht (mehr) → nichts zu verlieren
+    }
+    if (clean) {
+      await this.deps.worktrees.remove(project.path, worktreePath, { force: true }).catch(() => {});
+      await this.deps.worktrees.deleteBranch(project.path, this.branchFor(conv.id)).catch(() => {});
+    } else {
+      console.log(
+        `[chatWork] Unterhaltung ${conv.id} nach ${Math.round((pause.idleMs ?? 0) / 60_000)} min Pause beendet; ` +
+          `Arbeitskopie ${worktreePath} bleibt (unbestätigte Änderungen)`,
+      );
+    }
+
+    this.proposals.delete(conv.id);
+    this.lastMarker.delete(conv.id);
+    this.hygiene.delete(conv.id); // frische Unterhaltung startet mit leerer Bewertung (FR-012)
+    this.deps.chatRepo.endConversation(conv.id);
+    return true;
   }
 
   /**
@@ -279,13 +245,13 @@ export class ChatWorkService {
     const old = this.deps.chatRepo.getActive(projectId);
 
     if (old) {
-      const worktreePath = this.deps.worktrees.pathFor(project.id, `chat-${old.id}`);
+      const worktreePath = this.deps.worktrees.pathFor(project, `chat-${old.id}`);
 
       // Guard (FR-006): arbeitet die Session ODER hat die Arbeitskopie unbestätigte Änderungen?
       const live = this.deps.ptys.forConversation(old.id);
       const status = live ? displayStatus(live.machine.state) : null;
       const running = status === 'working' || status === 'awaiting_input';
-      let dirty: boolean;
+      let dirty = false;
       try {
         dirty = !(await isCleanWorkingTree(worktreePath));
       } catch {
@@ -310,7 +276,7 @@ export class ChatWorkService {
       // Flüchtigen Feature-Vorschlag entfernen (FR-009) und Unterhaltung deaktivieren (behalten).
       this.proposals.delete(old.id);
       this.lastMarker.delete(old.id);
-      this.syncState.delete(old.id);
+      this.hygiene.delete(old.id); // frische Unterhaltung startet mit leerer Bewertung (FR-012)
       this.deps.chatRepo.endConversation(old.id);
     }
 
@@ -330,19 +296,27 @@ export class ChatWorkService {
       status: displayStatus(live.machine.state),
       awaitingKind: live.machine.state.kind === 'awaiting_input' ? live.machine.state.awaiting : null,
       branch: this.branchFor(conversation.id),
-      sync: this.syncState.get(conversation.id) ?? null,
     };
   }
 
   /**
    * „Pausiert": Die Unterhaltung hatte schon eine echte Session, die aber nicht mehr
-   * läuft (Leerlauf-Reaper oder Server-Neustart) und sich fortsetzen ließe. Signal für
-   * das Panel, den Nutzer zu fragen (fortsetzen ODER neu) statt still zu resumen.
+   * läuft (Leerlauf-Reaper oder Server-Neustart). Signal für das Panel, den Nutzer zu
+   * fragen (fortsetzen ODER neu) statt still zu resumen.
+   *
+   * Wie lange die Pause dauert, entscheidet mit, ob überhaupt noch gefragt wird: Ab
+   * `resumeMaxIdleMs` ist der Verlauf nicht mehr fortsetzbar — `ensure()` beginnt dann
+   * eine frische Unterhaltung, statt einen alten Verlauf in jeden weiteren Turn zu ziehen.
+   *
+   * Gemessen wird ab dem Ende der letzten Session. Fehlt `ended_at` (Session-Zeile aus
+   * einem harten Absturz), zählt ihr Beginn — nach einem regulären Neustart setzt
+   * `reapOnBoot()` das Ende ohnehin auf die Bootzeit, die Pause beginnt dort also neu.
    */
-  workPaused(conversation: ChatConversation): boolean {
-    if (this.deps.ptys.forConversation(conversation.id)) return false; // läuft → nicht pausiert
+  pauseState(conversation: ChatConversation, now: number = Date.now()): ChatPauseState {
+    if (this.deps.ptys.forConversation(conversation.id)) return CHAT_NOT_PAUSED; // läuft
     const prev = this.deps.sessions.latestForConversation(conversation.id);
-    return !!prev?.claude_session_id; // es gab bereits eine echte Session → fortsetzbar
+    if (!prev?.claude_session_id) return CHAT_NOT_PAUSED; // nie eine echte Session → nichts zu pausieren
+    return evaluateChatPause({ paused: true, since: prev.ended_at ?? prev.created_at, now });
   }
 
   // ---------- Feature-Vorschläge ----------
@@ -424,11 +398,17 @@ export class ChatWorkService {
     });
 
     if (status === 'working') {
-      const ids = this.deps.attention.resolveFor({
-        sessionId: session.id,
-        kinds: ['awaiting_input', 'permission_request'],
-      });
-      for (const id of ids) bus.emitEvent('attention_resolved', id);
+      // Der Turn beginnt hier, nicht am Ende des Vorgängerturns: Letzteres enthielt die
+      // Lesezeit des Nutzers — ein Turn von 10 Sekunden nach 5 Minuten Nachdenken hätte
+      // die Dauer 5:10 bekommen. Idempotent, ein zweiter Übergang öffnet kein zweites
+      // Fenster (research.md D4).
+      this.deps.meter.openTurn(session);
+      emitAttentionResolved(
+        this.deps.attention.resolveFor({
+          sessionId: session.id,
+          kinds: ['awaiting_input', 'permission_request'],
+        }),
+      );
     }
     // Zustandsgekoppelte Bereinigung (US1): überholte Meldungen (auch der frühere „Agent-Fehler"
     // dieser Unterhaltung) auflösen, sobald wieder gearbeitet wird. Nicht im Warte-Übergang, damit
@@ -445,7 +425,10 @@ export class ChatWorkService {
           projectId: session.projectId,
           sessionId: session.id,
           conversationId: session.conversationId,
-          message: awaitingMessage('Projekt-Chat', effect.awaiting, effect.detail),
+          message:
+            effect.awaiting === 'plan_approval'
+              ? 'Projekt-Chat: wartet auf Plan-Freigabe'
+              : 'Projekt-Chat: hat eine Frage',
         });
         bus.emitEvent('attention_raised', item);
         if (this.notify.allow(session.id, 'input_requested')) {
@@ -462,29 +445,124 @@ export class ChatWorkService {
     }
   }
 
+  /**
+   * Verbrauch eines Chat-Turns messen — über den gemeinsamen Kern (FR-002). Damit gilt
+   * dieselbe Kaskade wie im Phasen-Pfad (Meldungen vor Transkript vor Schätzung), und
+   * der Chat erbt, was ihm bisher fehlte: die Puffer-Anmeldung, den monotonen
+   * Akkumulator, das Nachlauffenster und die Turn-Dauer.
+   *
+   * Vorher schätzte diese Methode aus dem Terminal-Scrollback mit leerem `promptText`
+   * und schrieb weder Kosten noch Quelle. Gemessen wurde damit ausgerechnet die Größe,
+   * die kaum ins Gewicht fällt: In einem Chat vom 28.07.2026 standen 7,0 Mio. gelesene
+   * Cache-Tokens 45k Ausgabe-Tokens gegenüber — erfasst waren 94k Tokens und 0 $ statt
+   * real gut 5 $.
+   */
   private meterTurn(session: LiveSession): void {
-    const start = this.turnStart.get(session.id) ?? 0;
-    const outputText = session.scrollback.slice(start);
-    this.turnStart.set(session.id, session.scrollback.length);
-    if (!outputText.trim()) return;
-    const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: '', outputText });
-    const execId = this.deps.executions.start({
+    const usage = this.deps.meter.closeTurn(session, {
       projectId: session.projectId,
       featureId: null,
       kind: 'chat_work',
-      phase: null,
-      logPath: null,
     });
-    this.deps.executions.finish(execId, 0, cost.costUsd, cost.totalTokens);
+    // Auch der Fall „nichts messbar" wird festgehalten (FR-001/FR-016) — er ist eine Aussage
+    // über den Turn, keine Null-Messung.
+    this.recordHygieneTurn(session, usage);
+  }
+
+  // ---------- Kontext-Hygiene (Angebot aus Kosten) ----------
+
+  /**
+   * Turn-Verbrauch und Verlaufsgröße festhalten und die Unterhaltung neu bewerten — der
+   * einzige Ort, an dem ein Angebot entsteht (FR-007). `GET /chat` rechnet nur den
+   * gespeicherten Stand aus.
+   */
+  private recordHygieneTurn(session: LiveSession, usage: ExecutionUsageInput | null): void {
+    const conversationId = session.conversationId;
+    if (!conversationId) return;
+
+    const state = this.hygiene.get(conversationId) ?? {
+      turns: [],
+      historyBytes: null,
+      watermark: null,
+      profile: null,
+    };
+    state.turns.push(toChatTurnUsage(usage));
+    if (state.turns.length > CHAT_HYGIENE_LIMITS.ratioTurns) {
+      state.turns.splice(0, state.turns.length - CHAT_HYGIENE_LIMITS.ratioTurns);
+    }
+    state.historyBytes = this.historyBytesFor(session);
+    // `idle` bleibt hier false: die Session lebt gerade: Der Leerlauf-Grund kommt erst in
+    // costProfileFor() dazu, wo `workPaused` gilt (FR-013).
+    state.profile = evaluateChatHygiene({
+      historyBytes: state.historyBytes,
+      turns: state.turns,
+      idle: false,
+      watermark: state.watermark,
+    });
+    this.hygiene.set(conversationId, state);
+    bus.emitEvent('chat_updated', { projectId: session.projectId, conversationId });
+  }
+
+  /**
+   * Größe des Verlaufs an der Transkript-Ablage der Unterhaltung. `null`, wenn kein Transkript
+   * auffindbar ist — dann greift nur der verbrauchsbasierte Auslöser, ohne Fehlermeldung im Chat.
+   *
+   * Bewusst nur die aktuelle Transkriptdatei: hat eine Unterhaltung nach einer
+   * Resume-Recovery mehrere, wird zu klein gemessen und der Auslöser greift später — nie fälschlich.
+   */
+  private historyBytesFor(session: LiveSession): number | null {
+    if (!session.claudeSessionId) return null;
+    const path = locateTranscript(session.cwd, session.claudeSessionId);
+    return path ? transcriptSize(path) : null;
+  }
+
+  /**
+   * Gespeichertes Kostenprofil der Unterhaltung (für `GET /chat`). Bewertet NICHT neu —
+   * ein Angebot entsteht ausschließlich an der Turn-Grenze (FR-007). Ergänzt wird nur der
+   * Leerlauf-Grund, damit dieselbe eine Karte beide Gründe nennt (FR-013).
+   */
+  costProfileFor(conversation: ChatConversation): ChatCostProfile | null {
+    const stored = this.hygiene.get(conversation.id)?.profile ?? null;
+    if (!stored) return null;
+    if (!this.pauseState(conversation).paused || stored.reasons.includes('idle')) return stored;
+    const reasons: ChatRestartReason[] = ['idle', ...stored.reasons];
+    const withIdle: ChatCostProfile = { ...stored, reasons };
+    return { ...withIdle, message: restartOfferMessage(withIdle) };
+  }
+
+  /**
+   * Angebot ablehnen (FR-008/FR-009): den Stand der auslösenden Größen als Wasserstand merken
+   * und mit ihm neu bewerten. Erneut angeboten wird erst eine Schwellenstufe darüber — im
+   * selben Turn also nie ein zweites Mal.
+   */
+  dismissOffer(projectId: string): void {
+    const conv = this.deps.chatRepo.getActive(projectId);
+    if (!conv) return;
+    const state = this.hygiene.get(conv.id);
+    if (!state) return;
+    state.watermark = {
+      historyBytes: state.historyBytes,
+      cacheReadTokens: state.turns.at(-1)?.cacheReadTokens ?? null,
+    };
+    state.profile = evaluateChatHygiene({
+      historyBytes: state.historyBytes,
+      turns: state.turns,
+      idle: false,
+      watermark: state.watermark,
+    });
+    bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
   }
 
   handleExit(session: LiveSession, exitCode: number): void {
     this.deps.sessions.end(session.id);
-    this.turnStart.delete(session.id);
+    // Offenes Turn-Fenster verwerfen und den Puffer freigeben — ohne eine halbe
+    // Messung zu verbuchen (Edge Case Leerlauf-Reaper).
+    this.deps.meter.abandon(session.id);
+    // `hygiene` wird hier bewusst NICHT geräumt: es gehört der Unterhaltung, nicht der Session.
+    // Nach einem Leerlauf-Reap ist die Unterhaltung pausiert und weiterhin teuer — genau dann
+    // muss die eine Pausiert-Karte beide Gründe nennen können (FR-013). Geräumt wird beim
+    // Neustart, wo die Unterhaltung endet (FR-012), und in killAll().
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
-    for (const id of this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] })) {
-      bus.emitEvent('attention_resolved', id);
-    }
+    emitAttentionResolved(this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] }));
     const intentional = this.terminating.delete(session.id); // Neustart-Termination → kein Alarm
     if (exitCode !== 0 && !intentional) {
       const item = this.deps.attention.raise({
@@ -500,17 +578,27 @@ export class ChatWorkService {
   }
 
   /**
-   * Leerlauf-Reaper: beendet Projekt-Chat-Sessions, die seit `maxIdleMs` nicht mehr
-   * gearbeitet haben (weder `working` noch zwischenzeitlich aktiv). Eine gerade
-   * arbeitende Session wird nie abgewürgt. Der Exit läuft über den regulären Pfad
-   * (`handleExit`); dank `terminating` gibt es dabei keinen Fehler-Alarm.
+   * Leerlauf-Reaper: beendet Projekt-Chat-Sessions, denen seit `maxIdleMs` niemand mehr
+   * zugewandt war. Eine gerade arbeitende Session wird nie abgewürgt, ebenso wenig eine,
+   * deren Panel offen ist. Der Exit läuft über den regulären Pfad (`handleExit`); dank
+   * `terminating` gibt es dabei keinen Fehler-Alarm.
+   *
+   * Gemessen wird an `lastUsedAt`, nicht an `lastActiveAt`: Letzteres sagt nur, wann der
+   * Agent zuletzt gearbeitet hat, und wurde für die Grid-Sortierung gebaut. Wer die Antwort
+   * las und fünf Minuten nachdachte, fand die Session beendet vor und musste sie fortsetzen.
+   *
+   * Die Leerlaufzeit steht bei den übrigen Grenzwerten einer Unterhaltung
+   * (`CHAT_HYGIENE_LIMITS.idleMs`, FR-018) — der Verlauf bleibt beim Reap erhalten: Das Panel
+   * zeigt danach eine „Pausiert"-Karte (`workPaused`), über die der Nutzer fortsetzen
+   * (`ensure()` → Scrollback-Snapshot + Claude-Resume) oder frisch beginnen kann.
    */
-  reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_IDLE_TIMEOUT_MS): void {
+  reapIdleSessions(now: number = Date.now(), maxIdleMs: number = CHAT_HYGIENE_LIMITS.idleMs): void {
     for (const s of this.deps.ptys.list()) {
       try {
         if (s.kind !== 'chat_work' || s.exited) continue;
         if (displayStatus(s.machine.state) === 'working') continue; // aktiver Turn → laufen lassen
-        if (now - s.lastActiveAt < maxIdleMs) continue;
+        if (s.subscribers.size > 0) continue; // jemand schaut zu → nicht abräumen
+        if (now - s.lastUsedAt < maxIdleMs) continue;
         this.terminating.add(s.id); // erwarteter Exit → kein „braucht dich"-Alarm
         // Fehler beim Beenden dürfen weder die Schleife abbrechen noch als
         // unbehandelte Rejection den Serverprozess reißen.
@@ -527,7 +615,7 @@ export class ChatWorkService {
   }
 
   killAll(): void {
-    this.turnStart.clear();
+    this.hygiene.clear();
   }
 
   // ---------- Helpers ----------

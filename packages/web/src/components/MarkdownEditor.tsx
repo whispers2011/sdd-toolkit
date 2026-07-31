@@ -1,4 +1,6 @@
 import { Component } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   MDXEditor,
   headingsPlugin,
@@ -23,7 +25,23 @@ import {
 } from '@mdxeditor/editor';
 import '@mdxeditor/editor/style.css';
 import { useTheme } from '../theme.js';
-import { MarkdownView } from './MarkdownView.js';
+
+/** Fallback-Rendering (kein WYSIWYG-Crash): gerendertes Markdown bzw. Klartext-Editor. */
+const MD: Components = {
+  h1: (p) => <h1 className="mt-4 mb-2 text-lg font-semibold text-zinc-100" {...p} />,
+  h2: (p) => <h2 className="mt-4 mb-2 text-base font-semibold text-zinc-100" {...p} />,
+  h3: (p) => <h3 className="mt-3 mb-1 text-sm font-semibold text-zinc-200" {...p} />,
+  p: (p) => <p className="my-2 text-sm leading-relaxed text-zinc-300" {...p} />,
+  ul: (p) => <ul className="my-2 ml-5 list-disc space-y-1 text-sm text-zinc-300" {...p} />,
+  ol: (p) => <ol className="my-2 ml-5 list-decimal space-y-1 text-sm text-zinc-300" {...p} />,
+  li: (p) => <li className="text-sm text-zinc-300" {...p} />,
+  a: (p) => <a className="text-emerald-400 hover:underline" {...p} />,
+  code: (p) => <code className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-xs text-zinc-200" {...p} />,
+  pre: (p) => <pre className="my-2 overflow-x-auto rounded bg-zinc-800 p-3 text-xs text-zinc-200" {...p} />,
+  table: (p) => <table className="my-2 w-full border-collapse text-xs text-zinc-300" {...p} />,
+  th: (p) => <th className="border border-zinc-700 px-2 py-1 text-left font-semibold" {...p} />,
+  td: (p) => <td className="border border-zinc-700 px-2 py-1" {...p} />,
+};
 
 const CODE_LANGUAGES: Record<string, string> = {
   '': 'Text',
@@ -59,7 +77,9 @@ function Wysiwyg({ value, readOnly, onChange }: Props) {
   // hellem Grund). Im Dark-Mode fehlte die Umschaltung → dunkle Schrift auf dunklem
   // Modal-Grund. `dark-theme` aktiviert die Dark-Palette der Bibliothek; im Light-Mode
   // bleibt der helle Default. Beides ist damit lesbar.
-  const dark = useTheme() === 'dark';
+  // Bewusst „alles ausser light" statt „=== dark": sonst stünde der Editor im
+  // Kontrast-Design hell auf dunklem UI (FR-022, SC-008).
+  const dark = useTheme() !== 'light';
   return (
     <MDXEditor
       {...(dark ? { className: 'dark-theme' } : {})}
@@ -117,7 +137,11 @@ export class MarkdownEditor extends Component<Props, { failed: boolean }> {
     const { value, readOnly, onChange } = this.props;
     if (this.state.failed) {
       return readOnly ? (
-        <MarkdownView markdown={value} />
+        <div className="sdd-prose max-w-none">
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+            {value}
+          </ReactMarkdown>
+        </div>
       ) : (
         <textarea
           value={value}

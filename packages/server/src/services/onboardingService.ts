@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 import { existsSync } from 'node:fs';
 import type { FeaturePhase, Project } from '@sdd/shared';
-import { initialPhases } from '@sdd/shared';
+import { EMPTY_STACK_CONFIG, initialPhases } from '@sdd/shared';
 import type { FeatureRepo, ProjectRepo } from '../db/repos.js';
 import { currentBranch, git, isGitRepo } from '../git/git.js';
 import { artifactExists, hasSpecKit, listSpecDirs, parseTaskProgress } from './artifacts.js';
@@ -46,6 +46,9 @@ export class OnboardingService {
       mergeMode: 'ff',
       editorCmd: null,
       integrationMode: 'local',
+      // Das Toolkit bringt keine Stack-Kommandos mit: ein neues Projekt hat
+      // keinen Stack, bis jemand Profile hinterlegt (FR-012/FR-013).
+      stack: EMPTY_STACK_CONFIG,
     });
 
     const importedFeatures: string[] = [];

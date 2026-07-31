@@ -7,8 +7,11 @@ import {
   type Dispatch,
   type ReactNode,
 } from 'react';
-import type { AttentionItem, Feature, MergeQueueItem } from '@sdd/shared';
+import type { AttentionItem, Feature, FeatureActionContext, FeatureStackView, MergeQueueItem } from '@sdd/shared';
+import { applyAttentionResolved, enteredPhase, isFeatureComplete, isStackConfigured } from '@sdd/shared';
 import { api, type AppState, type LiveSessionInfo } from './api.js';
+import { primePersonal, setPersonalErrorSink } from './personalSettings.js';
+import { handleSoundEvent } from './sound.js';
 
 export type View =
   | { kind: 'board' }
@@ -17,10 +20,13 @@ export type View =
   | { kind: 'review' }
   | { kind: 'grid' }
   | { kind: 'workflow' }
+  /** Tool-weite Worktree-Übersicht (projektübergreifend, Einstieg über Einstellungen). */
+  | { kind: 'worktrees' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }
-  | { kind: 'agents'; projectId: string };
+  | { kind: 'agents'; projectId: string }
+  | { kind: 'lifecycle_steps'; projectId: string };
 
 /** Laufender Antwort-Stream eines Chat-Turns (kumulierter Text, idempotent). */
 export interface ChatStreamState {
@@ -52,8 +58,29 @@ export interface UiState {
   reviewCommentsVersion: Record<string, number>;
   /** Laufende before/after-Gates pro Feature (gateRunning-Badge). */
   gateRunning: Record<string, boolean>;
+  /**
+   * Zuletzt ERHOBENER Stack-Zustand je Feature. Nur ein Zwischenspeicher für die
+   * Aktions-Policy — die Wahrheit steht im Server, der bei jedem Abruf frisch
+   * probt (FR-023). Wird von StackPanel/Abnahme-Spalte befüllt.
+   */
+  featureStacks: Record<string, FeatureStackView>;
+  /**
+   * Offene Blocker-Befunde je Feature. Wie `featureStacks` nur ein
+   * Zwischenspeicher für die Aktions-Policy; durchgesetzt wird die Sperre
+   * serverseitig in `confirmManualTest`.
+   */
+  manualTestBlockers: Record<string, number>;
   /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
   agentGateVersion: number;
+  /** Zähler: hochgesetzt, wenn ein Lauf nachträglich verrechnet wurde (Telemetrie-Nachtrag). */
+  executionsVersion: number;
+  /**
+   * Integrations-Bereitschaft je Feature (FR-027): 'pending' = Abruf läuft,
+   * boolean = Ergebnis. Kein Eintrag oder 'pending' bedeutet für die Policy
+   * `hasChanges: 'unknown'` — das sperrt bewusst nicht. Der Eintrag wird bei
+   * `feature_updated` für dieses Feature verworfen.
+   */
+  integrationReadiness: Record<string, boolean | 'pending'>;
 }
 
 export type Action =
@@ -73,7 +100,12 @@ export type Action =
   | { type: 'chat_updated'; payload: { projectId: string; conversationId: string } }
   | { type: 'open_chat'; projectId: string }
   | { type: 'review_comments_updated'; featureId: string }
-  | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } };
+  | { type: 'agent_gate'; payload: { featureId: string; status: 'running' | 'pass' | 'fail' } }
+  | { type: 'execution_updated' }
+  | { type: 'readiness_requested'; featureId: string }
+  | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } }
+  | { type: 'stack_probed'; payload: { featureId: string; stack: FeatureStackView } }
+  | { type: 'manual_test_blockers'; payload: Record<string, number> };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -89,7 +121,14 @@ function reducer(state: UiState, action: Action): UiState {
       const features = exists
         ? state.app.features.map((f) => (f.id === action.feature.id ? action.feature : f))
         : [...state.app.features, action.feature];
-      return { ...state, app: { ...state.app, features: features.filter((f) => !f.archivedAt) } };
+      // Jede Zustandsänderung kann die Änderungslage im Worktree verändert haben —
+      // gemerkte Bereitschaft dieses Features verwerfen (FR-027).
+      const { [action.feature.id]: _stale, ...integrationReadiness } = state.integrationReadiness;
+      return {
+        ...state,
+        integrationReadiness,
+        app: { ...state.app, features: features.filter((f) => !f.archivedAt) },
+      };
     }
     case 'feature_deleted': {
       if (!state.app) return state;
@@ -125,20 +164,16 @@ function reducer(state: UiState, action: Action): UiState {
     }
     case 'attention_raised': {
       if (!state.app) return state;
-      // Bekannte Meldung → ersetzen statt ignorieren: der Server zieht den Text nach,
-      // wenn sich der Auslöser ändert (andere Frage, anderer Fehler).
       const exists = state.app.attention.some((a) => a.id === action.item.id);
-      const attention = exists
-        ? state.app.attention.map((a) => (a.id === action.item.id ? action.item : a))
-        : [action.item, ...state.app.attention];
-      return { ...state, app: { ...state.app, attention } };
+      return exists
+        ? state
+        : { ...state, app: { ...state.app, attention: [action.item, ...state.app.attention] } };
     }
     case 'attention_resolved': {
       if (!state.app) return state;
-      // Der Server meldet jede Auflösung einzeln per Attention-ID.
       return {
         ...state,
-        app: { ...state.app, attention: state.app.attention.filter((a) => a.id !== action.id) },
+        app: { ...state.app, attention: applyAttentionResolved(state.app.attention, action.id) },
       };
     }
     case 'queue_updated': {
@@ -175,6 +210,8 @@ function reducer(state: UiState, action: Action): UiState {
         } else if (view.kind === 'knowledge' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
         } else if (view.kind === 'agents' && view.projectId !== action.projectId) {
+          view = { kind: 'board' };
+        } else if (view.kind === 'lifecycle_steps' && view.projectId !== action.projectId) {
           view = { kind: 'board' };
         }
       }
@@ -228,7 +265,83 @@ function reducer(state: UiState, action: Action): UiState {
         agentGateVersion: state.agentGateVersion + 1,
       };
     }
+    case 'execution_updated': {
+      // Verspätet eingetroffene Verbrauchsmeldungen haben einen Lauf korrigiert —
+      // die Läufe-Ansicht lädt neu, ohne dass der Nutzer etwas tun muss (FR-011).
+      return { ...state, executionsVersion: state.executionsVersion + 1 };
+    }
+    case 'stack_probed':
+      return {
+        ...state,
+        featureStacks: { ...state.featureStacks, [action.payload.featureId]: action.payload.stack },
+      };
+    // Ersetzend, nicht ergänzend: wer die Stufe verlässt, hat auch keine
+    // offenen Blocker mehr, die eine Schaltfläche sperren dürften.
+    case 'manual_test_blockers':
+      return { ...state, manualTestBlockers: action.payload };
+    case 'readiness_requested': {
+      return {
+        ...state,
+        integrationReadiness: { ...state.integrationReadiness, [action.featureId]: 'pending' },
+      };
+    }
+    case 'readiness_result': {
+      return {
+        ...state,
+        integrationReadiness: {
+          ...state.integrationReadiness,
+          [action.payload.featureId]: action.payload.hasChanges,
+        },
+      };
+    }
   }
+}
+
+/**
+ * Der Eingabewert der Aktions-Policy für ein Feature — rein synchron aus dem
+ * bereits vorhandenen Store-Zustand (FR-023: kein Netzwerk-Roundtrip pro Render).
+ * Die Ereignisse `feature_updated`, `session_status` und `agent_gate` schreiben
+ * genau die Felder, aus denen er gebaut wird ⇒ Sichtbarkeit und Sperrung ziehen
+ * ohne Neuladen nach.
+ */
+export function featureActionContext(state: UiState, featureId: string): FeatureActionContext | null {
+  const feature = state.app?.features.find((f) => f.id === featureId);
+  if (!feature) return null;
+  const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
+  const readiness = state.integrationReadiness[featureId];
+  const stack = state.app?.projects.find((p) => p.id === feature.projectId)?.stack ?? null;
+  return {
+    phases: feature.phases,
+    integration: feature.integration,
+    archived: feature.archivedAt !== null,
+    hasWorktree: feature.worktreePath !== null,
+    session: session?.status ?? null,
+    gateRunning: state.gateRunning[featureId] === true,
+    hasChanges: typeof readiness === 'boolean' ? readiness : 'unknown',
+    // Die Stack-Bedingungen kommen aus der Projekt-Konfiguration und dem erhobenen
+    // Zustand. Die Oberfläche rechnet nichts selbst — sie rendert nur den Befund
+    // (FR-032/FR-033); serverseitig setzt der ActionGuard dieselbe Policy durch.
+    stackConfigured: stack !== null && isStackConfigured(stack),
+    stackRunning: state.featureStacks[featureId]?.profile != null,
+    stackCanStop: (stack?.stopCommand ?? '').trim() !== '',
+    // Wie `featureStacks`: der erhobene Stand füttert die Policy, die Oberfläche
+    // entscheidet nicht selbst. Gefüllt beim Laden der Abnahme-Spalte.
+    openBlockers: state.manualTestBlockers[featureId] ?? 0,
+  };
+}
+
+/**
+ * Features, für die die Bereitschaft überhaupt eine Bedeutung hat — nur für sie
+ * wird die (git-gestützte, also teure) Route gefragt. Für ein Feature in Arbeit
+ * wird nie ein git-Kommando ausgelöst.
+ */
+function readinessCandidates(state: UiState): string[] {
+  return (state.app?.features ?? [])
+    .filter(
+      (f) =>
+        !f.archivedAt && f.integration === 'none' && f.worktreePath !== null && isFeatureComplete(f.phases),
+    )
+    .map((f) => f.id);
 }
 
 /** Sichtbare Features unter Berücksichtigung von Projekt-Scope und Abgeschlossen-Filter. */
@@ -287,38 +400,6 @@ function resolveSelectedProject(projects: AppState['projects'], current: string 
   return projects[0]?.id ?? null;
 }
 
-export function soundEnabled(): boolean {
-  return localStorage.getItem('sdd-sound') !== 'off';
-}
-
-export function setSoundEnabled(on: boolean): void {
-  localStorage.setItem('sdd-sound', on ? 'on' : 'off');
-}
-
-/** Dezenter Zwei-Ton-Beep via WebAudio — kein Asset nötig. */
-function playCompletionSound(): void {
-  try {
-    const ctx = new AudioContext();
-    const gain = ctx.createGain();
-    gain.gain.value = 0.06;
-    gain.connect(ctx.destination);
-    for (const [freq, start] of [
-      [880, 0],
-      [1174, 0.12],
-    ] as const) {
-      const osc = ctx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = freq;
-      osc.connect(gain);
-      osc.start(ctx.currentTime + start);
-      osc.stop(ctx.currentTime + start + 0.15);
-    }
-    setTimeout(() => void ctx.close(), 600);
-  } catch {
-    /* Audio blockiert → egal */
-  }
-}
-
 const StoreContext = createContext<{ state: UiState; dispatch: Dispatch<Action> } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -334,17 +415,57 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     openChat: null,
     reviewCommentsVersion: {},
     gateRunning: {},
+    featureStacks: {},
+    manualTestBlockers: {},
     agentGateVersion: 0,
+    executionsVersion: 0,
+    integrationReadiness: {},
   });
   const wsRef = useRef<WebSocket | null>(null);
+  /**
+   * Letzter bekannter Phasenstand je Feature — die Grundlage für „Phase
+   * erreicht" (research D2). Bewusst eine Ref und NICHT Reducer-Zustand: der
+   * Vergleich ist ein Seiteneffekt der Ton-Ebene, kein Teil dessen, was die
+   * Oberfläche darstellt.
+   */
+  const phasesRef = useRef(new Map<string, Feature['phases']>());
+
+  // Bereitschafts-Abruf (FR-027): genau einmal je fertigem, nicht integriertem
+  // Feature. 'pending' im Zustand verhindert Doppelabrufe; ein Fehler lässt den
+  // Wert unbekannt — die Aktion bleibt auslösbar, der Server lehnt notfalls ab.
+  const candidates = readinessCandidates(state).join(',');
+  useEffect(() => {
+    for (const id of candidates ? candidates.split(',') : []) {
+      if (state.integrationReadiness[id] !== undefined) continue;
+      dispatch({ type: 'readiness_requested', featureId: id });
+      api
+        .integrationReadiness(id)
+        .then((r) => dispatch({ type: 'readiness_result', payload: { featureId: id, hasChanges: r.hasChanges } }))
+        .catch(() => {
+          /* unbekannt lassen — sperrt nicht */
+        });
+    }
+  }, [candidates, state.integrationReadiness]);
 
   useEffect(() => {
     let closed = false;
 
+    // Fehler des Einstellungs-Clients landen im gewohnten Fehlerband, ohne dass
+    // das Modul den Store importieren müsste (das gäbe einen Import-Zyklus).
+    setPersonalErrorSink((message) => dispatch({ type: 'error', message }));
+
     const bootstrap = () =>
       api
         .state()
-        .then((s) => dispatch({ type: 'bootstrap', state: s }))
+        .then((s) => {
+          // Vor dem Reducer: die Ton-Ebene liest synchron aus dem Modulzustand
+          // und muss beim ersten Ereignis den echten Stand sehen (U3.2).
+          primePersonal(s.personal);
+          // Grundstand der Phasen OHNE Ausgabe übernehmen (U5.4/S6.2): beim
+          // Verbinden und Wiederverbinden darf nichts klingen.
+          phasesRef.current = new Map(s.features.map((f) => [f.id, f.phases]));
+          dispatch({ type: 'bootstrap', state: s });
+        })
         .catch((e: Error) => dispatch({ type: 'error', message: e.message }));
 
     void bootstrap();
@@ -358,24 +479,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           const msg = JSON.parse(ev.data as string) as { type: string; payload: unknown };
           switch (msg.type) {
-            case 'feature_updated':
-              dispatch({ type: 'feature_updated', feature: msg.payload as Feature });
+            case 'feature_updated': {
+              const feature = msg.payload as Feature;
+              // „Phase erreicht" entsteht ausschliesslich per Diff gegen den
+              // letzten Stand — kein neues Server-Ereignis (research D2).
+              const erreicht = enteredPhase(phasesRef.current.get(feature.id), feature.phases);
+              phasesRef.current.set(feature.id, feature.phases);
+              if (erreicht) handleSoundEvent({ kind: 'phase', phase: erreicht });
+              dispatch({ type: 'feature_updated', feature });
               break;
-            case 'feature_deleted':
-              dispatch({
-                type: 'feature_deleted',
-                payload: msg.payload as Extract<Action, { type: 'feature_deleted' }>['payload'],
-              });
+            }
+            case 'feature_deleted': {
+              const payload = msg.payload as Extract<Action, { type: 'feature_deleted' }>['payload'];
+              phasesRef.current.delete(payload.featureId);
+              dispatch({ type: 'feature_deleted', payload });
               break;
+            }
             case 'session_status':
               dispatch({
                 type: 'session_status',
                 payload: msg.payload as Extract<Action, { type: 'session_status' }>['payload'],
               });
               break;
-            case 'attention_raised':
-              dispatch({ type: 'attention_raised', item: msg.payload as AttentionItem });
+            case 'attention_raised': {
+              const item = msg.payload as AttentionItem;
+              // Die zehn Aufmerksamkeitsereignisse sind die einzige Quelle der
+              // `attention:*`-Auslöser (research D1). Die sichtbare Behandlung
+              // im Eingang bleibt davon unberührt (A3.2).
+              handleSoundEvent({ kind: 'attention', attention: item.kind });
+              dispatch({ type: 'attention_raised', item });
               break;
+            }
             case 'attention_resolved':
               dispatch({ type: 'attention_resolved', id: msg.payload as string });
               break;
@@ -409,6 +543,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                 payload: msg.payload as Extract<Action, { type: 'agent_gate' }>['payload'],
               });
               break;
+            case 'execution_updated':
+              dispatch({ type: 'execution_updated' });
+              break;
             case 'notification': {
               const n = msg.payload as {
                 title: string;
@@ -426,9 +563,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
                   }
                 };
               }
-              // Sound nur bei „fertig"/„gemergt" — Rückfragen bewusst lautlos (WhisperM8-Regel).
-              if ((n.kind === 'turn_completed' || n.kind === 'merged') && soundEnabled()) {
-                playCompletionSound();
+              // Nur „fertig"/„gemergt" erzeugen Ton. `input_requested` und
+              // `escalation` sind Duplikate zu Aufmerksamkeitsereignissen und
+              // klängen sonst doppelt zum selben Vorfall (research D1, FR-017).
+              if (n.kind === 'turn_completed' || n.kind === 'merged') {
+                handleSoundEvent({ kind: 'flow', flow: n.kind });
               }
               break;
             }

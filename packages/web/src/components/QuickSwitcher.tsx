@@ -63,9 +63,6 @@ export function QuickSwitcher() {
       });
     }
     return list;
-    // Absichtlich die gelesenen Teilzustände statt `state`: die Liste hängt nur an
-    // Projekten/Features und dem Abgeschlossen-Filter.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.app, state.showCompleted]);
 
   const matches = useMemo(() => {

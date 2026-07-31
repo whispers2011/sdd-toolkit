@@ -72,8 +72,8 @@ describe('parseClaudeTranscriptLine', () => {
 
 describe('encodeClaudeCwd', () => {
   it('ersetzt alles Nicht-Alphanumerische durch Bindestriche', () => {
-    expect(encodeClaudeCwd('/Users/dev/projects/sdd-toolkit')).toBe(
-      '-Users-dev-projects-sdd-toolkit',
+    expect(encodeClaudeCwd('/Users/louismichel/iwf-projects/sdd-toolkit')).toBe(
+      '-Users-louismichel-iwf-projects-sdd-toolkit',
     );
     expect(encodeClaudeCwd('/Users/x/mein.projekt_v2')).toBe('-Users-x-mein-projekt-v2');
   });

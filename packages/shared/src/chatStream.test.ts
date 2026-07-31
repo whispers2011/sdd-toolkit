@@ -24,7 +24,7 @@ describe('parseChatStreamLine', () => {
     expect(parseChatStreamLine(line).kind).toBe('ignored');
   });
 
-  it('parst das Result-Event mit Kosten und Tokens', () => {
+  it('parst das Result-Event mit Tokens, ohne Kostenfeld', () => {
     const line = JSON.stringify({
       type: 'result',
       subtype: 'success',
@@ -34,14 +34,15 @@ describe('parseChatStreamLine', () => {
       usage: { input_tokens: 1200, output_tokens: 340 },
       session_id: 'abc-123',
     });
-    expect(parseChatStreamLine(line)).toEqual({
+    const ev = parseChatStreamLine(line);
+    expect(ev).toEqual({
       kind: 'result',
       text: 'Die Antwort.',
       isError: false,
-      costUsd: 0.0421,
       tokens: 1540,
       sessionId: 'abc-123',
     });
+    expect('costUsd' in ev).toBe(false);
   });
 
   it('markiert Fehler-Results als isError, auch ohne is_error-Flag', () => {
@@ -50,7 +51,6 @@ describe('parseChatStreamLine', () => {
     expect(ev.kind).toBe('result');
     if (ev.kind === 'result') {
       expect(ev.isError).toBe(true);
-      expect(ev.costUsd).toBeNull();
       expect(ev.tokens).toBeNull();
       expect(ev.sessionId).toBeNull();
     }

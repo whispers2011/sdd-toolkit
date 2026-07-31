@@ -1,8 +1,65 @@
 import { useEffect, useState } from 'react';
+import ReactMarkdown, { type Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { FeaturePhase, PhaseDefinition } from '@sdd/shared';
 import { api, SaveConflictError } from '../api.js';
 import { ConfirmDialog } from './Sidebar.js';
-import { MarkdownView } from './MarkdownView.js';
+
+/** Styling der gerenderten Markdown-Elemente (kein Typography-Plugin vorhanden). */
+const MD: Components = {
+  h1: (p) => <h1 className="mt-4 mb-2 text-lg font-semibold text-zinc-100" {...p} />,
+  h2: (p) => <h2 className="mt-4 mb-2 text-base font-semibold text-zinc-100" {...p} />,
+  h3: (p) => <h3 className="mt-3 mb-1 text-sm font-semibold text-zinc-200" {...p} />,
+  p: (p) => <p className="my-2 text-sm leading-relaxed text-zinc-300" {...p} />,
+  ul: (p) => <ul className="my-2 ml-5 list-disc space-y-1 text-sm text-zinc-300" {...p} />,
+  ol: (p) => <ol className="my-2 ml-5 list-decimal space-y-1 text-sm text-zinc-300" {...p} />,
+  li: (p) => <li className="text-sm text-zinc-300" {...p} />,
+  a: (p) => <a className="text-emerald-400 hover:underline" {...p} />,
+  code: (p) => <code className="rounded bg-zinc-800 px-1 py-0.5 font-mono text-xs text-zinc-200" {...p} />,
+  pre: (p) => <pre className="my-2 overflow-x-auto rounded bg-zinc-800 p-3 text-xs text-zinc-200" {...p} />,
+  blockquote: (p) => <blockquote className="my-2 border-l-2 border-zinc-700 pl-3 text-sm text-zinc-400" {...p} />,
+  table: (p) => <table className="my-2 w-full border-collapse text-xs text-zinc-300" {...p} />,
+  th: (p) => <th className="border border-zinc-700 px-2 py-1 text-left font-semibold" {...p} />,
+  td: (p) => <td className="border border-zinc-700 px-2 py-1" {...p} />,
+};
+
+/**
+ * Führendes YAML-Frontmatter (`---\n…\n---`) abtrennen. ReactMarkdown würde es
+ * sonst als riesige Setext-H2 rendern (die vorletzte `---`-Zeile macht den Block
+ * davor zur Überschrift) — schwer lesbarer Einstieg. Hier separat behandelt.
+ */
+function splitFrontmatter(md: string): { meta: string | null; body: string } {
+  const m = md.match(/^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
+  if (!m) return { meta: null, body: md };
+  return { meta: m[1] ?? '', body: md.slice(m[0].length) };
+}
+
+/** Frontmatter als kompakte, lesbare Metadaten-Liste (statt roher Textblock). */
+function Frontmatter({ text }: { text: string }) {
+  const rows = text
+    .split('\n')
+    .filter((l) => l.trim().length > 0)
+    .map((line) => {
+      const indent = line.length - line.trimStart().length;
+      const m = line.trim().match(/^([^:]+):\s*(.*)$/);
+      const key = (m?.[1] ?? line.trim()).trim();
+      const value = (m?.[2] ?? '').trim().replace(/^["']|["']$/g, '');
+      return { indent, key, value };
+    });
+  return (
+    <div className="mb-4 rounded border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Metadaten</div>
+      <dl className="space-y-1">
+        {rows.map((r, i) => (
+          <div key={i} className="flex flex-wrap gap-x-2 text-xs" style={{ paddingLeft: r.indent * 10 }}>
+            <dt className="shrink-0 text-zinc-500">{r.key}</dt>
+            {r.value && <dd className="min-w-0 text-zinc-300">{r.value}</dd>}
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
 
 export function PhaseDefinitionDialog({
   phase,
@@ -165,9 +222,17 @@ export function PhaseDefinitionDialog({
               Für diesen Schritt existiert keine spec-kit-Definition in diesem Projekt.
             </p>
           )}
-          {!loading && !loadError && def?.exists && !editing && (
-            <MarkdownView markdown={def.content ?? ''} />
-          )}
+          {!loading && !loadError && def?.exists && !editing && (() => {
+            const { meta, body } = splitFrontmatter(def.content ?? '');
+            return (
+              <div className="max-w-none">
+                {meta && <Frontmatter text={meta} />}
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD}>
+                  {body}
+                </ReactMarkdown>
+              </div>
+            );
+          })()}
           {editing && (
             <textarea
               value={draft}

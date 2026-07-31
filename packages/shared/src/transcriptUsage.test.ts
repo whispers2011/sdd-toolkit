@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasUsage, parseUsageLine, sumUsage, usageToCost } from './transcriptUsage.js';
+import { hasUsage, parseUsageLine, sumUsage, usageTotalTokens } from './transcriptUsage.js';
 
 const assistantLine = (usage: Record<string, number>, model = 'claude-sonnet-5') =>
   JSON.stringify({ type: 'assistant', message: { model, usage } });
@@ -52,8 +52,8 @@ describe('transcriptUsage', () => {
     expect(hasUsage(u)).toBe(false);
   });
 
-  it('usageToCost: totalTokens = Summe aller Komponenten; Cache-Read 0.1×, Cache-Write 1.25×', () => {
-    const { totalTokens, costUsd } = usageToCost({
+  it('usageTotalTokens: Summe aller vier Komponenten', () => {
+    const totalTokens = usageTotalTokens({
       inputTokens: 100,
       outputTokens: 200,
       cacheReadTokens: 1000,
@@ -61,8 +61,6 @@ describe('transcriptUsage', () => {
       model: 'claude-sonnet-5',
     });
     expect(totalTokens).toBe(1350);
-    // sonnet: input 3/M, output 15/M → (100 + 1000*0.1 + 50*1.25)/1e6*3 + 200/1e6*15
-    expect(costUsd).toBeCloseTo(((100 + 100 + 62.5) / 1_000_000) * 3 + (200 / 1_000_000) * 15, 10);
   });
 
   it('sumUsage dedupliziert Zeilen derselben Assistant-Message (message.id + requestId)', () => {

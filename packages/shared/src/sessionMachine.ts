@@ -26,8 +26,18 @@ export type SessionSignal =
 export type HookSignal =
   | { name: 'session_start' }
   | { name: 'user_prompt_submit' }
-  /** `detail`: Kurzfassung der Rückfrage (Fragetext / Plan-Titel), sofern im Hook-Payload vorhanden. */
-  | { name: 'pre_tool_use'; toolName: string; detail?: string }
+  | {
+      name: 'pre_tool_use';
+      toolName: string;
+      /**
+       * Kurzfassung dessen, worum der Agent bittet (erste Frage bei AskUserQuestion,
+       * Planüberschrift bei ExitPlanMode). Wird an der unreinen Grenze aus dem
+       * Hook-Payload gewonnen und unverändert durchgereicht — die Maschine deutet
+       * ihn nicht. Ohne ihn meldete die Inbox nur „hat eine Frage" und zwang zum
+       * Wechsel in die Konsole, um überhaupt die Dringlichkeit einzuschätzen.
+       */
+      detail?: string;
+    }
   | { name: 'post_tool_use' }
   | { name: 'post_tool_use_failure' }
   | { name: 'permission_request' }

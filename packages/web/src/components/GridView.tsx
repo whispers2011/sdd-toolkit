@@ -40,9 +40,6 @@ export function GridView() {
     setPanes(selectAutoPanes(state.app.sessions, { projectId: scope, visibleFeatureIds, max: MAX_PANES }));
     setMaximized(null);
     setFocusedPane(0);
-    // Absichtlich die gelesenen Teilzustände statt `state`: sonst würde jede
-    // Store-Änderung die Panes neu auswählen und die Ansicht springen lassen.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, state.app, state.showCompleted]);
 
   if (!state.app) return null;

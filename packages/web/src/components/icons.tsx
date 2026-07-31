@@ -1,5 +1,4 @@
-import type { ReactElement, ReactNode } from 'react';
-import type { FeaturePhase } from '@sdd/shared';
+import type { ReactNode } from 'react';
 
 /**
  * Hausinternes SVG-Icon-Set für Wissensdatenbank & Wissens-Chat.
@@ -32,6 +31,18 @@ function Base({ className, title, children }: IconProps & { children: ReactNode 
     >
       {children}
     </svg>
+  );
+}
+
+/** Übersichten (Läufe, Workflow, Worktrees) — Balken über gemeinsamer Achse. */
+export function InsightsIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M4 20h16" />
+      <path d="M7 20v-6" />
+      <path d="M12 20V8" />
+      <path d="M17 20v-9" />
+    </Base>
   );
 }
 
@@ -230,6 +241,16 @@ export function MoonIcon(props: IconProps) {
   );
 }
 
+/** „Dunkel, hoher Kontrast" aktiv — halb gefüllter Kreis als Kontrast-Motiv. */
+export function ContrastIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none" />
+    </Base>
+  );
+}
+
 /** Plan-Ergebnis (plan.md + Begleitartefakte) — Blueprint/Karte. */
 export function PlanResultIcon(props: IconProps) {
   return (
@@ -271,6 +292,18 @@ export function FolderOpenIcon(props: IconProps) {
   return (
     <Base {...props}>
       <path d="M6 14l1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6A2 2 0 0 1 18.45 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2" />
+    </Base>
+  );
+}
+
+/** Hinterlegtes Dokument (Ausgangsmaterial eines Features). */
+export function DocumentIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="8" y1="13" x2="16" y2="13" />
+      <line x1="8" y1="17" x2="13" y2="17" />
     </Base>
   );
 }
@@ -343,6 +376,39 @@ export function ShieldIcon(props: IconProps) {
   );
 }
 
+/** Archivieren/Aufräumen (Ablagekasten). Ersetzt das Emoji 🗄 auf der Kachel. */
+export function ArchiveIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M3 6h18v3H3z" />
+      <path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9" />
+      <path d="M10 13h4" />
+    </Base>
+  );
+}
+
+/** Qualitäts-Gate läuft (Waage). Ersetzt das Emoji ⚖ auf der Kachel. */
+export function ScalesIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M12 3v18" />
+      <path d="M7 21h10" />
+      <path d="M4 7h16" />
+      <path d="M7 7l-3 6h6zM17 7l-3 6h6z" />
+    </Base>
+  );
+}
+
+/** Review ansehen (Auge). Ersetzt das Emoji 👀 auf der Kachel. */
+export function ReviewIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </Base>
+  );
+}
+
 /** Verifikation (Klemmbrett mit Häkchen). */
 export function VerifyIcon(props: IconProps) {
   return (
@@ -381,6 +447,27 @@ export function PlusIcon(props: IconProps) {
     <Base {...props}>
       <line x1="12" y1="5" x2="12" y2="19" />
       <line x1="5" y1="12" x2="19" y2="12" />
+    </Base>
+  );
+}
+
+/** Worktree / abgezweigte Arbeitskopie (Git-Branch-Form). */
+export function WorktreeIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <line x1="6" y1="3" x2="6" y2="15" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </Base>
+  );
+}
+
+/** Lebenszyklus-Schritte (Treppe): eigene Kommandos an den Punkten des Ablaufs. */
+export function StepsIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polyline points="3 19 8 19 8 14 13 14 13 9 18 9 18 4 21 4" />
     </Base>
   );
 }
@@ -435,10 +522,28 @@ export function LogoMark({ className }: { className?: string }) {
   );
 }
 
-/** Ergebnis-Icon je artefakt-erzeugendem Speckit-Schritt (Kacheln, Artefakt-Navigation). */
-export const RESULT_ICONS: Partial<Record<FeaturePhase, (p: IconProps) => ReactElement>> = {
-  specify: SpecifyResultIcon,
-  plan: PlanResultIcon,
-  tasks: TasksResultIcon,
-  checklist: ChecklistResultIcon,
-};
+/**
+ * Testing-Lane: manuelle Abnahme der laufenden Anwendung (Erlenmeyerkolben).
+ * Ersetzt das 🧪 aus dem Stufen-Katalog in der Oberfläche — Symbole liegen in
+ * diesem Projekt ausschließlich als SVG vor.
+ */
+export function FlaskIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <path d="M9 3h6" />
+      <path d="M10 3v6.5L4.8 18a2 2 0 0 0 1.7 3h11a2 2 0 0 0 1.7-3L14 9.5V3" />
+      <line x1="7" y1="15" x2="17" y2="15" />
+    </Base>
+  );
+}
+
+/** Stack eines Features: gestapelte Dienste. */
+export function StackIcon(props: IconProps) {
+  return (
+    <Base {...props}>
+      <polygon points="12 2 22 7 12 12 2 7 12 2" />
+      <polyline points="2 12 12 17 22 12" />
+      <polyline points="2 17 12 22 22 17" />
+    </Base>
+  );
+}

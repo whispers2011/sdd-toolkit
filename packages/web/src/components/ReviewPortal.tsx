@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { AgentRunSummary, ReviewComment } from '@sdd/shared';
+import { buildChangeOverview, evaluateAction } from '@sdd/shared';
 import { api, type DiffSummary, type ExecutionInfo } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { Dialog } from './Sidebar.js';
 import { VoiceButton } from './VoiceButton.js';
 import { DiffViewer } from './review/DiffViewer.js';
+import { ChangeOverview } from './review/ChangeOverview.js';
 import { CommentsPanel } from './review/CommentsPanel.js';
 import { FileTreePane } from './review/FileTreePane.js';
 import { FileEditor } from './review/FileEditor.js';
@@ -31,15 +34,37 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const [treeSelected, setTreeSelected] = useState<string | null>(null);
   const [comments, setComments] = useState<ReviewComment[]>([]);
   const [runs, setRuns] = useState<AgentRunSummary[] | null>(null);
+  /**
+   * Der Fehler des Audit-Abrufs — zusätzlich zum globalen Kanal, weil die rechte
+   * Spalte sonst für immer „Lade Audits …" zeigt und der Reviewer nicht erfährt,
+   * dass niemand geprüft hat (FR-009, D12).
+   */
+  const [runsError, setRunsError] = useState<string | null>(null);
   const [jumpTo, setJumpTo] = useState<{ line: number; side: 'old' | 'new'; ts: number } | null>(null);
   const [target, setTarget] = useState<MergeTarget | null>(null);
   const [rejectComment, setRejectComment] = useState('');
   const [showReject, setShowReject] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  const run = useAction();
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
+  const ctx = featureActionContext(state, featureId);
+  const approveV = ctx ? evaluateAction('review_approve', ctx) : null;
+  const rejectV = ctx ? evaluateAction('review_reject', ctx) : null;
+  const retryV = ctx ? evaluateAction('integration_retry', ctx) : null;
+  /**
+   * Nur noch für den Datei-Editor: Reviewer-Korrekturen werden beim Freigeben
+   * committet und ergeben außerhalb eines laufenden Reviews keinen Sinn. Für die
+   * Aktionen des Portals ist ausschließlich die Policy zuständig.
+   */
   const reviewable = feature?.integration === 'awaiting_human_review';
+  /**
+   * Die Verifikationslücke kommt aus dem bereits geladenen Projekt — keine
+   * zusätzliche Anfrage (FR-022). Solange das Projekt noch nicht im Store ist,
+   * wird nichts behauptet: `true` heißt „kein Hinweis", nicht „geprüft".
+   */
+  const verificationConfigured = (project?.verifyCommands.length ?? 1) > 0;
 
   const fail = useCallback(
     (e: Error) => dispatch({ type: 'error', message: e.message }),
@@ -59,7 +84,14 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
 
   // Audits: initial + nach jedem Gate-Abschluss (agent_gate).
   useEffect(() => {
-    api.agentRuns(featureId).then(setRuns).catch(fail);
+    setRunsError(null);
+    api
+      .agentRuns(featureId)
+      .then(setRuns)
+      .catch((e: Error) => {
+        setRunsError(e.message);
+        fail(e);
+      });
   }, [featureId, state.agentGateVersion, fail]);
 
   useEffect(() => {
@@ -79,7 +111,6 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
       .catch(() => setTreeFiles([]));
   }, [tab, treeFiles, featureId]);
 
-  const totalCost = useMemo(() => executions.reduce((sum, e) => sum + (e.costUsd ?? 0), 0), [executions]);
   const resolutions = executions.filter((e) => e.kind === 'conflict_resolution');
   const lastVerify = executions.find((e) => e.kind === 'verify' && e.status !== 'running');
   const latestAudits = useMemo(() => {
@@ -92,6 +123,15 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   }, [runs]);
   const auditsPassed = latestAudits.filter((r) => r.verdict === 'PASS').length;
   const openComments = comments.filter((c) => c.status === 'open');
+  // Rohwerte, nicht zurechtgebogen: bei widersprüchlicher Zählung nie negativ.
+  const openTasks = Math.max(0, (feature?.tasksTotal ?? 0) - (feature?.tasksDone ?? 0));
+  /**
+   * Änderungsübersicht aus dem Diff, den das Portal ohnehin lädt — kein
+   * zusätzlicher Abruf und kein eigener Ladezustand (FR-006, SC-009).
+   */
+  const overview = useMemo(() => (summary ? buildChangeOverview(summary) : null), [summary]);
+  const overviewTargetBranch =
+    target?.targetBranch ?? feature?.integrationTarget ?? project?.defaultBranch ?? 'main';
 
   const refreshComments = () => api.comments(featureId).then(setComments).catch(fail);
 
@@ -105,23 +145,35 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   const approve = () => {
     if (!target?.valid) return;
     setBusy(true);
-    void api
-      .approveMerge(featureId, { targetBranch: target.targetBranch, createBranch: target.createBranch })
-      .then(() => onClose())
-      .catch(fail)
-      .finally(() => setBusy(false));
+    run(`review_approve:${featureId}`, () =>
+      api
+        .approveMerge(featureId, { targetBranch: target.targetBranch, createBranch: target.createBranch })
+        .then(() => onClose())
+        .finally(() => setBusy(false)),
+    );
   };
 
   const reject = () => {
     setBusy(true);
-    void api
-      .rejectReview(featureId, rejectComment)
-      .then(() => onClose())
-      .catch(fail)
-      .finally(() => setBusy(false));
+    run(`review_reject:${featureId}`, () =>
+      api
+        .rejectReview(featureId, rejectComment)
+        .then(() => onClose())
+        .finally(() => setBusy(false)),
+    );
   };
 
   if (!feature) return null;
+
+  // Eingabeprüfung des Ziel-Wählers — keine zweite Zustandsregel, sondern die
+  // Vollständigkeit des Formulars. Sie wird wie jede Sperre begründet angezeigt.
+  const approveVerdict =
+    approveV && approveV.availability === 'available' && !target?.valid
+      ? {
+          availability: 'blocked' as const,
+          reason: 'Bitte zuerst einen gültigen Ziel-Branch wählen.',
+        }
+      : approveV;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
@@ -133,7 +185,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
           <h2 className="text-sm font-semibold text-zinc-100">
             Review: {project?.name} / {feature.name}
           </h2>
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-zinc-400">
             {feature.branch} → {feature.integrationTarget ?? project?.defaultBranch}
           </span>
           <div className="ml-auto flex items-center gap-4 text-xs">
@@ -146,17 +198,37 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                   : '…'
               }
             />
+            {/* Ohne Reiterwechsel und ohne Klick sichtbar (FR-014); offene Aufgaben
+                amber, weil dann etwas nicht fertig ist, was gemergt werden soll
+                (FR-015). Informiert — sperrt nicht (FR-016). */}
+            <HeaderStat
+              label="Aufgaben"
+              value={feature.tasksTotal === 0 ? 'keine Liste' : `${feature.tasksDone}/${feature.tasksTotal}`}
+              tone={openTasks > 0 ? 'warn' : undefined}
+            />
             <HeaderStat
               label="Audits"
               value={runs ? `${auditsPassed}/${latestAudits.length}` : '…'}
               tone={latestAudits.length === 0 ? undefined : auditsPassed === latestAudits.length ? 'ok' : 'bad'}
             />
+            {/* Ohne Lauf UND ohne Konfiguration ist das kein „–", sondern eine
+                benannte Lücke (FR-008). Ein stattgefundener Lauf schlägt die
+                Konfiguration — er hat stattgefunden. */}
             <HeaderStat
               label="Verify"
-              value={lastVerify ? (lastVerify.status === 'succeeded' ? '✓' : '✗') : '–'}
-              tone={lastVerify ? (lastVerify.status === 'succeeded' ? 'ok' : 'bad') : undefined}
+              value={
+                lastVerify
+                  ? lastVerify.status === 'succeeded'
+                    ? '✓'
+                    : '✗'
+                  : verificationConfigured
+                    ? '–'
+                    : 'nicht konfiguriert'
+              }
+              tone={
+                lastVerify ? (lastVerify.status === 'succeeded' ? 'ok' : 'bad') : verificationConfigured ? undefined : 'warn'
+              }
             />
-            <HeaderStat label="Kosten" value={`$${totalCost.toFixed(2)}`} />
           </div>
           <button onClick={onClose} className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800">
             ✕
@@ -189,6 +261,18 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
             {tab === 'files' && (
               <div className="flex h-full">
                 <ul className="w-72 shrink-0 overflow-y-auto border-r border-zinc-800 p-2">
+                  {/* Rückweg zur Übersicht — ohne ihn wäre sie nach dem ersten Klick
+                      auf eine Datei nur noch über ein Neuladen erreichbar (FR-004). */}
+                  <li>
+                    <button
+                      onClick={() => setSelectedFile(null)}
+                      className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs ${
+                        selectedFile === null ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-900'
+                      }`}
+                    >
+                      Übersicht
+                    </button>
+                  </li>
                   {summary?.files.map((f) => {
                     const fileCommentCount = comments.filter((c) => c.filePath === f.path && c.status === 'open').length;
                     return (
@@ -202,15 +286,15 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                           <span className="truncate">{f.path}</span>
                           {fileCommentCount > 0 && <span title={`${fileCommentCount} offene(r) Kommentar(e)`}>💬</span>}
                           <span className="ml-auto whitespace-nowrap">
-                            <span className="text-emerald-500">+{f.additions}</span>{' '}
-                            <span className="text-red-500">−{f.deletions}</span>
+                            <span className="text-emerald-300">+{f.additions}</span>{' '}
+                            <span className="text-red-300">−{f.deletions}</span>
                           </span>
                         </button>
                       </li>
                     );
                   })}
                   {summary && summary.files.length === 0 && (
-                    <li className="px-2 py-4 text-xs text-zinc-600">
+                    <li className="px-2 py-4 text-xs text-zinc-400">
                       Keine Änderungen gegen {project?.defaultBranch}.
                     </li>
                   )}
@@ -222,23 +306,28 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                       filePath={selectedFile}
                       comments={comments}
                       jumpTo={jumpTo}
-                      onAddComment={
-                        reviewable
-                          ? (anchor, text) =>
-                              void api
-                                .addComment(featureId, {
-                                  filePath: selectedFile,
-                                  line: anchor.line,
-                                  side: anchor.side,
-                                  text,
-                                })
-                                .then(refreshComments)
-                                .catch(fail)
-                          : undefined
+                      /* Kommentieren ist betrachtend (FR-007) und in jedem Zustand möglich —
+                         auch in der Vorschau eines Features, das noch in Entwicklung ist. */
+                      onAddComment={(anchor, text) =>
+                        void api
+                          .addComment(featureId, {
+                            filePath: selectedFile,
+                            line: anchor.line,
+                            side: anchor.side,
+                            text,
+                          })
+                          .then(refreshComments)
+                          .catch(fail)
                       }
                     />
+                  ) : overview === null ? (
+                    <p className="p-4 text-sm text-zinc-400">Lade Änderungen …</p>
                   ) : (
-                    <p className="p-4 text-sm text-zinc-600">Datei links auswählen.</p>
+                    <ChangeOverview
+                      overview={overview}
+                      targetBranch={overviewTargetBranch}
+                      onSelectFile={setSelectedFile}
+                    />
                   )}
                 </div>
               </div>
@@ -248,9 +337,9 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               <ul className="h-full space-y-1 overflow-y-auto p-4">
                 {summary?.commits.map((c) => (
                   <li key={c.sha} className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900 px-3 py-2">
-                    <code className="text-xs text-zinc-500">{c.sha.slice(0, 8)}</code>
+                    <code className="text-xs text-zinc-400">{c.sha.slice(0, 8)}</code>
                     <span className="text-sm text-zinc-300">{c.subject}</span>
-                    <span className="ml-auto text-xs text-zinc-600">{new Date(c.date).toLocaleString('de-CH')}</span>
+                    <span className="ml-auto text-xs text-zinc-400">{new Date(c.date).toLocaleString('de-CH')}</span>
                   </li>
                 ))}
               </ul>
@@ -265,7 +354,7 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                   {treeSelected ? (
                     <FileEditor featureId={featureId} path={treeSelected} editable={!!reviewable} onError={fail} />
                   ) : (
-                    <p className="p-4 text-sm text-zinc-600">
+                    <p className="p-4 text-sm text-zinc-400">
                       Datei links auswählen. Gespeicherte Änderungen werden beim Freigeben als
                       Reviewer-Korrektur committet und erzwingen eine Re-Verifikation.
                     </p>
@@ -274,14 +363,16 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
               </div>
             )}
 
-            {tab === 'tests' && <TestsPane featureId={featureId} onError={fail} />}
+            {tab === 'tests' && (
+              <TestsPane featureId={featureId} verificationConfigured={verificationConfigured} onError={fail} />
+            )}
             {tab === 'resolution' && <ResolutionView resolutions={resolutions} />}
           </div>
 
           {/* Rechts: Audits + Kommentare */}
           <aside className="flex w-80 shrink-0 flex-col border-l border-zinc-800">
             <div className="min-h-0 flex-1 overflow-y-auto border-b border-zinc-800">
-              <AuditSidebar featureId={featureId} runs={runs} />
+              <AuditSidebar featureId={featureId} runs={runs} error={runsError} />
             </div>
             <div className="flex max-h-[45%] min-h-0 flex-col">
               <CommentsPanel
@@ -295,9 +386,12 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
           </aside>
         </div>
 
-        <footer className="flex items-center gap-3 border-t border-zinc-800 px-4 py-2.5">
-          {reviewable && project ? (
-            <>
+        <footer className="border-t border-zinc-800 px-4 py-2.5">
+          <ActionGroup
+            reason={blockedReason(approveVerdict, rejectV, retryV)}
+            actionsClassName="flex items-center gap-3"
+          >
+            {approveV?.availability !== 'hidden' && project && (
               <MergeTargetChooser
                 projectId={project.id}
                 featureName={feature.name}
@@ -306,39 +400,49 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
                 onChange={setTarget}
                 onError={fail}
               />
-              <span className="ml-auto flex items-center gap-2">
-                <button
+            )}
+            {/* Vorschau statt technischer Zustandsmeldung (FR-019). */}
+            {approveV?.availability === 'hidden' && (
+              <span className="text-xs text-zinc-400">
+                {feature.integration === 'merged'
+                  ? 'Bereits integriert.'
+                  : feature.integration === 'none'
+                    ? 'Vorschau — dieses Feature ist noch nicht in der Integration.'
+                    : approveV.reason}
+              </span>
+            )}
+            <span className="ml-auto flex items-center gap-2">
+              {retryV && (
+                <ActionButton
+                  verdict={retryV}
+                  onClick={() =>
+                    run(`retry:${featureId}`, () => api.retryIntegration(featureId).then(onClose))
+                  }
+                  className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
+                >
+                  ↻ Integration erneut anstoßen
+                </ActionButton>
+              )}
+              {rejectV && (
+                <ActionButton
+                  verdict={rejectV}
                   onClick={() => setShowReject(true)}
                   className="rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
                 >
                   ✗ Zurückweisen{openComments.length > 0 && ` (${openComments.length} Kommentare)`}
-                </button>
-                <button
-                  disabled={!target?.valid || busy}
+                </ActionButton>
+              )}
+              {approveVerdict && (
+                <ActionButton
+                  verdict={approveVerdict}
                   onClick={approve}
-                  className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
+                  className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium text-zinc-50 hover:bg-emerald-600"
                 >
                   ✓ Freigeben & Integrieren
-                </button>
-              </span>
-            </>
-          ) : (
-            <>
-              <span className="text-xs text-zinc-500">
-                {feature.integration === 'merged'
-                  ? 'Bereits integriert.'
-                  : `Keine Freigabe möglich — Zustand: ${feature.integration}.`}
-              </span>
-              {['verify_failed', 'gate_failed', 'conflict_escalated'].includes(feature.integration) && (
-                <button
-                  onClick={() => void api.retryIntegration(featureId).then(onClose).catch(fail)}
-                  className="ml-auto rounded border border-zinc-700 px-3 py-1.5 text-sm text-zinc-300 hover:bg-zinc-800"
-                >
-                  ↻ Integration erneut anstoßen
-                </button>
+                </ActionButton>
               )}
-            </>
-          )}
+            </span>
+          </ActionGroup>
         </footer>
       </div>
 
@@ -346,13 +450,13 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
         <Dialog title="Zurückweisen mit Feedback" onClose={() => setShowReject(false)}>
           {openComments.length > 0 && (
             <div className="mb-2 max-h-40 overflow-y-auto rounded border border-zinc-800 bg-zinc-950 p-2">
-              <p className="mb-1 text-[10px] tracking-wide text-zinc-500 uppercase">
+              <p className="mb-1 text-[10px] tracking-wide text-zinc-400 uppercase">
                 Geht mit — {openComments.length} offene(r) Kommentar(e):
               </p>
               <ul className="space-y-0.5 text-xs text-zinc-400">
                 {openComments.map((c) => (
                   <li key={c.id} className="truncate">
-                    <span className="font-mono text-[10px] text-sky-500">
+                    <span className="font-mono text-[10px] text-sky-300">
                       {c.filePath ? `${c.filePath}${c.line !== null ? `:${c.line}` : ''}` : 'Allgemein'}
                     </span>{' '}
                     {c.text}
@@ -395,13 +499,26 @@ export function ReviewPortal({ featureId, onClose }: { featureId: string; onClos
   );
 }
 
-function HeaderStat({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'bad' | undefined }) {
+/** `warn` (amber) für Sachverhalte, die Aufmerksamkeit brauchen, ohne rot zu sein. */
+const STAT_TONE = {
+  ok: 'text-emerald-400',
+  bad: 'text-red-400',
+  warn: 'text-amber-400',
+} as const;
+
+function HeaderStat({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone?: keyof typeof STAT_TONE | undefined;
+}) {
   return (
     <span className="flex items-center gap-1">
-      <span className="text-zinc-600">{label}</span>
-      <span className={tone === 'ok' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-zinc-300'}>
-        {value}
-      </span>
+      <span className="text-zinc-400">{label}</span>
+      <span className={tone ? STAT_TONE[tone] : 'text-zinc-300'}>{value}</span>
     </span>
   );
 }
@@ -421,9 +538,9 @@ function PortalTab({ active, onClick, children }: { active: boolean; onClick: ()
 
 /** Zeilenbasierter Roh-Diff (Konfliktauflösung pre/post). */
 export function DiffView({ diff }: { diff: string }) {
-  if (!diff) return <p className="p-4 text-sm text-zinc-600">Lade Diff …</p>;
+  if (!diff) return <p className="p-4 text-sm text-zinc-400">Lade Diff …</p>;
   return (
-    <pre className="overflow-x-auto rounded border border-zinc-800 bg-[#0a0a0c] p-3 font-mono text-xs leading-5">
+    <pre className="overflow-x-auto rounded border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs leading-5">
       {diff.split('\n').map((line, i) => {
         let cls = 'text-zinc-400';
         if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-zinc-500 font-semibold';
@@ -483,7 +600,7 @@ function ResolutionView({ resolutions }: { resolutions: ExecutionInfo[] }) {
         {diffs ? (
           <DiffView diff={(side === 'pre' ? diffs.pre : diffs.post) ?? 'Kein Diff aufgezeichnet.'} />
         ) : (
-          <p className="text-sm text-zinc-600">Lade …</p>
+          <p className="text-sm text-zinc-400">Lade …</p>
         )}
       </div>
     </div>

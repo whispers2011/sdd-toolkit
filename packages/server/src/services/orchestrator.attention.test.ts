@@ -16,6 +16,8 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { KnowledgeService } from './knowledgeService.js';
 import { Orchestrator } from './orchestrator.js';
+import { RunMeter } from './core/runMeter.js';
+import { SessionCore } from './core/sessionCore.js';
 
 /**
  * Service-Tests der zustandsgekoppelten Attention-Bereinigung (US1/US2/US4).
@@ -86,6 +88,12 @@ describe('Orchestrator — Attention-Reconcile', () => {
       features,
       sessions: new SessionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: new RunMeter({ executions: new ExecutionRepo(db) }),
+      sessionCore: new SessionCore({
+        sessions: new SessionRepo(db),
+        ptys: {} as unknown as PtySessionManager,
+        worktrees: {} as unknown as WorktreeManager,
+      }),
       attention,
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,

@@ -139,7 +139,7 @@ function renderInlineNode(node: AdfNode): string {
     case 'text':
       return applyMarks(node.text ?? '', node.marks ?? []);
     case 'mention':
-      // Erwähnungen als Klarnamen (FR-019); attrs.text ist z. B. "@Ada Lovelace".
+      // Erwähnungen als Klarnamen (FR-019); attrs.text ist z. B. "@Louis Michel".
       return String(node.attrs?.text ?? node.attrs?.displayName ?? '').replace(/^@/, '') || 'Unbekannt';
     case 'emoji':
       return String(node.attrs?.text ?? node.attrs?.shortName ?? '');
