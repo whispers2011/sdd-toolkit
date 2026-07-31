@@ -71,20 +71,46 @@ export const COLUMN_FOR_STAGE: Record<IntegrationStage, Column> = {
   merged: 'done',
 };
 
+/**
+ * Board-Spalte je Pipeline-Stufe — das Gegenstück zu {@link COLUMN_FOR_STAGE}
+ * für die Stufen. `COLUMN_FOR_STAGE` beantwortet die Zustandsfrage („wo liegt
+ * eine Karte im Zustand X"), diese hier die Stufenfrage („unter welcher
+ * Überschrift steht Stufe Y").
+ *
+ * Sie ist die EINE Zuordnung, aus der sowohl der Erklär-Dialog des Boards als
+ * auch die Gruppierung der Workflow-Ansicht entsteht — beide dürfen den Ablauf
+ * nicht unterschiedlich beschreiben (FR-011).
+ *
+ * Über `Record<LifecycleStageId, …>` vollständig getypt und ohne Fallback: eine
+ * neue Stufe bricht hier den Typcheck (FR-012, SC-010).
+ *
+ * Mit `COLUMN_FOR_STAGE` konsistent zu halten — die Stufe `manual_test` liegt in
+ * derselben Spalte wie der Zustand `awaiting_manual_test`, usw. Beide stehen
+ * bewusst nebeneinander, damit das beim Lesen auffällt.
+ */
+export const COLUMN_FOR_STEP: Record<LifecycleStageId, IntegrationColumn> = {
+  verify: 'verify',
+  review_gate: 'verify',
+  manual_test: 'accept',
+  human_review: 'review',
+  merge_queue: 'merge',
+  merged: 'done',
+};
+
 /** Spalten, in denen die Maschine arbeitet — schmal, ohne eigene Aktionsleiste. */
 export const AUTOMATIC_COLUMNS = new Set<Column>(['verify', 'merge']);
 
 /** Spalten, in denen ein Mensch entscheidet. Bestimmt auch den Erklärtext. */
 const HUMAN_COLUMNS = new Set<IntegrationColumn>(['accept', 'review']);
 
-/** Schritte der Integrations-Pipeline je Spalte, in Ausführungsreihenfolge. */
-const STEPS_FOR_COLUMN: Record<IntegrationColumn, LifecycleStageId[]> = {
-  verify: ['verify', 'review_gate'],
-  accept: ['manual_test'],
-  review: ['human_review'],
-  merge: ['merge_queue'],
-  done: ['merged'],
-};
+/**
+ * Stufen einer Spalte, in Ausführungsreihenfolge — ABGELEITET aus
+ * `INTEGRATION_STEPS` und `COLUMN_FOR_STEP`, nicht länger von Hand gepflegt.
+ * Die Reihenfolge kommt damit aus dem Ablauf selbst, nicht aus einer zweiten,
+ * still veraltenden Liste.
+ */
+export const stepsForColumn = (column: IntegrationColumn): LifecycleStageId[] =>
+  INTEGRATION_STEPS.filter((s) => COLUMN_FOR_STEP[s.id] === column).map((s) => s.id);
 
 const COLUMN_ICONS: Record<IntegrationColumn, (p: IconProps) => React.ReactElement> = {
   verify: VerifyIcon,
@@ -163,7 +189,7 @@ export function IntegrationColumnDialog({
   automation: AutomationSettings | null;
   onClose: () => void;
 }) {
-  const steps = STEPS_FOR_COLUMN[column]
+  const steps = stepsForColumn(column)
     .map((id) => INTEGRATION_STEPS.find((s) => s.id === id))
     .filter((s): s is IntegrationStep => s !== undefined);
   const stages = stagesIn(column);

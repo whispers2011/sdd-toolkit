@@ -18,6 +18,7 @@ import {
   featureProgressLabel,
   isOptionalPhase,
   orderedEnabledPhases,
+  rejectTargetPhase,
   stageTitle,
 } from './workflowModel.js';
 import type { Feature, IntegrationStage, PhaseState, PhaseStatus } from './types.js';
@@ -125,6 +126,21 @@ describe('isOptionalPhase', () => {
     for (const p of OPTIONAL_PHASES) expect(isOptionalPhase(p)).toBe(true);
     expect(isOptionalPhase('specify')).toBe(false);
     expect(isOptionalPhase('implement')).toBe(false);
+  });
+});
+
+describe('rejectTargetPhase', () => {
+  it('nimmt specify, wenn die Phase aktiv ist — auch wenn sie nicht die erste wäre', () => {
+    expect(rejectTargetPhase(['specify', 'plan', 'implement'])).toBe('specify');
+    expect(rejectTargetPhase(['clarify', 'specify'])).toBe('specify');
+  });
+
+  it('fällt ohne specify auf die erste geordnete Phase zurück', () => {
+    expect(rejectTargetPhase(['plan', 'tasks', 'implement'])).toBe('plan');
+  });
+
+  it('liefert null, wenn gar keine Phase aktiv ist', () => {
+    expect(rejectTargetPhase([])).toBeNull();
   });
 });
 

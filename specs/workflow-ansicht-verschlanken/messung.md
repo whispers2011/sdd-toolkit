@@ -62,7 +62,7 @@ Screenshot: `.sdd/s0-vorher.png` (git-excluded, nur zur Nachschau).
 
 Jeder spätere Fehlschlag ist damit eindeutig diesem Feature zuzuordnen.
 
-## S7 — Nachher (T041), nach US1, US2, US5, US6
+## S7 — Nachher (T041), vollständig (US1 – US6)
 
 Gleiche Bedingungen wie S0 (Projekt `sdd-toolkit`, Geltung Projekt-Standard, alle Abschnitte
 zugeklappt, Viewport 1200 × 844). Der Flussbereich ist auf `max-w-2xl` begrenzt, die Breite des
@@ -71,13 +71,25 @@ Fensters wirkt daher nicht auf die Höhe — Vorher und Nachher sind direkt verg
 | Kennzahl | Vorher | Nachher | Ziel | Ergebnis |
 |---|---|---|---|---|
 | Absätze „— keiner" (SC-001) | 32 | **0** | 0 | ✅ |
-| `scrollHeight` des Flussbereichs (SC-008) | 4706 px | **2296 px** | ≤ 2353 px (−50 %) | ✅ −51,2 % |
+| `scrollHeight` des Flussbereichs (SC-008) | 4706 px | **2333 px** | ≤ 2353 px (−50 %) | ✅ **−50,4 %** |
 
 Screenshot: `.sdd/s7-nachher.png`.
 
-**Zwischenstand, nicht Endstand**: US3 (Spaltengruppierung) und US4 (Rückkante) fehlen noch und
-bringen zusätzliche Zeilen — fünf Spaltenüberschriften und eine Kante. Die Messung ist nach deren
-Landung zu wiederholen; die heutige Reserve beträgt 57 px.
+### Verlauf der Messung
+
+| Stand | Höhe | Anteil |
+|---|---|---|
+| S0 — vorher | 4706 px | 100 % |
+| nach US1, US2, US5, US6 | 2296 px | 48,8 % |
+| **+ US3 (fünf Spaltenüberschriften) und US4 (Rückkante)** | 2435 px | 51,7 % — **Ziel verfehlt** |
+| + Umschalter „Phasenstart"/„Phasenende" nebeneinander | **2333 px** | **49,6 %** ✅ |
+
+US3 kostet Höhe: fünf Spaltenüberschriften plus die Rückkante bringen ~139 px zurück. Damit lag die
+Ansicht wieder über der Hälfte. Gegengerechnet wurde an der Stelle, an der noch echte Redundanz
+lag: die beiden Katalog-Umschalter einer Phasenkarte standen untereinander, jeder mit eigener
+Trennlinie — zwei Zeilen für zwei Wörter. Sie stehen jetzt nebeneinander in **einer** Zeile;
+aufgeklappt trägt jede Liste eine eigene Kopfzeile, beide bleiben unabhängig schaltbar (SC-003 und
+SC-004 danach erneut geprüft: 13 Einträge, alle 17 px hoch).
 
 ### Wo die Höhe verlorenging
 
@@ -87,7 +99,7 @@ Landung zu wiederholen; die heutige Reserve beträgt 57 px.
 | Katalog-Einträge von 4–6 Zeilen auf **eine** | FR-007, FR-008 |
 | Eskalations-Absatz, Wissens-Prosa, Präambel, Legende, Zwecksatz, Stufen-`detail` hinter ⓘ | FR-019 – FR-024 |
 | Artefaktzeile der Prompt-Karte einzeilig statt Fließtext | FR-022 |
-| Zweite Trennlinie zwischen „Phasenstart" und „Phasenende" entfernt (sie trennte nichts) | — |
+| Beide Katalog-Umschalter einer Phasenkarte in einer Zeile statt in zwei | — |
 
 ## Browser-Verifikation
 
@@ -106,6 +118,10 @@ Prüfinstanz auf 4899, Projekt `sdd-toolkit`.
 | **FR-028** — Scrollen | Scrollen **im** Panel schließt nicht, **außerhalb** schließt |
 | **FR-028** — Platzmangel | bei 500 px Fensterhöhe kippt das Panel nach oben, bleibt ganz im Viewport; bei 320 px auf 60vh gedeckelt mit eigenem `overflow-y`, Text vollständig |
 | **FR-028** — Touch | mit `hover: none` öffnet ein Tap das Panel |
+| **SC-005** — dieselbe Sprache wie das Board | Board zeigt PRÜFUNG · ABNAHME · REVIEW · MERGE · DONE; die Workflow-Ansicht dieselben Überschriften in derselben Reihenfolge, jede Stufe unter derselben Spalte (Verifikation + Review-Gate → Prüfung, Manuelle Abnahme → Abnahme, Menschliches Review → Review, Merge-Queue → Merge, Gemergt → Done) |
+| **SC-005 / US3-AS3** — Review-Agents aus | „Review-Gate" bleibt in Spalte „Prüfung" und ist als **übersprungen** markiert, verschwindet nicht |
+| **SC-006** — Rückkante | bei eingeschaltetem Gate „↑ Ablehnung → Spezifizieren" unter Spalte „Abnahme"; das ⓘ nennt Arbeitsauftrag in die bestehende Spezifikation, Veraltet-Markierung und erneuten Lebenszyklus |
+| **SC-006 / US4-AS3** — Gate aus | keine Kante mehr; „Manuelle Abnahme" bleibt als übersprungen in „Abnahme" stehen. Nach dem Wiedereinschalten ist die Kante zurück |
 | **SC-009 / FR-027** — die elf Bedienwege | siehe Tabelle unten |
 
 ### Die elf Bedienwege (T044), einzeln ausgeführt
@@ -128,21 +144,33 @@ Prüfinstanz auf 4899, Projekt `sdd-toolkit`.
 Prüfung gelöscht. Nachkontrolle: 0 Lebenszyklus-Schritte, 5 Agents mit unveränderten Auslösern —
 derselbe Stand wie vorher.
 
-## SC-010 — Drift-Guard-Probe (T042, teilweise)
+## SC-010 — Drift-Guard-Probe (T042)
 
 `'smoke_test'` versuchsweise in `INTEGRATION_STAGE_IDS` (`packages/shared/src/types.ts`) ergänzt:
 
 | Stelle | Reaktion |
 |---|---|
-| `STEP_ICON` (`WorkflowOverview.tsx`) | ✅ `pnpm typecheck` bricht: `TS2741: Property 'smoke_test' is missing … but required in type 'Record<…, ComponentType<IconProps>>'` |
+| `COLUMN_FOR_STEP` (`boardColumns.tsx:91`) | ✅ `pnpm typecheck` bricht: `TS2741: Property 'smoke_test' is missing … but required in type 'Record<…, IntegrationColumn>'` |
+| `STEP_ICON` (`WorkflowOverview.tsx:1146`) | ✅ `pnpm typecheck` bricht: `TS2741: Property 'smoke_test' is missing … but required in type 'Record<…, ComponentType<IconProps>>'` |
 | `INTEGRATION_STEPS` (`workflowModel.ts`) | ✅ `pnpm test` bricht: „INTEGRATION_STEPS-IDs sind exakt INTEGRATION_STAGE_IDS" |
-| `COLUMN_FOR_STEP` (`boardColumns.tsx`) | ⏳ noch nicht prüfbar — die Datei liegt nicht im Branch (Abhängigkeits-Gate, Phase 7) |
+
+Eine neue Stufe kann also nicht still in der falschen Spalte oder mit dem Icon einer anderen Stufe
+landen — genau der Fehler, den `manual_test` bis heute hatte.
 
 `INTEGRATION_STEPS` ist ein Array, kein `Record`; sein Wächter ist deshalb bauartbedingt der Test,
 nicht der Typcheck. Der quickstart erwartet „Fehler an beiden Stellen" — das trifft zu, nur greift
 an dieser einen Stelle `pnpm test` statt `pnpm typecheck`.
 
 Änderung anschließend zurückgenommen, `pnpm typecheck` wieder grün (alle vier Pakete „Done").
+
+### Nicht durchführbare Gegenprobe
+
+quickstart „SC-006, Schritt 4" verlangt, `specify` abzuschalten und zu prüfen, dass die Beschriftung
+auf die dann erste Phase zeigt. Das ist an der laufenden Anwendung **nicht möglich**: `specify`
+gehört nicht zu `OPTIONAL_PHASES` und lässt sich nicht abschalten (`isOptionalPhase('specify')`
+ist `false`, festgehalten in `workflowModel.test.ts`). Die Ableitung ist stattdessen dort belegt,
+wo sie prüfbar ist: `rejectTargetPhase` hat einen Test für genau diesen Fall (Liste ohne `specify`
+→ erste geordnete Phase). Die Ansicht liest dieselbe Funktion, kein Literal.
 
 ### Anmerkung zur Prüfinstanz
 

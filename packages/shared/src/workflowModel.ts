@@ -77,6 +77,20 @@ export function isOptionalPhase(phase: FeaturePhase): boolean {
   return OPTIONAL_PHASES.includes(phase);
 }
 
+/**
+ * Phase, auf die eine abgelehnte manuelle Abnahme zurücksetzt: `specify`, wenn
+ * aktiv, sonst die erste geordnete Phase. `null` bei leerer Phasenliste.
+ *
+ * Eine Regel, zwei Aufrufer: `mergeQueueService.rejectManualTest` FÜHRT den
+ * Rücksprung aus, die Workflow-Ansicht ZEICHNET ihn. Stünde die Regel an beiden
+ * Stellen, zeigte die Ansicht früher oder später auf eine andere Phase als die,
+ * auf die tatsächlich zurückgesetzt wird — und niemand merkte es.
+ */
+export function rejectTargetPhase(ordered: readonly FeaturePhase[]): FeaturePhase | null {
+  if (ordered.includes('specify')) return 'specify';
+  return ordered[0] ?? null;
+}
+
 // ---------- Automation-Dial ----------
 
 export interface AutomationMeta {

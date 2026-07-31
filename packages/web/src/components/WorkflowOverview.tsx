@@ -10,6 +10,7 @@ import {
   isOptionalPhase,
   lifecycleStage,
   orderedEnabledPhases,
+  rejectTargetPhase,
   resolveAutomation,
   shouldAutoProgress,
 } from '@sdd/shared';
@@ -36,6 +37,7 @@ import { AgentEditDialog } from './AgentEditDialog.js';
 import { LifecycleStepEditDialog } from './LifecycleStepEditDialog.js';
 import { Dialog } from './Sidebar.js';
 import { InfoPopover } from './InfoPopover.js';
+import { COLUMN_FOR_STEP, INTEGRATION_COLUMN_LABELS, type IntegrationColumn } from './boardColumns.js';
 import {
   AgentChip,
   StepChip,
@@ -268,6 +270,7 @@ export function WorkflowOverview() {
                 automation={automation}
                 project={project}
                 feature={scopedFeature}
+                phases={phases}
                 reviewAgents={nodeAgents('review_gate')}
                 onEditAgent={setEditingAgent}
                 stepsFor={nodeSteps}
@@ -601,7 +604,7 @@ function PromptCard({
           </InfoPopover>
         </div>
       )}
-      <LifecycleSteps stage="worktree_create" />
+      <LifecycleSteps stages={['worktree_create']} />
 
       <StepZone
         kind="before_worktree_create"
@@ -684,8 +687,7 @@ function PhaseCard({
         <KnowledgeIcon className="shrink-0" /> Projektwissen injiziert
       </div>
 
-      <LifecycleSteps stage="phase_start" />
-      <LifecycleSteps stage="phase_end" attached />
+      <LifecycleSteps stages={['phase_start', 'phase_end']} />
 
       {/* Schritte stehen ÜBER den Agents — die Anordnung spiegelt die
           Ausführungsreihenfolge: Schritte bereiten vor, Agents beurteilen. */}
@@ -727,46 +729,75 @@ function PhaseCard({
  * ist ein Testfehler, kein UI-Fall). Zustand ist bewusst flüchtig und lokal:
  * jede Instanz schaltet unabhängig, Startzustand zugeklappt (FR-014).
  */
-function LifecycleSteps({
-  stage,
-  attached = false,
-}: {
-  stage: LifecycleCatalogStageId;
-  /** Hängt direkt am vorigen Abschnitt — ohne eigene Trennlinie, die nichts trennt. */
-  attached?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const { title, when, steps, notDoneHere } = lifecycleStage(stage);
+function LifecycleSteps({ stages }: { stages: LifecycleCatalogStageId[] }) {
+  const [open, setOpen] = useState<LifecycleCatalogStageId[]>([]);
+  const toggle = (s: LifecycleCatalogStageId) =>
+    setOpen((cur) => (cur.includes(s) ? cur.filter((x) => x !== s) : [...cur, s]));
 
   return (
-    <div className={attached ? 'mt-1' : 'mt-2 border-t border-zinc-800 pt-2'}>
-      <div className="flex items-center gap-1.5">
-        {/* Der Titel kommt aus dem Katalog. Vorher stand an JEDER Stufe
-            „Was das Toolkit hier tut" — an einer Phasenkarte zweimal wortgleich
-            untereinander, ohne dass die Beschriftung sagte, welche welche ist. */}
-        <button
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          title={`${title}: die fest verdrahteten Schritte des Toolkits an dieser Stelle`}
-          className="flex items-center gap-1.5 text-left text-[11px] text-zinc-400 hover:text-zinc-200"
-        >
-          <ChevronDownIcon className={`shrink-0 ${open ? 'rotate-180' : ''}`} />
-          <span>
-            {title} ({steps.length})
-          </span>
-        </button>
-        <InfoPopover label={title}>
-          <p>{when}</p>
-          {notDoneHere && (
-            <p className="mt-2 border-t border-zinc-800 pt-1.5">
-              <span className="text-zinc-400">Nicht Aufgabe des Toolkits:</span> {notDoneHere}
-            </p>
-          )}
-        </InfoPopover>
+    <div className="mt-2 border-t border-zinc-800 pt-2">
+      {/* Die Umschalter stehen NEBENEINANDER. An einer Phasenkarte sind es zwei
+          („Phasenstart"/„Phasenende"); untereinander waren das zwei Zeilen plus
+          eine Trennlinie, die nichts trennte. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        {stages.map((stage) => {
+          const { title, when, steps, notDoneHere } = lifecycleStage(stage);
+          return (
+            <div key={stage} className="flex items-center gap-1.5">
+              {/* Der Titel kommt aus dem Katalog. Vorher stand an JEDER Stufe
+                  „Was das Toolkit hier tut" — an einer Phasenkarte zweimal
+                  wortgleich, ohne dass die Beschriftung sagte, welche welche ist. */}
+              <button
+                onClick={() => toggle(stage)}
+                aria-expanded={open.includes(stage)}
+                title={`${title}: die fest verdrahteten Schritte des Toolkits an dieser Stelle`}
+                className="flex items-center gap-1.5 text-left text-[11px] text-zinc-400 hover:text-zinc-200"
+              >
+                <ChevronDownIcon className={`shrink-0 ${open.includes(stage) ? 'rotate-180' : ''}`} />
+                <span>
+                  {title} ({steps.length})
+                </span>
+              </button>
+              <InfoPopover label={title}>
+                <p>{when}</p>
+                {notDoneHere && (
+                  <p className="mt-2 border-t border-zinc-800 pt-1.5">
+                    <span className="text-zinc-400">Nicht Aufgabe des Toolkits:</span> {notDoneHere}
+                  </p>
+                )}
+              </InfoPopover>
+            </div>
+          );
+        })}
       </div>
 
-      {open && (
-        <ol className="mt-1.5 space-y-1">
+      {stages
+        .filter((s) => open.includes(s))
+        .map((stage) => {
+          const { title, steps } = lifecycleStage(stage);
+          return (
+            <LifecycleStepList key={stage} title={title} steps={steps} multi={stages.length > 1} />
+          );
+        })}
+    </div>
+  );
+}
+
+/** Die aufgeklappte Schrittliste einer Stufe — eine Zeile je Eintrag. */
+function LifecycleStepList({
+  title,
+  steps,
+  multi,
+}: {
+  title: string;
+  steps: ReturnType<typeof lifecycleStage>['steps'];
+  /** Bei mehreren Umschaltern in einer Reihe sagt eine Kopfzeile, welche Liste das ist. */
+  multi: boolean;
+}) {
+  return (
+    <>
+      {multi && <div className="mt-1.5 text-[10px] uppercase tracking-wide text-zinc-500">{title}</div>}
+      <ol className="mt-1.5 space-y-1">
           {steps.map((step, i) => (
             /* EINE Zeile je Eintrag: Nummer + Name, rechts das ⓘ mit allen
                übrigen Feldern. Vorher belegte jeder Eintrag 4–6 Zeilen. */
@@ -794,18 +825,8 @@ function LifecycleSteps({
               </InfoPopover>
             </li>
           ))}
-        </ol>
-      )}
-    </div>
-  );
-}
-
-function NodeHeader({ icon: Icon, title }: { icon: ComponentType<IconProps>; title: string }) {
-  return (
-    <div className="flex items-center gap-2">
-      <Icon className="text-zinc-400" />
-      <span className="text-sm font-semibold text-zinc-100">{title}</span>
-    </div>
+      </ol>
+    </>
   );
 }
 
@@ -1012,6 +1033,7 @@ function IntegrationBlock({
   automation,
   project,
   feature,
+  phases,
   reviewAgents,
   onEditAgent,
   stepsFor,
@@ -1021,6 +1043,8 @@ function IntegrationBlock({
   automation: AutomationSettings;
   project: { integrationMode: string; mergeMode: string; verifyCommands: unknown[] };
   feature: Feature | null;
+  /** Aktive Phasen in Modellreihenfolge — Quelle des Rücksprungziels (FR-013). */
+  phases: FeaturePhase[];
   reviewAgents: NodeAgent[];
   onEditAgent: (a: AgentDefinition) => void;
   stepsFor: (t: LifecycleTrigger) => NodeStep[];
@@ -1041,30 +1065,92 @@ function IntegrationBlock({
         {feature && feature.integration !== 'none' && <StageBadge stage={feature.integration} />}
       </div>
 
-      <LifecycleSteps stage="integration" />
+      <LifecycleSteps stages={['integration']} />
 
       <div className="mt-3 flex flex-col">
-        {INTEGRATION_STEPS.map((step, i) => (
-          <div key={step.id} className="flex flex-col">
-            <IntegrationStepPill
-              step={step}
-              automation={automation}
-              project={project}
-              reviewAgents={step.showsReviewGateAgents ? reviewAgents : null}
-              onEditAgent={onEditAgent}
-              beforeSteps={stepsFor({ kind: 'before_stage', stage: step.id })}
-              afterSteps={stepsFor({ kind: 'after_stage', stage: step.id })}
-              onEditStep={onEditStep}
-              onOpenHub={() => onOpenHub(step)}
-            />
-            {i < INTEGRATION_STEPS.length - 1 && (
-              <div className="flex justify-center py-0.5 text-zinc-600">
-                <ArrowRightIcon className="rotate-90" />
+        {integrationColumnGroups().map((group, gi) => (
+          <div key={group.column} className="flex flex-col">
+            {/* Überschrift wortgleich mit der Board-Spalte — dieselbe Konstante,
+                damit Board und Ablauf denselben Schritt nicht verschieden nennen. */}
+            <div className="mb-1 mt-1 flex items-center gap-2">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                {INTEGRATION_COLUMN_LABELS[group.column]}
+              </span>
+              <span className="h-px flex-1 bg-zinc-800" />
+            </div>
+            {group.steps.map((step, i) => (
+              <div key={step.id} className="flex flex-col">
+                <IntegrationStepPill
+                  step={step}
+                  automation={automation}
+                  project={project}
+                  reviewAgents={step.showsReviewGateAgents ? reviewAgents : null}
+                  onEditAgent={onEditAgent}
+                  beforeSteps={stepsFor({ kind: 'before_stage', stage: step.id })}
+                  afterSteps={stepsFor({ kind: 'after_stage', stage: step.id })}
+                  onEditStep={onEditStep}
+                  onOpenHub={() => onOpenHub(step)}
+                />
+                {/* Der Pfeil bleibt zwischen ALLEN Stufen — auch über eine
+                    Spaltengrenze hinweg, denn der Ablauf läuft weiter. */}
+                {!(gi === INTEGRATION_COLUMN_GROUP_COUNT - 1 && i === group.steps.length - 1) && (
+                  <div className="flex justify-center py-0.5 text-zinc-600">
+                    <ArrowRightIcon className="rotate-90" />
+                  </div>
+                )}
               </div>
+            ))}
+            {group.column === 'accept' && automation.manualTestGate === true && (
+              <RejectEdge phases={phases} />
             )}
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Die Integrationsstufen, gruppiert nach Board-Spalte.
+ *
+ * Sowohl die Spaltenreihenfolge als auch die Stufenreihenfolge entstehen aus
+ * `INTEGRATION_STEPS` — die erste Stufe einer Spalte bestimmt deren Position
+ * (FR-010). Keine zweite Liste, die still veralten könnte.
+ */
+function integrationColumnGroups(): { column: IntegrationColumn; steps: IntegrationStep[] }[] {
+  const groups: { column: IntegrationColumn; steps: IntegrationStep[] }[] = [];
+  for (const step of INTEGRATION_STEPS) {
+    const column = COLUMN_FOR_STEP[step.id];
+    const last = groups[groups.length - 1];
+    if (last && last.column === column) last.steps.push(step);
+    else groups.push({ column, steps: [step] });
+  }
+  return groups;
+}
+
+const INTEGRATION_COLUMN_GROUP_COUNT = integrationColumnGroups().length;
+
+/**
+ * Die Kante zurück: eine abgelehnte manuelle Abnahme wirft das Feature nicht
+ * weg, sie schickt es an die Spezifikation zurück. Das war bisher nur Prosa —
+ * jetzt ist es eine sichtbare Kante im Diagramm (FR-013, FR-014).
+ *
+ * Die Zielphase kommt aus `rejectTargetPhase`, derselben Funktion, die der
+ * Server ausführt — kein Literal `'specify'`, das still veraltet, sobald die
+ * Phase abschaltbar wird.
+ */
+function RejectEdge({ phases }: { phases: FeaturePhase[] }) {
+  const target = rejectTargetPhase(phases);
+  if (!target) return null;
+  return (
+    <div className="flex items-center justify-center gap-1.5 py-1 text-amber-400">
+      <ArrowRightIcon className="-rotate-90" />
+      <span className="text-[11px]">Ablehnung → {PHASE_META[target].label}</span>
+      <InfoPopover label={`Ablehnung → ${PHASE_META[target].label}`}>
+        Die Befunde gehen als Arbeitsauftrag in die <strong className="text-zinc-200">bestehende</strong>{' '}
+        Spezifikation — sie wird überarbeitet, nicht neu erstellt. Alles Nachgelagerte wird als veraltet
+        markiert, und der Lebenszyklus läuft von „{PHASE_META[target].label}" an erneut.
+      </InfoPopover>
     </div>
   );
 }
@@ -1141,7 +1227,7 @@ function IntegrationStepPill({
 
       {/* Die Merge-Arbeit passiert hier (rebase, Konfliktauflösung, Re-Verify, Merge) —
           nicht am terminalen Schritt 'merged', der nur das Ergebnis ist. */}
-      {step.id === 'merge_queue' && <LifecycleSteps stage="merge" />}
+      {step.id === 'merge_queue' && <LifecycleSteps stages={['merge']} />}
 
       {step.id === 'verify' && (
         <p className="mt-1 text-[10px] text-zinc-600">

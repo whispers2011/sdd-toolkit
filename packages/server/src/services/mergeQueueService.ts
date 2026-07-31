@@ -10,6 +10,7 @@ import {
   manualTestDueMessage,
   mergedNotificationBody,
   orderedPhases,
+  rejectTargetPhase,
   reopenLastPhase,
   reviewDueMessage,
   taskProgressText,
@@ -414,7 +415,10 @@ export class MergeQueueService {
     // alles Nachgelagerte als `stale` — die Artefakte bleiben liegen, sie sollen
     // überarbeitet und nicht neu erstellt werden. Der Zustand hängt bewusst
     // NICHT am Orchestrator; ohne ihn (Tests) stimmt die Buchführung trotzdem.
-    const target = 'specify' in feature.phases ? 'specify' : orderedPhases(feature.phases)[0];
+    // Dieselbe Regel, die die Workflow-Ansicht zeichnet (FR-013). `orderedPhases`
+    // filtert FEATURE_PHASES auf die vorhandenen Schlüssel — `'specify' in phases`
+    // und `orderedPhases(phases).includes('specify')` sind damit gleichbedeutend.
+    const target = rejectTargetPhase(orderedPhases(feature.phases));
     this.deps.features.savePhases(
       featureId,
       target ? discardPhase(feature.phases, target).phases : reopenLastPhase(feature.phases).phases,
