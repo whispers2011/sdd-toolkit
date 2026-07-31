@@ -256,21 +256,21 @@ Abnahmekriterium, das über *Abwesenheit* redet — es braucht einen Test, keine
 **Independent Test**: Den Quellcode nach den charakteristischen Bestandteilen jeder Aufgabe
 durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
 
-- [ ] T043 [US4] Wächter in `packages/server/src/services/core/singleImplementation.test.ts`: liest
+- [X] T043 [US4] Wächter in `packages/server/src/services/core/singleImplementation.test.ts`: liest
       `packages/server/src` rekursiv (`readdirSync`, ohne `*.test.ts`) und lässt je Merkmal genau
       eine Fundstelle zu — `selectEventsForWindow(`/`summarizeEvents(` → `services/core/runMeter.ts`,
       `buildClaudeArgv(` → `services/core/sessionCore.ts` (+ Definition in
       `pty/commandBuilder.ts`), `worktrees.create(` → `services/core/workspace.ts`, `ptys.spawn(` →
       `services/core/sessionCore.ts` **und** `api/server.ts` (Projekt-Terminal, `kind: 'shell'`,
       keine Claude-Session — mit Begründung in der Erlaubnisliste, research.md D9)
-- [ ] T044 [US4] Regressionstest zu FR-020 in `packages/server/src/services/orchestrator.test.ts`:
+- [X] T044 [US4] Regressionstest zu FR-020 in `packages/server/src/services/orchestrator.test.ts`:
       `checkWorkWithoutRun` schlägt für eine arbeitende `chat_work`-Session **nicht** an; der Filter
       `session.kind !== 'feature'` bleibt stehen
-- [ ] T045 [US4] Stichprobe SC-008 durchführen: das Nachtragsfenster in
+- [X] T045 [US4] Stichprobe SC-008 durchführen: das Nachtragsfenster in
       `packages/server/src/services/core/runMeter.ts` probeweise von 8 s auf 6 s ändern, die Zahl der
       zu öffnenden Dateien zählen (Erwartung: genau eine), Änderung zurücknehmen und das Ergebnis in
       [quickstart.md](./quickstart.md) §4.2 festhalten
-- [ ] T046 [US4] Tor Schritt 4: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — der
+- [X] T046 [US4] Tor Schritt 4: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — der
       Wächter läuft ab jetzt im bestehenden `pnpm test` mit
 
 **Checkpoint**: Der Zwilling kann nicht zurückkommen, ohne dass die Suite rot wird.

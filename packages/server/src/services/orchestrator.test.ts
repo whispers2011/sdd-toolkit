@@ -688,6 +688,20 @@ describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
     expect(raise).not.toHaveBeenCalled();
   });
 
+  /**
+   * FR-020: Der Wächter bleibt feature-only, auch nachdem Chat und Phase sich einen
+   * Kern teilen. Der Chat verbucht seinen Lauf atomar beim Turn-Abschluss — es gibt
+   * also nie ein Zeitfenster, in dem ein Lauf „offen" wäre, und der Wächter schlüge
+   * für JEDE arbeitende Chat-Session an. Ihn sinnvoll auszudehnen hiesse, dem Chat
+   * zuerst ein über die Turn-Dauer offenes Lauffenster zu geben; das ist ein eigener
+   * Schnitt (spec.md, Out of Scope).
+   */
+  it('schweigt für eine arbeitende Chat-Session — der Wächter bleibt feature-only (FR-020)', () => {
+    const { orch, raise } = setupZuordnung({ kind: 'chat_work', featureId: null, conversationId: 'c1' });
+    orch.checkWorkWithoutRun(JETZT);
+    expect(raise).not.toHaveBeenCalled();
+  });
+
   it('schweigt, wenn nie Ausgabe kam', () => {
     const { orch, raise } = setupZuordnung({ lastOutputAt: 0 });
     orch.checkWorkWithoutRun(JETZT);

@@ -203,6 +203,20 @@ von 8 s auf 6 s) und zählen, wie viele Dateien geöffnet werden müssen.
 
 **Erwartung**: **genau eine** (`services/core/runMeter.ts`). Änderung danach zurücknehmen.
 
+**Durchgeführt am 31.07.2026** — `attempt(8_000, false)` → `attempt(6_000, false)`:
+
+```sh
+git diff --name-only packages/server/src | grep -v "\.test\."
+# → packages/server/src/services/core/runMeter.ts
+grep -rn "8_000" packages/server/src --include="*.ts" | grep -v "\.test\."
+# → keine weitere Fundstelle
+```
+
+Geöffnete Dateien: **1**. Änderung zurückgenommen. Vor der Umstellung wäre dieselbe
+Änderung an *keiner* zweiten Stelle möglich gewesen — der Chat hatte gar kein
+Nachtragsfenster; man hätte es dort erst bauen müssen. Genau das ist der Unterschied,
+den SC-008 misst.
+
 **Durchgeführt am 31.07.2026** — Nachtragsfenster `attempt(8_000, false)` → `attempt(6_000, false)`:
 
 ```sh
