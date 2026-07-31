@@ -27,13 +27,22 @@ import {
 // ---------- S1: Auslöser-Katalog ----------
 
 describe('Auslöser-Katalog (S1)', () => {
-  it('hat genau 20 Auslöser: 10 Aufmerksamkeit + 2 Ablauf + 8 Phasen (FR-004, SC-001)', () => {
-    expect(SOUND_TRIGGERS).toHaveLength(20);
+  it('deckt alle Meldungsarten ab: Aufmerksamkeit + 2 Ablauf + Phasen (FR-004, SC-001)', () => {
     const byGroup = (g: string) => SOUND_TRIGGERS.filter((t) => t.group === g);
-    expect(byGroup('attention')).toHaveLength(10);
+    // 17 statt ursprünglich 10: die Nachbar-Features haben am 30./31.07.2026 sieben
+    // Meldungsarten ergänzt (verification_unconfigured, run_unpriced, phase_false_start,
+    // project_without_runs, metering_conflict, server_outage, lifecycle_step_failed).
+    // Die eigentliche Absicherung ist `Record<AttentionKind, …>` in soundCatalog.ts — sie
+    // bricht den Typecheck, sobald eine Art fehlt. Diese Zahl ist die Gegenprobe dazu.
+    expect(byGroup('attention')).toHaveLength(17);
     expect(byGroup('flow')).toHaveLength(2);
     // 7 konkrete Phasen + der generische Eintrag.
     expect(byGroup('phase')).toHaveLength(FEATURE_PHASES.length + 1);
+    // Gesamtzahl abgeleitet statt gepinnt — sonst bricht der Test bei jeder neuen Meldungsart
+    // ein zweites Mal an derselben Ursache.
+    expect(SOUND_TRIGGERS).toHaveLength(
+      byGroup('attention').length + byGroup('flow').length + byGroup('phase').length,
+    );
   });
 
   it('leitet die Phasen-Auslöser aus FEATURE_PHASES ab (S1.2)', () => {
@@ -141,11 +150,13 @@ describe('Standardbelegung (S3)', () => {
     });
   });
 
-  it('lässt die übrigen 18 Auslöser stumm (FR-012/FR-014, SC-003/SC-004)', () => {
+  it('lässt alle übrigen Auslöser stumm (FR-012/FR-014, SC-003/SC-004)', () => {
     const belegt = Object.keys(DEFAULT_SOUND_SETTINGS.reactions);
     expect(belegt).toHaveLength(2);
     const stumm = SOUND_TRIGGERS.filter((t) => !belegt.includes(t.id));
-    expect(stumm).toHaveLength(18);
+    // Abgeleitet statt gepinnt: die Aussage ist „alles ausser den zwei belegten schweigt",
+    // nicht „es sind genau 18". Eine neue Meldungsart darf diesen Test nicht brechen.
+    expect(stumm).toHaveLength(SOUND_TRIGGERS.length - belegt.length);
     for (const t of stumm) {
       expect(resolveReaction(DEFAULT_SOUND_SETTINGS, eventFor(t.id)), t.id).toBeNull();
     }

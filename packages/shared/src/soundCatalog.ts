@@ -55,6 +55,17 @@ const ATTENTION_LABELS: Record<AttentionKind, string> = {
   run_interrupted: 'Lauf abgebrochen',
   phase_gate_failed: 'Phasen-Gate fehlgeschlagen',
   approval_required: 'Freigabe nötig',
+  // Nachgetragen bei der Zusammenführung am 31.07.2026: die Nachbar-Features haben sieben
+  // Meldungsarten ergänzt (Ehrlichkeit vor dem Merge, Plausibilitätsprüfung, Server-Ausfälle,
+  // eigene Lebenszyklus-Schritte). Der Drift-Guard oben hat das erwartungsgemäss gemeldet —
+  // genau dafür ist er gebaut.
+  verification_unconfigured: 'Keine Verifikation konfiguriert',
+  run_unpriced: 'Verbrauch ohne Preis',
+  phase_false_start: 'Phase lief nie an',
+  project_without_runs: 'Projekt ohne Läufe',
+  metering_conflict: 'Messung widersprüchlich',
+  server_outage: 'Server war weg',
+  lifecycle_step_failed: 'Lebenszyklus-Schritt fehlgeschlagen',
 };
 
 /**
