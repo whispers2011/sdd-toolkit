@@ -205,11 +205,11 @@ export const LIFECYCLE_CATALOG: Record<LifecycleCatalogStageId, LifecycleStage> 
         id: 'transcript-start-mark',
         name: 'Transkript-Startmarke festhalten',
         description:
-          'Pfad und Byte-Offset des Transkripts werden als Startmarke des Laufs notiert. Sie ist später die untere Grenze der Verbrauchsmessung.',
+          'Pfad und Byte-Offset des Transkripts werden als Startmarke des Laufs notiert. Sie ist später die untere Grenze der Verbrauchsmessung. Derselbe Baustein setzt die Marke auch für einen Chat-Turn.',
         trigger: 'unmittelbar vor dem Kontext-Reset',
         location: {
-          file: 'packages/server/src/services/orchestrator.ts',
-          symbol: 'Orchestrator.transcriptMarkFor',
+          file: 'packages/server/src/services/core/runMeter.ts',
+          symbol: 'markSession',
         },
         orderNote:
           'Die Marke MUSS vor dem Kontext-Reset gesetzt werden. Wird sie erst danach genommen, fällt der Verbrauch des Resets (`/compact`, `/clear`) aus der Messung — der optimierte Lauf sähe billiger aus, als er ist, und der Vergleich mit vollem Kontext wäre wertlos.',
@@ -288,22 +288,22 @@ export const LIFECYCLE_CATALOG: Record<LifecycleCatalogStageId, LifecycleStage> 
         id: 'meter-usage',
         name: 'Verbrauch messen',
         description:
-          'Der Verbrauch kommt vorrangig aus den Meldungen der CLI; liegen keine vor, wird das Transkript-Delta des Turns gemessen. Genau ein Schreibpfad je Lauf — die Zahlen beider Quellen werden nie addiert.',
+          'Der Verbrauch kommt vorrangig aus den Meldungen der CLI; liegen keine vor, wird das Transkript-Delta des Turns gemessen. Genau ein Schreibpfad je Lauf — die Zahlen beider Quellen werden nie addiert. Ein Chat-Turn wird nach genau derselben Regel abgerechnet.',
         trigger: 'Phasenabschluss',
         location: {
-          file: 'packages/server/src/services/orchestrator.ts',
-          symbol: 'Orchestrator.finishWithMetering',
+          file: 'packages/server/src/services/core/runMeter.ts',
+          symbol: 'RunMeter.finish',
         },
       },
       {
         id: 'late-reconcile',
         name: 'Zahlen nachtragen',
         description:
-          'Meldungen treffen in Intervallen ein, und die Schlusszeilen eines Turns werden erst nach dem Stop geschrieben. Der Lauf wird darum nachgerechnet — jedes Mal das volle Fenster neu summiert, nie addiert.',
+          'Meldungen treffen in Intervallen ein, und die Schlusszeilen eines Turns werden erst nach dem Stop geschrieben. Der Lauf wird darum nachgerechnet — fortgeschrieben statt neu summiert, sodass die Zahl nur steigen und jede Meldung nur einmal zählen kann.',
         trigger: '8 s nach dem Abschluss und erneut am Ende des Nachlauffensters',
         location: {
-          file: 'packages/server/src/services/orchestrator.ts',
-          symbol: 'Orchestrator.scheduleLateReconcile',
+          file: 'packages/server/src/services/core/runMeter.ts',
+          symbol: 'RunMeter.scheduleLateReconcile',
         },
         condition:
           'nur bis zum Ablauf des Nachlauffensters; danach gilt die Zahl als endgültig und spätere Meldungen verfallen',

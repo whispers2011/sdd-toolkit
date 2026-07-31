@@ -16,6 +16,7 @@ import { LifecycleStepRepo } from './db/lifecycleStepRepo.js';
 import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { PlausibilityRepo } from './db/plausibilityRepo.js';
 import { PlausibilityService } from './services/plausibilityService.js';
+import { RunMeter } from './services/core/runMeter.js';
 import { KnowledgeService } from './services/knowledgeService.js';
 import { AtlassianMcpClient } from './services/atlassianMcpClient.js';
 import { JiraBrowseService } from './services/jiraBrowseService.js';
@@ -174,6 +175,22 @@ async function main(): Promise<void> {
     state: new PlausibilityRepo(db),
   });
 
+  // Turn messen: EIN Baustein für beide Pfade (FR-002). Wer die Messung verbessert,
+  // verbessert sie für Chat und Phase in einem Schritt.
+  const runMeter = new RunMeter({
+    executions,
+    telemetry,
+    plausibility,
+    // Wächst das Transkript nach dem Abschluss noch, wandert der End-Offset des
+    // Lauf-Logs mit. Nur der Phasen-Pfad hat ein solches Log — ein Chat-Turn hat keins,
+    // und der Telemetrie-Nachtrag hat den Offset ohnehin nie berührt.
+    onApplied: (session, mark, source) => {
+      if (source === 'transcript' && session.kind === 'feature') {
+        orchestrator.persistTranscriptRange(session, mark);
+      }
+    },
+  });
+
   orchestrator = new Orchestrator({
     projects,
     features,
@@ -187,6 +204,7 @@ async function main(): Promise<void> {
     featureDocuments,
     agentGate,
     lifecycleSteps,
+    meter: runMeter,
     dataDir: config.dataDir,
     telemetry,
     plausibility,
@@ -237,8 +255,8 @@ async function main(): Promise<void> {
     worktrees,
     ptys,
     orchestrator,
+    meter: runMeter,
     dataDir: config.dataDir,
-    telemetry,
   });
   orchestrator.attachChatWork(chatWork);
 

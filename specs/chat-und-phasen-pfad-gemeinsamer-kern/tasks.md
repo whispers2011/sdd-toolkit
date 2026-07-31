@@ -82,84 +82,84 @@ Kosten, dieselbe Quelle. Abweichung 0.
 
 ### Vorarbeiten (andere Dateien, parallel)
 
-- [ ] T008 [P] [US1] `held: Set<string>` → `holds: Map<string, number>` nach
+- [X] T008 [P] [US1] `held: Set<string>` → `holds: Map<string, number>` nach
       [contracts/telemetry-store.md](./contracts/telemetry-store.md) in
       `packages/server/src/telemetry/telemetryStore.ts`: `hold` zählt hoch, `release` zählt runter
       und verwirft den Puffer nicht (T3), `sweep` fragt `holds.has(key)`, `forget` unverändert (T4)
-- [ ] T009 [P] [US1] Tests zu T1–T3 in `packages/server/src/telemetry/telemetryStore.test.ts`:
+- [X] T009 [P] [US1] Tests zu T1–T3 in `packages/server/src/telemetry/telemetryStore.test.ts`:
       überlappende Anmeldungen zweier Läufe auf derselben Marke (t0 hold, t305 release → Puffer
       bleibt), Zähler wird nie negativ, bestehende Tests (Zeilen 120–131) bleiben unangetastet (T5)
-- [ ] T010 [P] [US1] `ExecutionStartInput.startedAt?: number` (Vorgabe `Date.now()`) in
+- [X] T010 [P] [US1] `ExecutionStartInput.startedAt?: number` (Vorgabe `Date.now()`) in
       `packages/server/src/db/repos.ts` — schreibt in die vorhandene Spalte `executions.started_at`,
       keine Migration, die übrigen sieben Aufrufer bleiben unverändert
-- [ ] T011 [P] [US1] Test zu T010 in `packages/server/src/db/repos.test.ts`: `start({ startedAt })`
+- [X] T011 [P] [US1] Test zu T010 in `packages/server/src/db/repos.test.ts`: `start({ startedAt })`
       schreibt den mitgegebenen Wert, `start()` ohne das Feld weiterhin `Date.now()`
 
 ### Der Kern: Turn messen
 
-- [ ] T012 [US1] `RunMark`, `markSession(session, startedAt)` und `startOffsetIn(path, mark)` mit
+- [X] T012 [US1] `RunMark`, `markSession(session, startedAt)` und `startOffsetIn(path, mark)` mit
       den drei Fällen aus data-model.md §3 (gleiche Datei / Dateiwechsel → 0 / beim Start unbekannt
       → `offsetAtTimestamp`) in `packages/server/src/services/core/runMeter.ts`
-- [ ] T013 [US1] `RunMeter` mit `hold`, `measure` und `finish`: die dreistufige Kaskade aus
+- [X] T013 [US1] `RunMeter` mit `hold`, `measure` und `finish`: die dreistufige Kaskade aus
       [contracts/run-meter.md](./contracts/run-meter.md) — Meldungen im Fenster
       `[mark.startedAt, until]`, sonst Transkript-Delta, sonst Schätzung aus dem Scrollback; Stufe 2
       läuft nur, wenn Stufe 1 `null` liefert (kein Addieren) — in
       `packages/server/src/services/core/runMeter.ts`
-- [ ] T014 [US1] `TelemetryAccum` je `executionId` (`seen`, `total`, `byOrigin`, `model`) mit
+- [X] T014 [US1] `TelemetryAccum` je `executionId` (`seen`, `total`, `byOrigin`, `model`) mit
       Dedupe über `requestId` (M2), monotonem Fortschreiben (M1) und `costMicros = null`, solange
       keine Meldung einen Betrag trug (R5) in `packages/server/src/services/core/runMeter.ts`
-- [ ] T015 [US1] Nachtrag in `packages/server/src/services/core/runMeter.ts`: zweimal nachmessen
+- [X] T015 [US1] Nachtrag in `packages/server/src/services/core/runMeter.ts`: zweimal nachmessen
       (8 s und 5 min, Timer `unref`'d, M4), abgelehnte Nachträge loggen statt zu senken (M5), am
       Fensterende `telemetry.release(session.id)` statt `forget` (M3), `onApplied`-Rückruf und
       `bus.emitEvent('execution_updated', { executionId, featureId })` (M6)
-- [ ] T016 [US1] Turn-Fenster in `packages/server/src/services/core/runMeter.ts`: `openTurn`
+- [X] T016 [US1] Turn-Fenster in `packages/server/src/services/core/runMeter.ts`: `openTurn`
       (idempotent, `markSession` + `hold`), `closeTurn` (Lauf mit `startedAt` des Fensters anlegen,
       dann `finish` — M10; Rückfallebene: Ende des Vorgängerturns, ersatzweise `session.startedAt`),
       `abandon` (Fenster verwerfen, freigeben, nichts verbuchen — M9), `dispose`
 
 ### Die beiden Pfade umhängen
 
-- [ ] T017 [US1] `finishWithMetering`, `meterFromTelemetry`, `meterTurn`, `scheduleLateReconcile`,
+- [X] T017 [US1] `finishWithMetering`, `meterFromTelemetry`, `meterTurn`, `scheduleLateReconcile`,
       `reconcileTranscriptTail`, `telemetryAccum*`, `startOffsetIn`, `transcriptMarkFor`,
       `TelemetryAccum`, `emptyUsageTotals`, `addTotals` aus
       `packages/server/src/services/orchestrator.ts` entfernen; `launchPhase` ruft `markSession` +
       `meter.hold`, `handleTurnCompleted`/`handleExit` rufen `meter.finish`; `RunningPhase` wird
       `RunMark & { phase; promptConfirmed }`
-- [ ] T018 [US1] `persistTranscriptRange` in `packages/server/src/services/orchestrator.ts` behalten,
+- [X] T018 [US1] `persistTranscriptRange` in `packages/server/src/services/orchestrator.ts` behalten,
       `startOffsetIn` aus dem Kern importieren und die Funktion an den `onApplied`-Rückruf hängen
-- [ ] T019 [US1] `meterTurn`, `usageForTurn`, `turnStartedAt`, `turnTranscriptOffset` aus
+- [X] T019 [US1] `meterTurn`, `usageForTurn`, `turnStartedAt`, `turnTranscriptOffset` aus
       `packages/server/src/services/chatWorkService.ts` entfernen; in `handleStatusChange` bei
       `status === 'working'` → `meter.openTurn(session)`, beim Effekt `turn_completed` →
       `meter.closeTurn(session, { projectId, featureId: null, kind: 'chat_work' })`; in `handleExit`
       → `meter.abandon(session.id)`; `turnStart` bleibt (Scrollback-Marke der Session)
-- [ ] T020 [US1] `RunMeter` einmal in `packages/server/src/index.ts` aufbauen und sowohl
+- [X] T020 [US1] `RunMeter` einmal in `packages/server/src/index.ts` aufbauen und sowohl
       `Orchestrator` als auch `ChatWorkService` mitgeben (ohne diesen Schritt greift T019 nicht)
-- [ ] T021 [US1] Telemetrie-Attrappe in `packages/server/src/services/orchestrator.test.ts` (Zeile
+- [X] T021 [US1] Telemetrie-Attrappe in `packages/server/src/services/orchestrator.test.ts` (Zeile
       ~421) um `release` ergänzen — Ergänzung der Attrappe, **keine** Änderung einer Erwartung
       (FR-017 bleibt erfüllt)
 
 ### Tests zu US1
 
-- [ ] T022 [P] [US1] Kaskade in `packages/server/src/services/core/runMeter.test.ts`: Szenario 1
+- [X] T022 [P] [US1] Kaskade in `packages/server/src/services/core/runMeter.test.ts`: Szenario 1
       (Meldungen → `tokens_source = 'telemetry'`, Transkript wird nicht gelesen), Szenario 5 (ohne
       Meldungen, mit Transkript → `'transcript'`), Edge Case ohne konfigurierten Telemetrie-Speicher
       → fehlerfreier Durchfall auf Schätzung (M8)
-- [ ] T023 [P] [US1] SC-002 in `packages/server/src/services/core/runMeter.test.ts`: dieselben
+- [X] T023 [P] [US1] SC-002 in `packages/server/src/services/core/runMeter.test.ts`: dieselben
       Ereignisse über den Phasen-Weg und den Chat-Weg → identische vier Token-Klassen, identische
       `cost_micros`, dasselbe `model`, dieselbe Quelle; Abweichung 0
-- [ ] T024 [P] [US1] SC-004 in `packages/server/src/services/core/runMeter.test.ts`: messen, Puffer
+- [X] T024 [P] [US1] SC-004 in `packages/server/src/services/core/runMeter.test.ts`: messen, Puffer
       beschneiden, erneut messen — über mehrere Nachträge 0 Absenkungen, nie `null` (M1, M5,
       US1 Szenario 4)
-- [ ] T025 [P] [US1] Nachtrag in `packages/server/src/services/core/runMeter.test.ts`: Meldungen
+- [X] T025 [P] [US1] Nachtrag in `packages/server/src/services/core/runMeter.test.ts`: Meldungen
       treffen nach dem Abschluss ein, das Fenster ist noch offen → Zahl wird nachgezogen und
       `execution_updated` gesendet (US1 Szenario 3, M6)
-- [ ] T026 [P] [US1] Turn-Dauer in `packages/server/src/services/core/runMeter.test.ts`: ein
+- [X] T026 [P] [US1] Turn-Dauer in `packages/server/src/services/core/runMeter.test.ts`: ein
       Chat-Turn schreibt `finished_at − started_at > 0` (M10, Clarification 30.07.2026)
-- [ ] T027 [P] [US1] Randfälle in `packages/server/src/services/core/runMeter.test.ts`: `abandon`
+- [X] T027 [P] [US1] Randfälle in `packages/server/src/services/core/runMeter.test.ts`: `abandon`
       verbucht nichts (M9, Leerlauf-Reaper), `closeTurn` ohne vorheriges `openTurn` öffnet
       rückwirkend und liefert eine Dauer > 0 und nie negativ (research.md D4), zweiter
       `working`-Übergang innerhalb desselben Turns ist ein No-op
-- [ ] T028 [US1] Tor Schritt 2: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — die
+- [X] T028 [US1] Tor Schritt 2: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel — die
       bestehenden Metering-Tests in `packages/server/src/services/orchestrator.test.ts`
       (Zeilen 412–619) und `packages/server/src/services/chatWorkService.test.ts` (Zeilen 463, 476)
       bleiben **ohne Anpassung** grün (FR-018, SC-003)

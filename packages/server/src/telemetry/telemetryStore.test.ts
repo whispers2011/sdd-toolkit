@@ -130,6 +130,64 @@ describe('TelemetryStore', () => {
       expect(store.eventsFor('sess')).toHaveLength(0);
     });
 
+    /**
+     * Ein Puffer gehört der SESSION, nicht dem einzelnen Lauf. Bei Chats überlappen sich
+     * die Nachlauffenster zweier Turns fast immer — Turns liegen Sekunden auseinander,
+     * das Fenster ist fünf Minuten offen. Vorher entzog das Fensterende von Turn A dem
+     * laufenden Turn B den Schutz mitsamt seiner Meldungen (FR-007a).
+     */
+    it('hält den Puffer, solange noch ein Lauf offen ist (T1)', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess'); // Turn A
+      store.ingest([ev({ requestId: 'a', at: 100_000 })]);
+      store.hold('sess'); // Turn B startet, während A noch nachträgt
+
+      store.release('sess'); // Nachlauffenster von A läuft ab
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(1); // B hat seine Meldungen noch
+    });
+
+    it('gibt erst mit dem letzten Abmelder frei (T1)', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'a', at: 100_000 })]);
+
+      store.release('sess');
+      store.release('sess'); // jetzt ist keiner mehr offen
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(0);
+    });
+
+    it('verwirft beim Abmelden nichts — der Kehraus nach Alter übernimmt (T3)', () => {
+      vi.setSystemTime(100_000);
+      store.hold('sess');
+      store.ingest([ev({ requestId: 'frisch', at: 100_000 })]);
+
+      store.release('sess'); // kein forget: der Puffer bleibt zunächst stehen
+
+      expect(store.eventsFor('sess')).toHaveLength(1);
+      store.sweep(); // noch innerhalb des Nachlauffensters
+      expect(store.eventsFor('sess')).toHaveLength(1);
+    });
+
+    it('lässt den Zähler nicht negativ werden (T2)', () => {
+      vi.setSystemTime(100_000);
+      store.release('sess'); // Abmelden ohne Anmelden — darf nicht ins Minus laufen
+      store.release('sess');
+
+      store.hold('sess'); // ein einziges hold muss danach wieder schützen
+      store.ingest([ev({ requestId: 'a', at: 100_000 })]);
+      vi.setSystemTime(100_000 + 6 * 60_000);
+      store.sweep();
+
+      expect(store.eventsFor('sess')).toHaveLength(1);
+    });
+
     it('schützt nur die angemeldete Marke, nicht die Nachbarn', () => {
       vi.setSystemTime(100_000);
       store.hold('sess');

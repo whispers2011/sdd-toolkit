@@ -22,6 +22,7 @@ import { bus } from '../events.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { ChatWorkService } from './chatWorkService.js';
+import { RunMeter } from './core/runMeter.js';
 import type { KnowledgeService } from './knowledgeService.js';
 import { MergeQueueService, type MergeQueueDeps } from './mergeQueueService.js';
 import { Orchestrator } from './orchestrator.js';
@@ -242,6 +243,7 @@ describe('Orchestrator — Auflösewege senden pro Meldung genau ein Ereignis', 
       features,
       sessions,
       executions: new ExecutionRepo(db),
+      meter: new RunMeter({ executions: new ExecutionRepo(db) }),
       attention,
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
@@ -405,6 +407,9 @@ describe('ChatWorkService — der Chat-Pfad verhält sich identisch zum Feature-
       exited: false,
       lastActiveAt: Date.now(),
       kind: 'chat_work',
+      // Der Chat öffnet sein Turn-Fenster jetzt beim working-Übergang; der Kern
+      // fotografiert dabei die Scrollback-Länge.
+      scrollback: '',
       machine: { state: over.state },
     }) as unknown as LiveSession;
 
@@ -422,6 +427,7 @@ describe('ChatWorkService — der Chat-Pfad verhält sich identisch zum Feature-
       sessions,
       attention,
       executions: new ExecutionRepo(db),
+      meter: new RunMeter({ executions: new ExecutionRepo(db) }),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys: { remove: vi.fn() } as unknown as PtySessionManager,

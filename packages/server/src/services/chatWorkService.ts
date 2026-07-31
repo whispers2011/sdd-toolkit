@@ -5,15 +5,9 @@ import {
   CHAT_HYGIENE_LIMITS,
   displayStatus,
   evaluateChatHygiene,
-  hasUsage,
-  meter,
   parseSessionFeatures,
   resolveAutomation,
   restartOfferMessage,
-  selectEventsForWindow,
-  summarizeEvents,
-  sumUsage,
-  usageTotalTokens,
   type ChatConversation,
   type ChatCostProfile,
   type ChatFeatureProposal,
@@ -39,8 +33,8 @@ import type {
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
-import { locateTranscript, readTranscriptDelta, transcriptSize } from '../pty/transcriptWatcher.js';
-import type { TelemetryStore } from '../telemetry/telemetryStore.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
+import type { RunMeter } from './core/runMeter.js';
 import { isCleanWorkingTree } from '../git/git.js';
 import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
@@ -59,10 +53,15 @@ export interface ChatWorkDeps {
   ptys: PtySessionManager;
   /** Feature-Anlage läuft über den kanonischen Pfad (Worktree, optional /speckit-specify). */
   orchestrator: Orchestrator;
+  /**
+   * Turn messen — derselbe Baustein wie im Phasen-Pfad (FR-002). Mit ihm erbt der Chat
+   * die Puffer-Anmeldung, den monotonen Akkumulator, das Nachlauffenster, die Sperre
+   * gegen verschlechternde Nachträge samt Inbox-Meldung, den Subagenten-Anteil und die
+   * Fallunterscheidung der Transkript-Startmarke.
+   */
+  meter: RunMeter;
   dataDir: string;
   model?: string;
-  /** Meldungen der CLI — vorrangige Quelle für Verbrauch UND Kosten eines Turns. */
-  telemetry?: TelemetryStore;
 }
 
 /**
@@ -99,12 +98,6 @@ const toChatTurnUsage = (usage: ExecutionUsageInput | null): ChatTurnUsage => ({
  */
 export class ChatWorkService {
   private notify = new NotificationThrottle();
-  /** Scrollback-Länge an der letzten Turn-Grenze — Rückfallebene des Metering. */
-  private turnStart = new Map<string, number>(); // sessionId → scrollback-Offset
-  /** Beginn des laufenden Turns — grenzt die Meldungen der CLI auf genau diesen Turn ein. */
-  private turnStartedAt = new Map<string, number>(); // sessionId → ms
-  /** Transkript-Position an der letzten Turn-Grenze — grenzt das Delta auf diesen Turn ein. */
-  private turnTranscriptOffset = new Map<string, number>(); // sessionId → Byte-Offset
   /** Offener Feature-Vorschlag je Unterhaltung (im Speicher; überlebt Panel-Öffnen). */
   private proposals = new Map<string, ChatFeatureProposal>(); // conversationId → Vorschlag
   /** Dedup: zuletzt verarbeiteter Marker je Unterhaltung. */
@@ -198,7 +191,6 @@ export class ChatWorkService {
     } catch (err) {
       throw new ChatError(503, `Session konnte nicht gestartet werden: ${(err as Error).message}`);
     }
-    this.turnStart.set(session.id, 0);
     this.deps.sessions.create({
       id: session.id,
       featureId: null,
@@ -381,6 +373,11 @@ export class ChatWorkService {
     });
 
     if (status === 'working') {
+      // Der Turn beginnt hier, nicht am Ende des Vorgängerturns: Letzteres enthielt die
+      // Lesezeit des Nutzers — ein Turn von 10 Sekunden nach 5 Minuten Nachdenken hätte
+      // die Dauer 5:10 bekommen. Idempotent, ein zweiter Übergang öffnet kein zweites
+      // Fenster (research.md D4).
+      this.deps.meter.openTurn(session);
       emitAttentionResolved(
         this.deps.attention.resolveFor({
           sessionId: session.id,
@@ -424,38 +421,26 @@ export class ChatWorkService {
   }
 
   /**
-   * Verbrauch eines Chat-Turns messen — dieselbe Kaskade wie im Phasen-Pfad
-   * (Orchestrator.meterTurn): Meldungen der CLI vor Transkript vor Schätzung.
+   * Verbrauch eines Chat-Turns messen — über den gemeinsamen Kern (FR-002). Damit gilt
+   * dieselbe Kaskade wie im Phasen-Pfad (Meldungen vor Transkript vor Schätzung), und
+   * der Chat erbt, was ihm bisher fehlte: die Puffer-Anmeldung, den monotonen
+   * Akkumulator, das Nachlauffenster und die Turn-Dauer.
    *
-   * Vorher schätzte diese Methode aus dem Terminal-Scrollback mit leerem
-   * `promptText` und schrieb weder Kosten noch Quelle. Gemessen wurde damit
-   * ausgerechnet die Größe, die kaum ins Gewicht fällt: In einem Chat vom
-   * 28.07.2026 standen 7,0 Mio. gelesene Cache-Tokens 45k Ausgabe-Tokens
-   * gegenüber — erfasst waren 94k Tokens und 0 $ statt real gut 5 $.
+   * Vorher schätzte diese Methode aus dem Terminal-Scrollback mit leerem `promptText`
+   * und schrieb weder Kosten noch Quelle. Gemessen wurde damit ausgerechnet die Größe,
+   * die kaum ins Gewicht fällt: In einem Chat vom 28.07.2026 standen 7,0 Mio. gelesene
+   * Cache-Tokens 45k Ausgabe-Tokens gegenüber — erfasst waren 94k Tokens und 0 $ statt
+   * real gut 5 $.
    */
   private meterTurn(session: LiveSession): void {
-    const scrollbackStart = this.turnStart.get(session.id) ?? 0;
-    const startedAt = this.turnStartedAt.get(session.id) ?? 0;
-    const outputText = session.scrollback.slice(scrollbackStart);
-    const finishedAt = Date.now();
-
-    this.turnStart.set(session.id, session.scrollback.length);
-    this.turnStartedAt.set(session.id, finishedAt);
-
-    const usage = this.usageForTurn(session, startedAt, finishedAt, outputText);
-    // Auch der Fall „nichts messbar" wird festgehalten (FR-001/FR-016) — er ist eine Aussage
-    // über den Turn, keine Null-Messung.
-    this.recordHygieneTurn(session, usage);
-    if (!usage) return;
-
-    const execId = this.deps.executions.start({
+    const usage = this.deps.meter.closeTurn(session, {
       projectId: session.projectId,
       featureId: null,
       kind: 'chat_work',
-      phase: null,
-      logPath: null,
     });
-    this.deps.executions.finishWithUsage(execId, 0, usage);
+    // Auch der Fall „nichts messbar" wird festgehalten (FR-001/FR-016) — er ist eine Aussage
+    // über den Turn, keine Null-Messung.
+    this.recordHygieneTurn(session, usage);
   }
 
   // ---------- Kontext-Hygiene (Angebot aus Kosten) ----------
@@ -542,63 +527,11 @@ export class ChatWorkService {
     bus.emitEvent('chat_updated', { projectId, conversationId: conv.id });
   }
 
-  /** Meldungen → Transkript → Scrollback-Schätzung; `null`, wenn der Turn nichts hergab. */
-  private usageForTurn(
-    session: LiveSession,
-    startedAt: number,
-    finishedAt: number,
-    outputText: string,
-  ): ExecutionUsageInput | null {
-    const store = this.deps.telemetry;
-    if (store) {
-      const events = selectEventsForWindow(store.eventsFor(session.id), { from: startedAt, to: finishedAt });
-      if (events.length > 0) {
-        const { total, model } = summarizeEvents(events);
-        return {
-          tokens: total.tokens,
-          inputTokens: total.inputTokens,
-          outputTokens: total.outputTokens,
-          cacheReadTokens: total.cacheReadTokens,
-          cacheCreationTokens: total.cacheCreationTokens,
-          tokensSource: 'telemetry' as const,
-          costMicros: total.costMicros,
-          model,
-        };
-      }
-    }
-
-    if (session.claudeSessionId) {
-      const path = locateTranscript(session.cwd, session.claudeSessionId);
-      if (path) {
-        const offset = this.turnTranscriptOffset.get(session.id) ?? 0;
-        const usage = sumUsage(readTranscriptDelta(path, offset));
-        this.turnTranscriptOffset.set(session.id, transcriptSize(path));
-        if (hasUsage(usage)) {
-          return {
-            tokens: usageTotalTokens(usage),
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            cacheReadTokens: usage.cacheReadTokens,
-            cacheCreationTokens: usage.cacheCreationTokens,
-            tokensSource: 'transcript' as const,
-          };
-        }
-      }
-    }
-
-    if (!outputText.trim()) return null;
-    const cost = meter({ ...(this.deps.model ? { model: this.deps.model } : {}), promptText: '', outputText });
-    return {
-      tokens: cost.totalTokens,
-      tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
-    };
-  }
-
   handleExit(session: LiveSession, exitCode: number): void {
     this.deps.sessions.end(session.id);
-    this.turnStart.delete(session.id);
-    this.turnStartedAt.delete(session.id);
-    this.turnTranscriptOffset.delete(session.id);
+    // Offenes Turn-Fenster verwerfen und den Puffer freigeben — ohne eine halbe
+    // Messung zu verbuchen (Edge Case Leerlauf-Reaper).
+    this.deps.meter.abandon(session.id);
     // `hygiene` wird hier bewusst NICHT geräumt: es gehört der Unterhaltung, nicht der Session.
     // Nach einem Leerlauf-Reap ist die Unterhaltung pausiert und weiterhin teuer — genau dann
     // muss die eine Pausiert-Karte beide Gründe nennen können (FR-013). Geräumt wird beim
@@ -657,7 +590,6 @@ export class ChatWorkService {
   }
 
   killAll(): void {
-    this.turnStart.clear();
     this.hygiene.clear();
   }
 

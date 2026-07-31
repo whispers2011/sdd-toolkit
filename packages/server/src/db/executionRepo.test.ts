@@ -131,6 +131,39 @@ describe('ExecutionRepo — Telemetrie-Felder', () => {
   const start = () =>
     executions.start({ projectId, featureId: null, kind: 'phase', phase: 'implement', logPath: null });
 
+  /**
+   * Der Chat legt seinen Lauf atomar beim Turn-Abschluss an — ohne mitgegebenen
+   * Beginn wäre `started_at` gleich `finished_at`. Genau das war der Zustand aller
+   * chat_work-Läufe: Dauer 0 ms, keine Kennzahl darüber bildbar.
+   */
+  describe('Laufbeginn beim Anlegen', () => {
+    it('übernimmt einen mitgegebenen Beginn — die Dauer wird echt', () => {
+      const beginn = Date.now() - 42_000;
+      const id = executions.start({
+        projectId,
+        featureId: null,
+        kind: 'chat_work',
+        phase: null,
+        logPath: null,
+        startedAt: beginn,
+      });
+      executions.finishWithUsage(id, 0, { tokens: 100, tokensSource: 'telemetry' });
+
+      const r = executions.get(id)!;
+      expect(r.startedAt).toBe(beginn);
+      expect(r.finishedAt! - r.startedAt).toBeGreaterThan(0);
+    });
+
+    it('bleibt ohne das Feld beim Zeitpunkt des Anlegens (die übrigen Aufrufer)', () => {
+      const vorher = Date.now();
+      const id = start();
+
+      const r = executions.get(id)!;
+      expect(r.startedAt).toBeGreaterThanOrEqual(vorher);
+      expect(r.startedAt).toBeLessThanOrEqual(Date.now());
+    });
+  });
+
   it('schreibt und liest die gemeldeten Werte', () => {
     const id = start();
     executions.finishWithUsage(id, 0, {

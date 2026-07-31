@@ -517,7 +517,7 @@ describe('PlausibilityService', () => {
       vi.useFakeTimers();
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        const { Orchestrator } = await import('./orchestrator.js');
+        const { RunMeter } = await import('./core/runMeter.js');
         const f = feature('mein-feature');
         const executionId = executions.start({
           projectId,
@@ -527,23 +527,16 @@ describe('PlausibilityService', () => {
           logPath: null,
         });
 
-        const orch = new Orchestrator({
-          projects,
-          features,
-          sessions: { end: () => {} },
+        // Die Beurteilung hängt am Nachtragsfenster des gemeinsamen Kerns (FR-002) —
+        // dort steht sie als letzte Anweisung des letzten Timers, in eigenem try/catch.
+        const meter = new RunMeter({
           executions,
-          attention,
-          settings: {},
-          worktrees: {},
-          ptys: { list: () => [] },
-          knowledge: {},
-          dataDir: '/tmp',
           plausibility: {
             check: () => {
               throw new Error('Beurteilung kaputt');
             },
-          },
-        } as never);
+          } as never,
+        });
 
         const session = { id: 'sess1', featureId: f, projectId, cwd: '/p', claudeSessionId: null, scrollback: '' };
         const running = {
@@ -558,11 +551,7 @@ describe('PlausibilityService', () => {
         };
 
         // Laufabschluss inklusive Nachtragsfenster — der letzte Timer ruft die Prüfung.
-        (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-          session,
-          running,
-          0,
-        );
+        meter.finish(session as never, running as never, 0);
         const nachAbschluss = executions.get(executionId)!;
         expect(nachAbschluss.status).toBe('succeeded');
 

@@ -5,8 +5,6 @@ import {
   discardPhase,
   finishPhase,
   initialPhases,
-  hasUsage,
-  meter,
   nextPhase,
   reapOrphanedRunning,
   reconcileWithDisk,
@@ -14,11 +12,7 @@ import {
   resolveOptimization,
   shouldAutoProgress,
   startPhase,
-  selectEventsForWindow,
-  summarizeEvents,
-  sumUsage,
   displayStatus,
-  usageTotalTokens,
   type AutomationSettings,
   type Feature,
   artifactStepSpec,
@@ -26,22 +20,15 @@ import {
   type OptimizationSettings,
   type Project,
   type SessionEffect,
-  type UsageOrigin,
-  type UsageTotals,
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { KnowledgeService } from './knowledgeService.js';
 import type { FeatureDocumentsService } from './featureDocuments.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import {
-  locateTranscript,
-  offsetAtTimestamp,
-  readTranscriptDelta,
-  transcriptSize,
-} from '../pty/transcriptWatcher.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
-import { TELEMETRY_GRACE_MS, type TelemetryStore } from '../telemetry/telemetryStore.js';
+import type { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
 import { bus, emitAttentionResolved } from '../events.js';
@@ -58,6 +45,7 @@ import {
 } from './attentionReconciler.js';
 import { resolveVerificationGaps } from './verificationGap.js';
 import { ensureWorkspace } from './core/workspace.js';
+import { markSession, startOffsetIn, type RunMark, type RunMeter } from './core/runMeter.js';
 
 export interface EnsureSessionOptions {
   /**
@@ -81,6 +69,8 @@ export interface OrchestratorDeps {
   featureDocuments: FeatureDocumentsService;
   agentGate: AgentGateService;
   lifecycleSteps: LifecycleStepService;
+  /** Turn messen — gemeinsamer Kern, denselben Baustein benutzt der Chat-Pfad (FR-002). */
+  meter: RunMeter;
   dataDir: string;
   /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
   telemetry?: TelemetryStore;
@@ -127,54 +117,17 @@ function templateHint(phase: FeaturePhase): string {
   );
 }
 
-/**
- * Fortgeschriebene Telemetrie-Summe eines Laufs. `seen` verhindert Doppelzählung,
- * `total`/`byOrigin` wachsen nur — daher kann eine Messung nie kleiner werden.
- */
-interface TelemetryAccum {
-  seen: Set<string>;
-  total: UsageTotals;
-  byOrigin: Record<UsageOrigin, UsageTotals>;
-  model: string | null;
-}
-
 /** Ausgabe jünger als das gilt als „schreibt gerade" (checkWorkWithoutRun). */
 const WORK_WITHOUT_RUN_QUIET_MS = 60_000;
 /** So lange nach dem Sessionstart wird nicht gemeldet — Anlauf und erste Phase brauchen Ruhe. */
 const WORK_WITHOUT_RUN_MIN_AGE_MS = 3 * 60_000;
 
-function emptyUsageTotals(): UsageTotals {
-  return { tokens: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, costMicros: null };
-}
-
-/** Zuwachs auffalten. `costMicros` bleibt null, solange nichts einen Betrag trug (FR-023). */
-function addTotals(ziel: UsageTotals, zuwachs: UsageTotals): void {
-  ziel.tokens += zuwachs.tokens;
-  ziel.inputTokens += zuwachs.inputTokens;
-  ziel.outputTokens += zuwachs.outputTokens;
-  ziel.cacheReadTokens += zuwachs.cacheReadTokens;
-  ziel.cacheCreationTokens += zuwachs.cacheCreationTokens;
-  if (zuwachs.costMicros !== null) ziel.costMicros = (ziel.costMicros ?? 0) + zuwachs.costMicros;
-}
-
-/** Laufender Phasen-Kontext pro Feature (ephemer). */
-interface RunningPhase {
+/**
+ * Laufender Phasen-Kontext pro Feature (ephemer): die Lauf-Marke des gemeinsamen
+ * Kerns plus das, was nur eine Phase hat.
+ */
+type RunningPhase = RunMark & {
   phase: FeaturePhase;
-  executionId: string;
-  /** Scrollback-Offset beim Start — für Kosten-Metering des Turn-Deltas (WP3). */
-  scrollbackStart: number;
-  /** Transkript-Byte-Offset beim Start — für autoritative Usage-Messung. */
-  transcriptOffsetStart: number;
-  /**
-   * Transkript-Pfad beim Start. Wechselt die Claude-Session-ID während der Phase
-   * (z. B. /clear-Reset), gilt der Start-Offset nicht für die neue Datei —
-   * dann wird ab 0 gemessen. `null` = beim Start war die Session-ID noch nicht
-   * bekannt; dann ist „ab 0" falsch (siehe startedAt).
-   */
-  transcriptPathStart: string | null;
-  /** Startzeit des Laufs — Startmarke, wenn transcriptPathStart null ist. */
-  startedAt: number;
-  promptText: string;
   /**
    * Der Phasenprompt wurde nachweislich zugestellt (`user_prompt_submit`).
    * Vorher darf ein `Stop` NICHT als Abschluss dieser Phase gelten: Das
@@ -184,7 +137,7 @@ interface RunningPhase {
    * Gegenstück zur Reset-Unterscheidung in handleSubmitFailed().
    */
   promptConfirmed: boolean;
-}
+};
 
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
@@ -195,17 +148,8 @@ export class Orchestrator {
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
-  private telemetryReconcileTimers = new Set<NodeJS.Timeout>(); // Nachtrag verspäteter Meldungen
-  /**
-   * Laufende Summe je Execution, fortgeschrieben statt neu berechnet.
-   *
-   * Vorher summierte jeder Nachtrag das Telemetrie-Fenster von Grund auf neu — und
-   * traf dabei einen Puffer, den der Kehraus inzwischen beschnitten hatte. Die Zahl
-   * konnte also sinken (30.07.2026: neun Läufe um Faktor 2,9–16,8). Ein Akkumulator
-   * über `requestId` kann das nicht: was einmal gezählt wurde, bleibt gezählt, und
-   * jede Meldung zählt trotzdem nur einmal (FR-006).
-   */
-  private telemetryAccum = new Map<string, TelemetryAccum>();
+  /** Wiederholungs-Timer des automatischen Integrationsstarts. */
+  private backgroundTimers = new Set<NodeJS.Timeout>();
   /** Sessions, für die „Arbeit ohne Lauf" schon gemeldet wurde (eine Meldung je Episode). */
   private workWithoutRunReported = new Set<string>();
 
@@ -648,21 +592,21 @@ export class Orchestrator {
 
     // Offset VOR dem Reset festhalten: die Usage des Resets (z. B. /compact) gehört
     // zur realen Kosten dieses optimierten Laufs und wird so mitgemessen (faires A/B).
-    const { path: transcriptPathStart, offset: transcriptOffsetStart } = this.transcriptMarkFor(session);
+    const mark = markSession(session, Date.now());
     const executionId = this.deps.executions.start({
       projectId: feature.projectId,
       featureId: feature.id,
       kind: 'phase',
       phase,
       logPath: null,
-      transcriptOffsetStart,
+      transcriptOffsetStart: mark.transcriptOffsetStart,
       optContextStrategy: opt.contextStrategy,
       optCompression: opt.compression,
     });
 
     // Lauf beim Telemetrie-Puffer anmelden: seine Meldungen dürfen nicht nach Alter
     // verworfen werden, solange er läuft (siehe telemetryStore.sweep).
-    this.deps.telemetry?.hold(session.id);
+    this.deps.meter.hold(session.id);
 
     // Wissens-Präambel nur anhängen, wenn nötig: bei erster Injektion, geändertem
     // Wissen oder nach einem Kontext-Reset (nach /clear ist sie weg, nach /compact
@@ -683,12 +627,9 @@ export class Orchestrator {
     if (injectPreamble) this.lastPreamble.set(feature.id, plan.preamble);
 
     this.runningPhases.set(feature.id, {
-      phase,
+      ...mark,
       executionId,
-      scrollbackStart: session.scrollback.length,
-      transcriptOffsetStart,
-      transcriptPathStart,
-      startedAt: Date.now(),
+      phase,
       promptText: prompt,
       promptConfirmed: false,
     });
@@ -696,13 +637,6 @@ export class Orchestrator {
     // Reset-Kommando (opt-in) VOR dem Phasenprompt; Session-Prozess/-ID bleiben.
     if (plan.reset) this.deps.ptys.sendPrompt(session.id, resetCommand(plan.reset));
     this.deps.ptys.sendPrompt(session.id, prompt);
-  }
-
-  /** Aktuelle Transkript-Startmarke der Session (Pfad + Byte-Offset; 0/null wenn unbekannt). */
-  private transcriptMarkFor(session: LiveSession): { path: string | null; offset: number } {
-    if (!session.claudeSessionId) return { path: null, offset: 0 };
-    const path = locateTranscript(session.cwd, session.claudeSessionId);
-    return { path, offset: path ? transcriptSize(path) : 0 };
   }
 
   private optimizationFor(feature: Feature): OptimizationSettings {
@@ -861,11 +795,11 @@ export class Orchestrator {
         return;
       }
       const timer = setTimeout(() => {
-        this.telemetryReconcileTimers.delete(timer);
+        this.backgroundTimers.delete(timer);
         this.tryBeginIntegration(featureId, versuch + 1);
       }, 30_000);
       timer.unref?.();
-      this.telemetryReconcileTimers.add(timer);
+      this.backgroundTimers.add(timer);
     });
   }
 
@@ -1013,7 +947,7 @@ export class Orchestrator {
       // Verbrauch: vorrangig aus den Meldungen der CLI, sonst wie bisher aus dem
       // Transkript. Genau EIN Schreibpfad je Lauf — die Werte beider Quellen
       // werden nie addiert (FR-016).
-      this.finishWithMetering(session, running, 0);
+      this.deps.meter.finish(session, running, 0);
       // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
       this.persistTranscriptRange(session, running);
 
@@ -1119,262 +1053,18 @@ export class Orchestrator {
   }
 
   /**
-   * Lauf abschliessen und dabei die Quelle wählen (FR-014/FR-015/FR-016).
-   *
-   * Liegen Meldungen der CLI vor, gewinnen sie und `meterTurn` läuft GAR NICHT erst —
-   * das Nicht-Addieren ist damit eine strukturelle Eigenschaft und keine Regel, die
-   * eingehalten werden müsste. Zusätzlich bleibt der Lauf fünf Minuten nachtragsfähig,
-   * weil Meldungen in Intervallen eintreffen und ein kurzer Lauf beim Abschluss noch
-   * unvollständig sein kann (FR-011).
-   */
-  private finishWithMetering(session: LiveSession, running: RunningPhase, exitCode: number): void {
-    const now = Date.now();
-    const fromTelemetry = this.meterFromTelemetry(session, running, now);
-
-    if (fromTelemetry) {
-      const finalAt = now + TELEMETRY_GRACE_MS;
-      this.deps.executions.finishWithUsage(running.executionId, exitCode, {
-        ...fromTelemetry,
-        telemetryFinalAt: finalAt,
-      });
-      this.scheduleLateReconcile(session, running, now);
-      return;
-    }
-
-    this.deps.executions.finishWithUsage(running.executionId, exitCode, this.meterTurn(session, running));
-    // Auch ohne Meldungen beim Abschluss kann Telemetrie noch eintreffen (kurzer Lauf,
-    // Exportintervall 5 s). Der Nachtrag ersetzt die Transkript-Zahl dann vollständig.
-    this.scheduleLateReconcile(session, running, now);
-  }
-
-  /**
-   * Nachtrag verspäteter Zahlen (FR-011): Bis zum Ablauf des Nachlauffensters wird
-   * der Lauf neu verrechnet und die Ansicht über den Bus aktualisiert. Danach gilt
-   * seine Zahl als endgültig und spätere Meldungen verfallen (FR-012, SC-005).
-   *
-   * Es wird jedes Mal das VOLLE Fenster neu summiert, nicht addiert — dieselbe
-   * requestId kann so nie zweimal zählen (FR-006).
-   *
-   * Gilt AUCH für die Transkript-Rückfallebene: Claude Code schreibt die
-   * Schlusszeilen eines Turns samt `usage` erst NACH dem Stop-Hook. Der beim
-   * Abschluss fotografierte End-Offset schnitt sie deshalb systematisch ab —
-   * gemessen am 27.07.2026 fehlten so 7,3 % (specify) bzw. 29,9 % (clarify) des
-   * Phasenverbrauchs, jeweils exakt die letzte Nachricht. Der Anteil ist nicht
-   * konstant: je kürzer die Phase, desto schwerer wiegt ihre Schlussnachricht.
-   */
-  private scheduleLateReconcile(session: LiveSession, running: RunningPhase, finishedAt: number): void {
-    const attempt = (delay: number, last: boolean) => {
-      const timer = setTimeout(() => {
-        this.telemetryReconcileTimers.delete(timer);
-        try {
-          const usage = this.meterFromTelemetry(session, running, finishedAt);
-          if (usage) {
-            const outcome = this.deps.executions.updateTelemetry(running.executionId, usage);
-            if (!outcome.applied) {
-              // Der Nachtrag war schlechter als die vorhandene Zahl — die bleibt stehen.
-              // Kein stiller Vorgang: der Grund benennt, welche Messung verworfen wurde.
-              console.warn(`[metering] ${running.executionId}: Nachtrag verworfen — ${outcome.reason}`);
-              // Zusätzlich zur Konsole: ein grober Widerspruch gehört in die Inbox,
-              // nicht nur ins Protokoll (FR-010). Der console.warn bleibt wortgleich.
-              this.deps.plausibility?.reportMeteringConflict(
-                { id: running.executionId, projectId: session.projectId, featureId: session.featureId },
-                outcome,
-              );
-            } else {
-              bus.emitEvent('execution_updated', {
-                executionId: running.executionId,
-                featureId: session.featureId,
-              });
-            }
-          } else {
-            this.reconcileTranscriptTail(session, running);
-          }
-        } catch (err) {
-          console.warn('[metering] Nachtrag fehlgeschlagen:', (err as Error).message);
-        }
-        if (last) {
-          // Nachlauffenster zu: Puffer abmelden und freigeben, Akkumulator verwerfen.
-          this.deps.telemetry?.forget(session.id);
-          this.telemetryAccum.delete(running.executionId);
-          // Genau hier ist die Messung endgültig — der Moment, in dem sie beurteilt
-          // werden darf (FR-001). LETZTE Anweisung des Timer-Rumpfes, in eigenem
-          // try/catch: die Beurteilung ist kein Tor, sie kann nichts mehr
-          // beeinflussen, was davor passiert ist (FR-003, SC-006).
-          try {
-            this.deps.plausibility?.check();
-          } catch (err) {
-            console.warn('[plausibility] Beurteilung nach Laufabschluss fehlgeschlagen:', (err as Error).message);
-          }
-        }
-      }, delay);
-      timer.unref?.();
-      this.telemetryReconcileTimers.add(timer);
-    };
-
-    // Zweimal nachfassen: einmal kurz nach dem üblichen Exportintervall (5 s) für
-    // den Regelfall, einmal am Ende des Nachlauffensters als Sicherheitsnetz.
-    attempt(8_000, false);
-    attempt(TELEMETRY_GRACE_MS, true);
-  }
-
-  /**
-   * Transkript nach Ablauf der Frist erneut vermessen und die Zahl nachziehen,
-   * falls die Datei seit dem Abschluss gewachsen ist.
-   *
-   * Nur relevant ohne Telemetrie — liegen Meldungen vor, ersetzen sie die
-   * Transkript-Zahl ohnehin vollständig (FR-016: genau EIN Schreibpfad je Lauf).
-   */
-  private reconcileTranscriptTail(session: LiveSession, running: RunningPhase): void {
-    const usage = this.meterTurn(session, running);
-    if (usage.tokensSource !== 'transcript') return; // Schätzung nicht nachziehen
-    const outcome = this.deps.executions.updateTelemetry(running.executionId, usage);
-    if (!outcome.applied) {
-      // Typischer Fall: der Puffer war leer, also fiel die Messung aufs Transkript
-      // zurück — mehr Tokens, aber ohne Preis. Die bepreiste Zahl bleibt stehen.
-      console.warn(`[metering] ${running.executionId}: Transkript-Nachtrag verworfen — ${outcome.reason}`);
-      this.deps.plausibility?.reportMeteringConflict(
-        { id: running.executionId, projectId: session.projectId, featureId: session.featureId },
-        outcome,
-      );
-      return;
-    }
-    this.persistTranscriptRange(session, running); // End-Offset auf den vollen Turn
-    bus.emitEvent('execution_updated', {
-      executionId: running.executionId,
-      featureId: session.featureId,
-    });
-  }
-
-  /**
-   * Verbrauch eines Laufs aus den Meldungen der CLI (FR-014). Vorrangige Quelle:
-   * jede Meldung trägt ihren eigenen Zeitstempel und die Marke ihrer Session, also
-   * gehört genau das zum Lauf, was zwischen seinem Start und seinem Ende gemeldet
-   * wurde. Damit entfällt die aus Byte-Positionen rekonstruierte Startmarke —
-   * die Quelle des Zwei-Minuten-Laufs mit 62 Mio. Tokens.
-   *
-   * Liefert `null`, wenn keine Meldungen vorliegen; dann greift `meterTurn` (FR-015).
-   */
-  private meterFromTelemetry(session: LiveSession, running: RunningPhase, until: number) {
-    const store = this.deps.telemetry;
-    if (!store) return null;
-
-    // Fortschreiben statt neu summieren: nur noch nicht verrechnete Meldungen kommen
-    // hinzu (FR-006 über `seen`). Damit ist die Zahl monoton — ein Nachtrag, der einen
-    // inzwischen beschnittenen Puffer sieht, ändert nichts mehr.
-    const accum = this.telemetryAccumFor(running.executionId);
-    const neu = selectEventsForWindow(
-      store.eventsFor(session.id),
-      { from: running.startedAt, to: until },
-      accum.seen,
-    );
-    for (const e of neu) accum.seen.add(e.requestId);
-    if (neu.length > 0) {
-      const zuwachs = summarizeEvents(neu);
-      addTotals(accum.total, zuwachs.total);
-      for (const origin of ['main', 'subagent', 'auxiliary'] as const) {
-        addTotals(accum.byOrigin[origin], zuwachs.byOrigin[origin]);
-      }
-      if (zuwachs.model) accum.model = zuwachs.model;
-    }
-    if (accum.seen.size === 0) return null;
-
-    const { total, byOrigin, model } = accum;
-    const hasSubagents = byOrigin.subagent.tokens > 0;
-    return {
-      tokens: total.tokens,
-      inputTokens: total.inputTokens,
-      outputTokens: total.outputTokens,
-      cacheReadTokens: total.cacheReadTokens,
-      cacheCreationTokens: total.cacheCreationTokens,
-      tokensSource: 'telemetry' as const,
-      costMicros: total.costMicros,
-      // null statt 0: ohne Subagenten soll die Ansicht gar nichts zeigen, keine
-      // Null-Zeile (FR-010, US2 Szenario 3).
-      subagentTokens: hasSubagents ? byOrigin.subagent.tokens : null,
-      subagentCostMicros: hasSubagents ? byOrigin.subagent.costMicros : null,
-      model,
-    };
-  }
-
-  /** Akkumulator eines Laufs holen oder anlegen. */
-  private telemetryAccumFor(executionId: string): TelemetryAccum {
-    let a = this.telemetryAccum.get(executionId);
-    if (!a) {
-      a = {
-        seen: new Set<string>(),
-        total: emptyUsageTotals(),
-        byOrigin: { main: emptyUsageTotals(), subagent: emptyUsageTotals(), auxiliary: emptyUsageTotals() },
-        model: null,
-      };
-      this.telemetryAccum.set(executionId, a);
-    }
-    return a;
-  }
-
-  /**
-   * Verbrauch eines abgeschlossenen Phasen-Turns messen. Bevorzugt autoritative
-   * Usage aus dem Transkript-Delta (inkl. cache_read = akkumulierter Kontext);
-   * fällt auf die Scrollback-Schätzung zurück, wenn kein Transkript/keine Usage vorliegt.
-   *
-   * Rückfallebene: läuft nur, wenn die Telemetrie nichts geliefert hat (FR-015/FR-016).
-   */
-  private meterTurn(session: LiveSession, running: RunningPhase) {
-    if (session.claudeSessionId) {
-      const path = locateTranscript(session.cwd, session.claudeSessionId);
-      if (path) {
-        const offset = this.startOffsetIn(path, running);
-        const usage = sumUsage(readTranscriptDelta(path, offset));
-        if (hasUsage(usage)) {
-          const totalTokens = usageTotalTokens(usage);
-          return {
-            tokens: totalTokens,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            cacheReadTokens: usage.cacheReadTokens,
-            cacheCreationTokens: usage.cacheCreationTokens,
-            tokensSource: 'transcript' as const,
-          };
-        }
-      }
-    }
-    const outputText = session.scrollback.slice(running.scrollbackStart);
-    const cost = meter({ promptText: running.promptText, outputText });
-    return {
-      tokens: cost.totalTokens,
-      tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
-    };
-  }
-
-  /**
    * Transkriptpfad + End-Offset eines abgeschlossenen Phasen-Laufs persistieren, damit
    * der Lauf-Log-Endpoint den Ausschnitt [start, end) auch nach Server-Neustart rendern
    * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null. Hat die Datei
    * während der Phase gewechselt (/clear), wird der Start-Offset auf 0 korrigiert.
    */
-  private persistTranscriptRange(session: LiveSession, running: RunningPhase): void {
+  persistTranscriptRange(session: LiveSession, running: RunMark): void {
     const path = session.claudeSessionId
       ? locateTranscript(session.cwd, session.claudeSessionId)
       : null;
     const offsetEnd = path ? transcriptSize(path) : 0;
-    const offsetStartFix = path ? this.startOffsetIn(path, running) : null;
+    const offsetStartFix = path ? startOffsetIn(path, running) : null;
     this.deps.executions.recordTranscriptEnd(running.executionId, path, offsetEnd, offsetStartFix);
-  }
-
-  /**
-   * Startmarke eines Laufs in seiner Transkriptdatei. Drei Fälle, und sie sind
-   * NICHT dasselbe:
-   *  - gleiche Datei wie beim Start → der gemerkte Offset.
-   *  - Datei wechselte während der Phase (/clear-Reset) → die neue Datei gehört
-   *    ganz diesem Lauf, ab 0 messen.
-   *  - beim Start war die Datei unbekannt (Claude-Session-ID noch nicht gemeldet,
-   *    typisch bei fortgesetzter Session) → sie enthält womöglich frühere Läufe.
-   *    Ab 0 zu messen schrieb deren Verbrauch diesem Lauf zu (gemessen: ein
-   *    2-Minuten-Lauf mit 62 Mio. Tokens / $132). Startmarke ist darum die erste
-   *    Zeile, die zeitlich zu diesem Lauf gehört.
-   */
-  private startOffsetIn(path: string, running: RunningPhase): number {
-    if (running.transcriptPathStart === null) return offsetAtTimestamp(path, running.startedAt);
-    return path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
   }
 
   /**
@@ -1438,7 +1128,7 @@ export class Orchestrator {
         this.runningPhases.delete(session.featureId);
         // Abgebrochene Läufe haben Tokens verbraucht — auch sie messen, sonst zeigt das
         // Dashboard 0 für real bezahlte Arbeit.
-        this.finishWithMetering(session, running, exitCode || 1);
+        this.deps.meter.finish(session, running, exitCode || 1);
         // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
         this.persistTranscriptRange(session, running);
         const feature = this.deps.features.get(session.featureId);

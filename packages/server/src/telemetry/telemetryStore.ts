@@ -31,8 +31,15 @@ export interface TelemetryStats {
 
 export class TelemetryStore {
   private buffers = new Map<string, Buffer>();
-  /** Marken mit einem offenen Lauf — ihr Puffer wird nicht nach Alter geleert. */
-  private held = new Set<string>();
+  /**
+   * Marken mit offenen Läufen, gezählt — ihr Puffer wird nicht nach Alter geleert.
+   *
+   * Zählend, nicht als Menge: Ein Puffer gehört der SESSION, mehrere Läufe können ihn
+   * gleichzeitig beanspruchen. Bei Chats ist genau das der Regelfall, weil Turns
+   * Sekunden auseinanderliegen und das Nachlauffenster fünf Minuten offen bleibt —
+   * das Abmelden von Turn A würde Turn B sonst den Schutz entziehen (FR-007a).
+   */
+  private holds = new Map<string, number>();
   private eventsReceived = 0;
   private lastEventAt: number | null = null;
   private sweepTimer: NodeJS.Timeout | null = null;
@@ -86,18 +93,24 @@ export class TelemetryStore {
    * (6'578'097 gemeldet gegen 39'472'755 im Transkript gemessen).
    */
   hold(key: string): void {
-    this.held.add(key);
+    this.holds.set(key, (this.holds.get(key) ?? 0) + 1);
   }
 
-  /** Lauf abgemeldet: ab jetzt gilt für diese Marke wieder der normale Kehraus. */
+  /**
+   * Lauf abgemeldet. Erst wenn sich der LETZTE abgemeldet hat, gilt für diese Marke
+   * wieder der normale Kehraus — und auch dann wird der Puffer nur dem Kehraus nach
+   * Alter überlassen, nicht verworfen (FR-007a). Der Zähler wird nie negativ.
+   */
   release(key: string): void {
-    this.held.delete(key);
+    const offen = (this.holds.get(key) ?? 0) - 1;
+    if (offen > 0) this.holds.set(key, offen);
+    else this.holds.delete(key);
   }
 
-  /** Puffer einer beendeten Session vollständig abräumen. */
+  /** Puffer einer beendeten Session vollständig abräumen (der harte Weg). */
   forget(key: string): void {
     this.buffers.delete(key);
-    this.held.delete(key);
+    this.holds.delete(key);
   }
 
   stats(): TelemetryStats {
@@ -122,7 +135,7 @@ export class TelemetryStore {
   sweep(now = Date.now()): void {
     const cutoff = now - TELEMETRY_GRACE_MS;
     for (const [key, buf] of this.buffers) {
-      if (this.held.has(key)) continue;
+      if (this.holds.has(key)) continue;
       const keep = buf.events.filter((e) => e.at >= cutoff);
       if (keep.length === buf.events.length) continue;
       if (keep.length === 0) {

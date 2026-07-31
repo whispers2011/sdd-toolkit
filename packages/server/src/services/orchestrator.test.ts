@@ -4,7 +4,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { initialPhases, type Feature, type FeatureDocument, type OptimizationSettings } from '@sdd/shared';
 import { Orchestrator, type OrchestratorDeps } from './orchestrator.js';
+import { RunMeter } from './core/runMeter.js';
 import type { LiveSession } from '../pty/sessionManager.js';
+
+/** Turn messen liegt im gemeinsamen Kern; der Orchestrator bekommt ihn mit (FR-002). */
+function withMeter(deps: OrchestratorDeps): OrchestratorDeps {
+  deps.meter = new RunMeter({
+    executions: deps.executions,
+    ...(deps.telemetry ? { telemetry: deps.telemetry } : {}),
+    ...(deps.plausibility ? { plausibility: deps.plausibility } : {}),
+  });
+  return deps;
+}
 
 /**
  * Testet die Fehler-/Unterbrechungs-Pfade des Orchestrators (US2) mit
@@ -140,7 +151,7 @@ function setup(
     },
     dataDir: '/tmp',
   } as unknown as OrchestratorDeps;
-  const orch = new Orchestrator(deps);
+  const orch = new Orchestrator(withMeter(deps));
   return { orch, state, savePhases, raise, finish, runTrigger, stepsRunTrigger, sendPrompt, listDocuments };
 }
 
@@ -426,215 +437,6 @@ describe('Orchestrator — ensureSession-Guards (offene Sessions auf abgeschloss
   });
 });
 
-/**
- * Quellenwahl beim Abschluss eines Laufs (Feature "token-und-kostenmessung...").
- * Der Kern: liegen Meldungen der CLI vor, gewinnen sie und die Transkript-Messung
- * läuft gar nicht erst — die Werte beider Quellen werden nie addiert (FR-016).
- */
-describe('Orchestrator — Telemetrie schlägt Transkript', () => {
-  function withTelemetry(events: unknown[]) {
-    const finishWithUsage = vi.fn();
-    const updateTelemetry = vi.fn();
-    const telemetry = {
-      eventsFor: () => events,
-      forget: vi.fn(),
-    };
-    const deps = {
-      features: { get: () => makeFeature(), savePhases: vi.fn(), setTasks: vi.fn() },
-      projects: { get: () => ({ id: 'p1', path: '/p', defaultBranch: 'main', enabledPhases: [] }) },
-      attention: { raise: vi.fn(), resolveFor: vi.fn(() => []), listOpen: () => [] },
-      executions: { finishWithUsage, updateTelemetry, recordTranscriptEnd: vi.fn(), finish: vi.fn() },
-      sessions: { end: vi.fn() },
-      settings: {
-        getAutomation: () => ({ autoProgressUntil: 'off', autoVerify: false, autoMode: true }),
-        getOptimization: () => ({ contextStrategy: 'full', compression: 'off' }),
-      },
-      worktrees: {},
-      ptys: { remove: vi.fn() },
-      knowledge: { materializeForFeature: () => ({ preamble: '' }) },
-      agentGate: { hasAgentsFor: () => false },
-      dataDir: '/tmp',
-      telemetry,
-    } as unknown as OrchestratorDeps;
-
-    const orch = new Orchestrator(deps);
-    const session = {
-      id: 'sess1',
-      featureId: 'f1',
-      projectId: 'p1',
-      cwd: '/p',
-      claudeSessionId: null,
-      scrollback: '',
-    } as unknown as LiveSession;
-    const running = {
-      phase: 'specify',
-      executionId: 'e1',
-      scrollbackStart: 0,
-      transcriptOffsetStart: 0,
-      transcriptPathStart: null,
-      startedAt: 1_000,
-      promptText: 'prompt',
-    };
-    return { orch, session, running, finishWithUsage };
-  }
-
-  function apiEvent(over: Record<string, unknown> = {}) {
-    return {
-      requestId: 'req_1',
-      at: 2_000,
-      sddSessionId: 'sess1',
-      sddRunId: null,
-      claudeSessionId: 'uuid',
-      model: 'claude-opus-5',
-      inputTokens: 10,
-      outputTokens: 20,
-      cacheReadTokens: 30,
-      cacheCreationTokens: 40,
-      costMicros: 500,
-      origin: 'main',
-      ...over,
-    };
-  }
-
-  it('schreibt bei vorhandenen Meldungen die Herkunft telemetry — ohne Transkript-Messung', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([apiEvent()]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-
-    expect(finishWithUsage).toHaveBeenCalledTimes(1);
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.tokensSource).toBe('telemetry');
-    expect(usage.tokens).toBe(100);
-    expect(usage.costMicros).toBe(500);
-    expect(usage.model).toBe('claude-opus-5');
-    // Endgültigkeitsfenster ist gesetzt (FR-012).
-    expect(usage.telemetryFinalAt).toBeGreaterThan(Date.now());
-  });
-
-  it('zählt nur Meldungen im Zeitfenster des Laufs (US1 Szenario 1)', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([
-      apiEvent({ requestId: 'frueher', at: 500, outputTokens: 999_999 }), // vor dem Laufstart
-      apiEvent({ requestId: 'drin', at: 2_000 }),
-    ]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.outputTokens).toBe(20); // nur das Ereignis im Fenster
-  });
-
-  /**
-   * Kern des Fixes vom 30.07.2026: die Messung wird fortgeschrieben, nicht neu summiert.
-   * Vorher summierte jeder Nachtrag den Puffer von Grund auf — und traf einen, den der
-   * Kehraus inzwischen beschnitten hatte. Neun Läufe wurden so um Faktor 2,9–16,8 nach
-   * unten geschrieben; einer verlor sogar seinen Preis, weil die Messung ganz auf das
-   * Transkript zurückfiel.
-   */
-  describe('Telemetrie-Summe ist monoton', () => {
-    /** Direkter Zugriff auf die Messung — der Nachtrag hängt sonst an Timern. */
-    const messen = (orch: unknown, session: unknown, running: unknown, until: number) =>
-      (
-        orch as {
-          meterFromTelemetry(s: unknown, r: unknown, u: number): Record<string, number | null> | null;
-        }
-      ).meterFromTelemetry(session, running, until);
-
-    it('hält die Zahl, wenn der Puffer zwischen zwei Messungen geleert wird', () => {
-      const events: unknown[] = [
-        apiEvent({ requestId: 'a', at: 2_000 }),
-        apiEvent({ requestId: 'b', at: 3_000 }),
-      ];
-      const { orch, session, running } = withTelemetry(events);
-
-      const erst = messen(orch, session, running, 4_000);
-      expect(erst?.tokens).toBe(200); // 2 × (10+20+30+40)
-
-      // Der Kehraus hat zugeschlagen — der Puffer ist leer.
-      events.length = 0;
-      const zweit = messen(orch, session, running, 4_000);
-
-      expect(zweit?.tokens).toBe(200); // unverändert, NICHT 0 und nicht null
-      expect(zweit?.costMicros).toBe(1_000);
-    });
-
-    it('zählt neue Meldungen dazu, jede aber nur einmal (FR-006)', () => {
-      const events: unknown[] = [apiEvent({ requestId: 'a', at: 2_000 })];
-      const { orch, session, running } = withTelemetry(events);
-
-      expect(messen(orch, session, running, 9_000)?.tokens).toBe(100);
-
-      // Dieselbe Meldung erneut im Puffer plus eine echte neue.
-      events.push(apiEvent({ requestId: 'a', at: 2_000 }), apiEvent({ requestId: 'c', at: 5_000 }));
-
-      expect(messen(orch, session, running, 9_000)?.tokens).toBe(200); // 100 + 100, 'a' nicht doppelt
-    });
-
-    it('trennt die Summen zweier Läufe', () => {
-      const events: unknown[] = [apiEvent({ requestId: 'a', at: 2_000 })];
-      const { orch, session, running } = withTelemetry(events);
-      const zweiterLauf = { ...running, executionId: 'e2' };
-
-      expect(messen(orch, session, running, 9_000)?.tokens).toBe(100);
-      expect(messen(orch, session, zweiterLauf, 9_000)?.tokens).toBe(100); // eigener Akkumulator
-    });
-  });
-
-  it('weist ohne Subagenten keinen Subagenten-Anteil aus (FR-010, kein Null-Platzhalter)', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([apiEvent({ origin: 'main' })]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.subagentTokens).toBeNull();
-  });
-
-  it('rechnet Subagenten mit und weist ihren Anteil getrennt aus (FR-009/FR-010)', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([
-      apiEvent({ requestId: 'haupt', origin: 'main', outputTokens: 100 }),
-      apiEvent({ requestId: 'sub', origin: 'subagent', outputTokens: 300 }),
-    ]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.outputTokens).toBe(400);
-    expect(usage.subagentTokens).toBe(380); // 10+300+30+40
-  });
-
-  it('fällt ohne Meldungen auf die bestehende Messung zurück (FR-015)', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.tokensSource).not.toBe('telemetry');
-    expect(['transcript', 'parsed', 'estimated']).toContain(usage.tokensSource);
-  });
-
-  it('verwirft Meldungen einer fremden Session — sie tragen eine andere Marke (FR-003)', () => {
-    const { orch, session, running, finishWithUsage } = withTelemetry([]);
-    (orch as unknown as { finishWithMetering(s: unknown, r: unknown, c: number): void }).finishWithMetering(
-      session,
-      running,
-      0,
-    );
-    // eventsFor('sess1') liefert leer → Rückfall, kein fremder Verbrauch am Lauf.
-    const usage = finishWithUsage.mock.calls[0]![2] as Record<string, unknown>;
-    expect(usage.tokensSource).not.toBe('telemetry');
-  });
-});
-
 // ---------- Dokument-Verweis im Phasenauftrag (US2) ----------
 
 /**
@@ -851,7 +653,7 @@ describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
       agentGate: { hasAgentsFor: () => false },
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
-    return { orch: new Orchestrator(deps), raise };
+    return { orch: new Orchestrator(withMeter(deps)), raise };
   }
 
   it('meldet eine schreibende Session, für die kein Schritt offen ist', () => {
@@ -1023,7 +825,7 @@ describe('Orchestrator — Worktree-Auslöser (Lebenszyklus-Schritte)', () => {
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
 
-    return { orch: new Orchestrator(deps), calls, stored, hardDelete, stepsRunTrigger, deps };
+    return { orch: new Orchestrator(withMeter(deps)), calls, stored, hardDelete, stepsRunTrigger, deps };
   }
 
   it('führt die Worktree-Auslöser in der richtigen Reihenfolge aus: vor Anlage → Anlage → nach Anlage → Phase', async () => {
@@ -1392,7 +1194,7 @@ describe('Orchestrator — test-Profil beim Beginn von implement', () => {
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
 
-    return { orch: new Orchestrator(deps), calls, deps };
+    return { orch: new Orchestrator(withMeter(deps)), calls, deps };
   }
 
   it('fährt das test-Profil beim Beginn von implement hoch (FR-014)', async () => {

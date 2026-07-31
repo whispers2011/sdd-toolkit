@@ -11,6 +11,11 @@ import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import type { Orchestrator } from './orchestrator.js';
 import { ChatWorkService } from './chatWorkService.js';
+import { RunMeter } from './core/runMeter.js';
+
+/** Turn messen liegt im gemeinsamen Kern; der Chat bekommt ihn mit (FR-002). */
+const meterFor = (executions: ExecutionRepo, telemetry?: unknown) =>
+  new RunMeter({ executions, ...(telemetry ? { telemetry: telemetry as never } : {}) });
 
 // Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
 vi.mock('../git/git.js', async (importOriginal) => {
@@ -69,6 +74,7 @@ describe('ChatWorkService — Feature-Vorschläge aus der Session', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -169,6 +175,7 @@ describe('ChatWorkService — Neustart (restart)', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       settings: new SettingsRepo(db),
       worktrees,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -288,6 +295,7 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       sessions: new SessionRepo(db),
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys,
@@ -373,6 +381,7 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
     svc = new ChatWorkService({
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: sessionsRepo,
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       worktrees: {} as unknown as WorktreeManager, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
     });
   });
@@ -456,7 +465,7 @@ describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
       worktrees: {} as unknown as WorktreeManager,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
       orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator, dataDir,
-      ...(telemetry ? { telemetry: telemetry as never } : {}),
+      meter: meterFor(executions, telemetry),
     });
 
   const session = (): LiveSession =>
@@ -545,7 +554,13 @@ function hygieneSetup() {
     ptys: { forConversation: () => ctx.live } as unknown as PtySessionManager,
     orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator,
     dataDir,
-    telemetry: { eventsFor: () => ctx.events } as never,
+    // `hold`/`release` gehören zur Anmeldung des Ereignispuffers, die der Chat mit dem
+    // gemeinsamen Kern neu erhält (FR-007).
+    meter: meterFor(new ExecutionRepo(db), {
+      eventsFor: () => ctx.events,
+      hold: vi.fn(),
+      release: vi.fn(),
+    }),
   });
   ctx.svc.ensure = async () => ({ sessionId: 's-neu' });
   vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
@@ -866,6 +881,7 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
     svc = new ChatWorkService({
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
     });
   });
@@ -924,6 +940,7 @@ describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
     svc = new ChatWorkService({
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
       worktrees: {} as unknown as WorktreeManager, ptys,
       orchestrator: {} as unknown as Orchestrator, dataDir,
     });

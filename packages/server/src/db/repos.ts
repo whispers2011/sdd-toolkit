@@ -431,6 +431,15 @@ export interface ExecutionStartInput {
   /** Snapshot der aktiven Optimierungs-Strategie (nur Phasen). */
   optContextStrategy?: ContextStrategy | null;
   optCompression?: CompressionMode | null;
+  /**
+   * Beginn des Laufs; Vorgabe ist der Zeitpunkt des Anlegens.
+   *
+   * Nur der Chat gibt ihn mit: Er legt seinen Lauf atomar beim Turn-Abschluss an und
+   * kennt den Beginn seines Turn-Fensters. Ohne dieses Feld ist `started_at` gleich
+   * `finished_at` — chat_work-Läufe hatten damit die Dauer 0 ms, und jede Beurteilung
+   * über die Dauer war für den Chat blind.
+   */
+  startedAt?: number;
 }
 
 /** Autoritative/geschätzte Verbrauchsdaten beim Abschluss eines Laufs. */
@@ -489,7 +498,7 @@ export class ExecutionRepo {
         e.kind,
         e.label ?? null,
         e.phase,
-        Date.now(),
+        e.startedAt ?? Date.now(),
         e.logPath,
         e.transcriptOffsetStart ?? null,
         e.optContextStrategy ?? null,
