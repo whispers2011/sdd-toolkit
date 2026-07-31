@@ -14,7 +14,7 @@ export interface PathLink {
 // Pfade: absolut (/…), relativ mit ./ ../, oder mind. ein Verzeichnissegment +
 // Datei mit Extension. Optional :zeile oder :zeile:spalte.
 const PATH_RE =
-  /(?:^|[\s'"`([<])((?:\/|\.{1,2}\/)?[\w@~+-]+(?:\/[\w@.~+-]+)+\.[A-Za-z0-9_]+|\/[\w@.~+-]+\.[A-Za-z0-9_]+)(?::(\d+)(?::\d+)?)?/g;
+  /(?:^|[\s'"`(\[<])((?:\/|\.{1,2}\/)?[\w@~+-]+(?:\/[\w@.~+-]+)+\.[A-Za-z0-9_]+|\/[\w@.~+-]+\.[A-Za-z0-9_]+)(?::(\d+)(?::\d+)?)?/g;
 
 export function findPathLinks(lineText: string): PathLink[] {
   const links: PathLink[] = [];

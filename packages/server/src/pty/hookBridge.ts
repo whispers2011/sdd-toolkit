@@ -26,7 +26,17 @@ export interface HookSetup {
   eventFile: string;
 }
 
-export function writeHookSettings(dataDir: string, sessionId: string): HookSetup {
+export function writeHookSettings(
+  dataDir: string,
+  sessionId: string,
+  /**
+   * Umgebungsvariablen, die im `env`-Block der Settings-Datei landen. Nötig für die
+   * Telemetrie-Messung: Der `env`-Block SCHLÄGT die Prozessumgebung (empirisch
+   * geklärt, research.md D5) — eine gegenläufige `~/.claude/settings.json` des
+   * Nutzers würde die Messung sonst still abschalten.
+   */
+  env: Record<string, string> = {},
+): HookSetup {
   const dir = join(dataDir, 'hooks');
   mkdirSync(dir, { recursive: true });
   const eventFile = join(dir, `${sessionId}.events.jsonl`);
@@ -39,9 +49,25 @@ export function writeHookSettings(dataDir: string, sessionId: string): HookSetup
     hooks[event] = [{ hooks: [{ type: 'command', command }] }];
   }
 
-  writeFileSync(settingsPath, JSON.stringify({ hooks }, null, 2), { mode: 0o600 });
+  const settings: Record<string, unknown> = { hooks };
+  if (Object.keys(env).length > 0) settings.env = env;
+
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
   writeFileSync(eventFile, '', { flag: 'a', mode: 0o600 });
   return { settingsPath, eventFile };
+}
+
+/**
+ * Settings-Datei für einen Headless-Lauf: nur der `env`-Block, keine Hooks.
+ * Headless-Prozesse bekommen heute keine Settings-Datei — ohne eine würde eine
+ * gegenläufige Nutzerkonfiguration ihre Messung abschalten (research.md D5).
+ */
+export function writeEnvSettings(dataDir: string, runId: string, env: Record<string, string>): string {
+  const dir = join(dataDir, 'hooks');
+  mkdirSync(dir, { recursive: true });
+  const settingsPath = join(dir, `run-${runId}.settings.json`);
+  writeFileSync(settingsPath, JSON.stringify({ env }, null, 2), { mode: 0o600 });
+  return settingsPath;
 }
 
 export interface ParsedHookEvent {
@@ -125,6 +151,7 @@ export function parseHookLine(line: string): ParsedHookEvent {
       return { signal: null, claudeSessionId };
   }
 }
+
 
 /** Watcht ein Event-File und liefert jede neue Zeile inkrementell (offset-basiert). */
 export class HookEventWatcher {

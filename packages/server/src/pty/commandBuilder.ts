@@ -27,10 +27,15 @@ export function buildClaudeArgv(opts: ClaudeLaunchOptions): string[] {
 }
 
 /** Argv für einen Headless-Lauf (Review-Agents, Konfliktauflösung). */
-export function buildHeadlessArgv(prompt: string, opts: { model?: string; addDir?: string } = {}): string[] {
+export function buildHeadlessArgv(
+  prompt: string,
+  opts: { model?: string; addDir?: string; settingsPath?: string | null } = {},
+): string[] {
   const args = ['claude', '-p', prompt, '--output-format', 'text'];
   if (opts.model) args.push('--model', opts.model);
   if (opts.addDir) args.push('--add-dir', opts.addDir);
+  // Trägt den env-Block der Telemetrie-Messung; er schlägt die Prozessumgebung (research.md D5).
+  if (opts.settingsPath) args.push('--settings', opts.settingsPath);
   // Headless-Läufe arbeiten im Worktree — Edits sind dort isoliert und erwünscht.
   args.push('--permission-mode', 'acceptEdits');
   return args;
@@ -43,13 +48,14 @@ export function buildHeadlessArgv(prompt: string, opts: { model?: string; addDir
  */
 export function buildChatArgv(
   prompt: string,
-  opts: { resume?: string; systemPrompt: string; model?: string },
+  opts: { resume?: string; systemPrompt: string; model?: string; settingsPath?: string | null },
 ): string[] {
   // --verbose ist im Print-Modus Voraussetzung für stream-json.
   const args = ['claude', '-p', prompt, '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
   if (opts.resume) args.push('--resume', opts.resume);
   args.push('--append-system-prompt', opts.systemPrompt);
   if (opts.model) args.push('--model', opts.model);
+  if (opts.settingsPath) args.push('--settings', opts.settingsPath);
   args.push('--allowedTools', 'Read,Grep,Glob');
   return args;
 }

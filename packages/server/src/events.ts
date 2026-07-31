@@ -25,6 +25,13 @@ export interface BusEvents {
     lastActiveAt: number;
   }) => void;
   attention_raised: (item: AttentionItem) => void;
+  /**
+   * Eine „braucht dich"-Meldung ist erledigt. Nutzdatum ist **ausschliesslich** eine
+   * `AttentionItem.id` — `Feature.id`, `LiveSession.id` und `Conversation.id` sind unzulässig,
+   * weil die Anzeige allein über die Item-ID zuordnet (C1). Pro betroffener Meldung genau ein
+   * Ereignis, kein Sammel-Ereignis mit ID-Liste (C2), und nur beim tatsächlichen Übergang
+   * offen → aufgelöst (C3). Nicht direkt senden, sondern über `emitAttentionResolved()` (C4).
+   */
   attention_resolved: (id: string) => void;
   queue_updated: (payload: { projectId: string; items: MergeQueueItem[] }) => void;
   notification: (payload: {
@@ -53,6 +60,12 @@ export interface BusEvents {
     trigger: AgentTrigger;
     status: 'running' | 'pass' | 'fail';
   }) => void;
+  /**
+   * Verbrauch eines bereits abgeschlossenen Laufs wurde nachträglich verrechnet
+   * (verspätet eingetroffene Telemetrie, FR-011). Die Ansicht lädt die Läufe neu,
+   * damit sich die Zahl ohne Zutun des Nutzers korrigiert.
+   */
+  execution_updated: (payload: { executionId: string; featureId: string | null }) => void;
 }
 
 class TypedBus extends EventEmitter {
@@ -67,6 +80,25 @@ class TypedBus extends EventEmitter {
 export const bus = new TypedBus();
 bus.setMaxListeners(100);
 
+/**
+ * Auflösungs-Meldungen an die Oberfläche: pro betroffenem Item genau ein Ereignis,
+ * Nutzdatum ausschliesslich die Item-ID (FR-001/FR-002/FR-003).
+ *
+ * Kanonisches Aufrufmuster an jedem Auflöseweg — erst auflösen, dann mit den
+ * zurückgegebenen IDs senden:
+ *
+ * ```ts
+ * emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['review_due'] }));
+ * if (deps.attention.resolve(id)) emitAttentionResolved([id]);
+ * ```
+ *
+ * Eine leere Liste ist wirkungslos und fehlerfrei (FR-006): trifft ein Auflöseweg keine
+ * offene Meldung, wird nichts gesendet.
+ */
+export function emitAttentionResolved(ids: readonly string[]): void {
+  for (const id of ids) bus.emitEvent('attention_resolved', id);
+}
+
 export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'feature_updated',
   'feature_deleted',
@@ -80,4 +112,5 @@ export const BUS_EVENT_NAMES: (keyof BusEvents)[] = [
   'chat_updated',
   'review_comments_updated',
   'agent_gate',
+  'execution_updated',
 ];

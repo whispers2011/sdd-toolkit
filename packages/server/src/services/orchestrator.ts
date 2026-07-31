@@ -1,11 +1,10 @@
 import { existsSync } from 'node:fs';
 import {
   approvePhase,
+  buildDocumentsPreamble,
   discardPhase,
   finishPhase,
   initialPhases,
-  hasUsage,
-  meter,
   nextPhase,
   reapOrphanedRunning,
   reconcileWithDisk,
@@ -13,11 +12,10 @@ import {
   resolveOptimization,
   shouldAutoProgress,
   startPhase,
-  sumUsage,
   displayStatus,
-  usageToCost,
   type AutomationSettings,
   type Feature,
+  artifactStepSpec,
   type FeaturePhase,
   type OptimizationSettings,
   type Project,
@@ -25,22 +23,39 @@ import {
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, SessionRepo, SettingsRepo } from '../db/repos.js';
 import type { KnowledgeService } from './knowledgeService.js';
+import type { FeatureDocumentsService } from './featureDocuments.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
-import { locateTranscript, readTranscriptDelta, transcriptSize } from '../pty/transcriptWatcher.js';
-import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
+import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
+import { phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
+import type { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
-import { bus } from '../events.js';
+import { bus, emitAttentionResolved } from '../events.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import type { MergeQueueService } from './mergeQueueService.js';
 import type { ChatWorkService } from './chatWorkService.js';
 import type { AgentGateService } from './agentGateService.js';
+import type { PlausibilityService } from './plausibilityService.js';
+import type { LifecycleStepService } from './lifecycleStepService.js';
 import {
   findStaleOnBoot,
   findStaleRuntime,
   type ReconcileSnapshot,
 } from './attentionReconciler.js';
+import { resolveVerificationGaps } from './verificationGap.js';
+import { ensureWorkspace } from './core/workspace.js';
+import { markSession, startOffsetIn, type RunMark, type RunMeter } from './core/runMeter.js';
+import type { SessionCore } from './core/sessionCore.js';
+
+export interface EnsureSessionOptions {
+  /**
+   * Worktree-Vorbereitung (inkl. der Worktree-Auslöser) überspringen, weil der
+   * Aufrufer sie unmittelbar davor selbst ausgeführt hat. Nur `createFeature`
+   * setzt das Flag; jeder andere Weg soll die Auslöser wiederholen (FR-025).
+   */
+  skipPrepare?: boolean;
+}
 
 export interface OrchestratorDeps {
   projects: ProjectRepo;
@@ -52,68 +67,110 @@ export interface OrchestratorDeps {
   worktrees: WorktreeManager;
   ptys: PtySessionManager;
   knowledge: KnowledgeService;
+  featureDocuments: FeatureDocumentsService;
   agentGate: AgentGateService;
+  lifecycleSteps: LifecycleStepService;
+  /** Session sicherstellen — gemeinsamer Kern, denselben Baustein benutzt der Chat-Pfad (FR-001). */
+  sessionCore: SessionCore;
+  /** Turn messen — gemeinsamer Kern, denselben Baustein benutzt der Chat-Pfad (FR-002). */
+  meter: RunMeter;
   dataDir: string;
+  /** Puffer der Verbrauchsmeldungen der CLI; fehlt er, misst nur das Transkript. */
+  telemetry?: TelemetryStore;
+  /**
+   * Plausibilitätsprüfung; fehlt sie, wird nur nicht beurteilt. Optional, damit
+   * bestehende Orchestrator-Tests unverändert kompilieren — und weil eine
+   * Beurteilung nie Voraussetzung eines Laufabschlusses sein darf (FR-003).
+   */
+  plausibility?: PlausibilityService;
+  /**
+   * Stack-Profile. Optional, damit bestehende Tests unverändert kompilieren; ein
+   * Projekt ohne Konfiguration löst hier ohnehin nichts aus (FR-013, SC-010).
+   */
+  stacks?: {
+    isConfigured(project: Project): boolean;
+    isRunning(featureId: string): boolean;
+    up(feature: Feature, project: Project, profile: 'test' | 'full'): Promise<void>;
+    down(feature: Feature, project: Project, opts?: { quiet?: boolean }): Promise<void>;
+  };
 }
 
 /**
- * Wartezeit, bis Claude Code die Schlusszeilen eines Turns geschrieben hat.
- * Grosszügig bemessen: zu früh misst zu wenig, zu spät kostet nur Latenz in der Anzeige.
+ * Hinweis auf die vom spec-kit-Skript VORAB angelegte Zieldatei.
+ *
+ * `/speckit-specify` und Verwandte legen ihre Ausgabedatei aus einem Template an,
+ * bevor der Agent zu schreiben beginnt. Das Write-Tool von Claude Code verweigert
+ * das Überschreiben einer existierenden, in dieser Session nicht gelesenen Datei —
+ * der erste Write scheitert deshalb mit „File has not been read yet".
+ *
+ * Gemessen am 27.07.2026 an spec.md: 10 905 Output-Tokens verloren, sofort erneut
+ * erzeugt. Es trifft den grössten Write der Phase. `/speckit-plan` blieb im selben
+ * Lauf verschont, weil sein Ablauf den Agenten das Template ohnehin lesen lässt —
+ * der Fehler hängt also am Ablauf, nicht an der Datei. Ein Hinweis, der nicht darauf
+ * vertraut, kostet ~25 Tokens und spart im Fehlerfall das Vierhundertfache.
+ *
+ * Zieldatei kommt aus ARTIFACT_STEP_SPECS — keine zweite Liste von Dateinamen.
  */
-const TRANSCRIPT_TAIL_DELAY_MS = 8_000;
+function templateHint(phase: FeaturePhase): string {
+  const relPath = artifactStepSpec(phase)?.primaryRelPath;
+  if (!relPath) return '';
+  return (
+    `\n\n[Hinweis] \`${relPath}\` liegt im Spec-Ordner bereits als Vorlage vor. ` +
+    `Lies sie, bevor du sie schreibst — sonst schlägt der erste Schreibvorgang fehl.`
+  );
+}
 
-/** Laufender Phasen-Kontext pro Feature (ephemer). */
-interface RunningPhase {
+/** Ausgabe jünger als das gilt als „schreibt gerade" (checkWorkWithoutRun). */
+const WORK_WITHOUT_RUN_QUIET_MS = 60_000;
+/** So lange nach dem Sessionstart wird nicht gemeldet — Anlauf und erste Phase brauchen Ruhe. */
+const WORK_WITHOUT_RUN_MIN_AGE_MS = 3 * 60_000;
+
+/**
+ * Laufender Phasen-Kontext pro Feature (ephemer): die Lauf-Marke des gemeinsamen
+ * Kerns plus das, was nur eine Phase hat.
+ */
+type RunningPhase = RunMark & {
   phase: FeaturePhase;
-  executionId: string;
-  /** Scrollback-Offset beim Start — für Kosten-Metering des Turn-Deltas (WP3). */
-  scrollbackStart: number;
-  /** Transkript-Byte-Offset beim Start — für autoritative Usage-Messung. */
-  transcriptOffsetStart: number;
-  /**
-   * Transkript-Pfad beim Start. Wechselt die Claude-Session-ID während der Phase
-   * (z. B. /clear-Reset), gilt der Start-Offset nicht für die neue Datei —
-   * dann wird ab 0 gemessen.
-   */
-  transcriptPathStart: string | null;
-  promptText: string;
   /**
    * Der Phasenprompt wurde nachweislich zugestellt (`user_prompt_submit`).
    * Vorher darf ein `Stop` NICHT als Abschluss dieser Phase gelten: Das
    * vorgeschaltete Reset-Kommando (`/clear`) erzeugt einen eigenen Turn, und
-   * dessen Stop hat real eine nie gelaufene Phase als erfolgreich abgeschlossen —
-   * Phasenversatz um eins und ein "implementation"-Commit ohne Code.
-   * Gegenstück zur Reset-Unterscheidung, die handleSubmitFailed bereits kennt.
+   * dessen Stop hat real eine nie gelaufene Phase als erfolgreich abgeschlossen
+   * (Ergebnis: Phasenversatz um eins, „implementation"-Commit ohne Code).
+   * Gegenstück zur Reset-Unterscheidung in handleSubmitFailed().
    */
   promptConfirmed: boolean;
-}
-
-/**
- * Konkrete Inbox-Meldung für eine Rückfrage: der echte Fragetext bzw. Plan-Titel steht
- * im Vordergrund („was will es von mir?"), nicht bloß die Art der Rückfrage.
- */
-export function awaitingMessage(subject: string, awaiting: 'question' | 'plan_approval', detail?: string): string {
-  if (awaiting === 'plan_approval') {
-    return detail ? `${subject}: Plan-Freigabe nötig — „${detail}"` : `${subject}: wartet auf Plan-Freigabe`;
-  }
-  return detail ? `${subject}: fragt „${detail}"` : `${subject}: hat eine Rückfrage (Antwort in der Konsole)`;
-}
+};
 
 export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private runningGates = new Set<string>(); // `${featureId}:${phase}` — Doppelstart-Guard für before-Gates
   private startingPhases = new Set<string>(); // featureId — synchroner Guard gegen Start-Races (vor runningPhases)
-  private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
   private lastPreamble = new Map<string, string>(); // featureId → zuletzt injizierte Wissens-Präambel
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
   private notifyThrottle = new NotificationThrottle();
-  private transcriptTailTimers = new Set<NodeJS.Timeout>(); // Nachtrag der Turn-Schlussnachricht
+  /** Wiederholungs-Timer des automatischen Integrationsstarts. */
+  private backgroundTimers = new Set<NodeJS.Timeout>();
+  /** Sessions, für die „Arbeit ohne Lauf" schon gemeldet wurde (eine Meldung je Episode). */
+  private workWithoutRunReported = new Set<string>();
 
   constructor(private deps: OrchestratorDeps) {}
 
   attachMergeQueue(q: MergeQueueService): void {
     this.mergeQueue = q;
+  }
+
+  /**
+   * Läuft für dieses Feature gerade ein Agenten-Gate? Quelle der Aktions-Policy
+   * für `gateRunning` (FR-005) — die Schlüssel sind `${featureId}:${phase}`.
+   */
+  isGateRunning(featureId: string): boolean {
+    const prefix = `${featureId}:`;
+    for (const key of this.runningGates) {
+      if (key.startsWith(prefix)) return true;
+    }
+    return false;
   }
 
   /** Arbeits-Chat-Sessions (kind chat_work) werden vom ChatWorkService behandelt. */
@@ -123,6 +180,16 @@ export class Orchestrator {
 
   // ---------- Feature-Lifecycle ----------
 
+  /**
+   * Feature anlegen. Der **Datensatz entsteht vor dem Worktree** (umgestellte
+   * Reihenfolge): jeder Lebenszyklus-Schritt braucht einen Lauf-Eintrag am
+   * zugehörigen Feature, und `buildRunSummaries()` überspringt Executions ohne
+   * `featureId` — ein `before_worktree_create`-Lauf wäre sonst nicht attribuierbar.
+   *
+   * Scheitert die Vorbereitung (typisch `git worktree add`), wird der frisch
+   * angelegte Datensatz zurückgerollt und der Fehler weitergeworfen: nach außen
+   * exakt die heutige Fehlersemantik („Worktree kaputt ⇒ kein Feature in der Ansicht").
+   */
   async createFeature(projectId: string, name: string, description?: string): Promise<Feature> {
     const project = this.mustProject(projectId);
     const slug = slugify(name);
@@ -130,19 +197,12 @@ export class Orchestrator {
       throw new Error(`Feature '${slug}' existiert bereits`);
     }
     const branch = `feature/${slug}`;
-    const worktreePath = await this.deps.worktrees.create({
-      projectId,
-      projectPath: project.path,
-      featureName: slug,
-      branch,
-      defaultBranch: project.defaultBranch,
-    });
 
     const feature = this.deps.features.create({
       projectId,
       name: slug,
       branch,
-      worktreePath,
+      worktreePath: null,
       phases: initialPhases(project.enabledPhases),
       integration: 'none',
       integrationTarget: null,
@@ -151,9 +211,24 @@ export class Orchestrator {
       tasksDone: 0,
       tasksTotal: 0,
     });
-    bus.emitEvent('feature_updated', feature);
 
-    await this.ensureSession(feature.id);
+    let prepared: { ok: boolean };
+    try {
+      prepared = await this.prepareWorktree(feature);
+    } catch (err) {
+      this.deps.features.hardDelete(feature.id);
+      throw err;
+    }
+    this.emitFeature(feature.id);
+
+    // Blockierender Schritt-Fehlschlag: keine Session, keine erste Phase. Das Feature
+    // bleibt stehen und meldet sich in der Inbox; erneutes Anstoßen läuft über
+    // dieselbe prepareWorktree()-Methode und löst die Meldung bei Erfolg auf.
+    if (!prepared.ok) return this.deps.features.get(feature.id)!;
+
+    // `skipPrepare`: die Vorbereitung ist gerade gelaufen. Ohne das Flag liefe sie
+    // in `ensureSessionInner` ein zweites Mal — und mit ihr jeder Worktree-Schritt.
+    await this.ensureSession(feature.id, { skipPrepare: true });
     if (description) {
       await this.startPhaseRun(feature.id, 'specify', description);
     }
@@ -161,83 +236,97 @@ export class Orchestrator {
   }
 
   /**
-   * Konsole pro Feature: eine persistente Claude-Session im Worktree.
-   * Pro Feature serialisiert (in-flight Promise), sonst spawnen zwei gleichzeitige
-   * Aufrufe (z. B. Grid-Auto-Select + Konsole öffnen) doppelte Sessions.
+   * Worktree für ein Feature bereitstellen — der EINE Weg für beide Anlagepfade
+   * (Erstanlage und erneutes Anstoßen einer Session), damit ein Wiederanlauf
+   * denselben Auslöser wiederholt.
+   *
+   * Reihenfolge: `before_worktree_create`-Schritte (im Haupt-Checkout, mit dem
+   * künftigen Pfad im Kontext) → `git worktree add` → Pfad persistieren →
+   * `after_worktree_create`-Schritte (im neuen Worktree).
+   *
+   * `{ ok: false }` = ein blockierender Schritt ist fehlgeschlagen; der Aufrufer
+   * startet weder Session noch erste Phase.
    */
-  ensureSession(featureId: string): Promise<LiveSession> {
-    const inFlight = this.ensuringSessions.get(featureId);
-    if (inFlight) return inFlight;
-    const p = this.ensureSessionInner(featureId).finally(() => {
-      this.ensuringSessions.delete(featureId);
-    });
-    this.ensuringSessions.set(featureId, p);
-    return p;
-  }
-
-  private async ensureSessionInner(featureId: string): Promise<LiveSession> {
-    const feature = this.mustFeature(featureId);
+  private async prepareWorktree(feature: Feature): Promise<{ ok: boolean }> {
     const project = this.mustProject(feature.projectId);
-    const existing = this.deps.ptys.forFeature(featureId);
-    if (existing) return existing;
 
-    // Abgeschlossene Features bekommen keine neue Session mehr — sonst sammeln
-    // sich offene Sessions auf gemergten/archivierten Features an.
-    if (feature.integration === 'merged' || feature.archivedAt !== null) {
-      throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
-    }
+    // Der künftige Pfad ist schon vor der Anlage bekannt — ein Schritt „vor
+    // Worktree-Anlage" kann ihn also auswerten (US3 Szenario 5).
+    const futurePath = feature.worktreePath ?? this.deps.worktrees.pathFor(project, feature.name);
+    const before = await this.deps.lifecycleSteps.runTrigger(
+      feature,
+      project,
+      { kind: 'before_worktree_create' },
+      { worktreePath: futurePath },
+    );
+    if (!before.ok) return { ok: false };
 
-    // Worktree sicherstellen — auch wenn ein gespeicherter Pfad auf Disk fehlt
-    // (z. B. manuell gelöscht): worktrees.create ist idempotent.
+    // Idempotent, inkl. Waisen-Erholung: auch wenn ein gespeicherter Pfad auf Disk fehlt
+    // (z. B. manuell gelöscht). Der gemeinsame Kern — derselbe Baustein trägt die
+    // Arbeitskopie des Chats (FR-003); die Auslöser darum herum bleiben feature-eigen.
     if (!feature.worktreePath || !existsSync(feature.worktreePath)) {
-      if (feature.worktreePath) await this.deps.worktrees.remove(project.path, feature.worktreePath).catch(() => {});
-      const wt = await this.deps.worktrees.create({
-        projectId: project.id,
-        projectPath: project.path,
-        featureName: feature.name,
+      const wt = await ensureWorkspace(this.deps.worktrees, {
+        project,
+        name: feature.name,
         branch: feature.branch,
-        defaultBranch: project.defaultBranch,
+        recordedPath: feature.worktreePath,
       });
-      this.deps.features.setWorktree(featureId, wt);
+      this.deps.features.setWorktree(feature.id, wt);
       feature.worktreePath = wt;
     }
 
-    // Resume-Recovery (WP2): nie blind auf eine tote Session-ID resumen —
-    // erst prüfen, ob das Transkript-JSONL noch existiert (Claude räumt nach ~30 Tagen auf).
-    const prev = this.deps.sessions.latestForFeature(featureId);
-    let resumeId = prev?.claude_session_id ?? undefined;
-    if (resumeId && prev) {
-      if (!locateTranscript(feature.worktreePath ?? project.path, resumeId)) {
-        this.deps.sessions.setClaudeSessionId(prev.id, null);
-        resumeId = undefined;
+    return this.deps.lifecycleSteps.runTrigger(feature, project, { kind: 'after_worktree_create' });
+  }
+
+  /**
+   * Konsole pro Feature: eine persistente Claude-Session im Worktree.
+   *
+   * Der Doppelstart-Schutz, die Resume-Prüfung und der Berechtigungsmodus kommen aus
+   * dem gemeinsamen Kern — derselbe Baustein, den der Chat-Pfad benutzt (FR-001).
+   * Feature-eigen bleibt nur, was hier in der Auflösefunktion steht: die Abschluss-
+   * Prüfung und die Worktree-Vorbereitung samt ihrer Lebenszyklus-Auslöser.
+   */
+  ensureSession(featureId: string, opts: EnsureSessionOptions = {}): Promise<LiveSession> {
+    return this.deps.sessionCore.ensure(`feature:${featureId}`, () => {
+      const feature = this.mustFeature(featureId);
+      const project = this.mustProject(feature.projectId);
+      const existing = this.deps.ptys.forFeature(featureId);
+
+      // Reihenfolge mit Absicht: erst „läuft schon eine?", DANN „ist das Feature
+      // abgeschlossen?". Ein gemergtes Feature mit laufender Session bekommt seine
+      // Session zurück, statt einen Fehler zu werfen — offene Konsolen brechen sonst weg.
+      if (!existing && (feature.integration === 'merged' || feature.archivedAt !== null)) {
+        throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
       }
-    }
 
-    // Auto-Modus (aufgelöst global → Projekt → Feature): an → bypassPermissions
-    // (keine Kommando-/Tool-Rückfragen), aus → acceptEdits (nur Edits, Kommandos fragen nach).
-    const automation = this.automationFor(feature);
-    const argv = buildClaudeArgv({
-      ...(resumeId ? { resume: resumeId } : {}),
-      settingsPath: '__SETTINGS__',
-      permissionMode: automation.autoMode ? 'bypassPermissions' : 'acceptEdits',
+      return {
+        project,
+        featureId,
+        conversationId: null,
+        kind: 'feature' as const,
+        existing,
+        // Der Phasen-Pfad legt die Arbeitskopie über denselben Weg an wie die
+        // Erstanlage: ein erneutes Anstoßen wiederholt damit auch die
+        // Worktree-Auslöser (Wiederanlauf, FR-025). Ausnahme: `createFeature` hat
+        // unmittelbar davor selbst vorbereitet — ein zweiter Durchlauf würde jeden
+        // Worktree-Schritt der Anlage doppelt ausführen.
+        workspace: async () => {
+          if (!opts.skipPrepare) {
+            const prepared = await this.prepareWorktree(feature);
+            if (!prepared.ok) {
+              throw new Error(
+                `${feature.name}: Lebenszyklus-Schritt vor der Session fehlgeschlagen — siehe „Braucht dich".`,
+              );
+            }
+          }
+          const pfad = feature.worktreePath;
+          if (!pfad) throw new Error(`${feature.name}: Worktree konnte nicht bereitgestellt werden`);
+          return pfad;
+        },
+        previous: this.deps.sessions.latestForFeature(featureId),
+        automation: this.automationFor(feature),
+      };
     });
-
-    const session = await this.deps.ptys.spawn({
-      projectId: project.id,
-      featureId,
-      kind: 'feature',
-      cwd: feature.worktreePath,
-      argv,
-      withHooks: true,
-    });
-    this.deps.sessions.create({
-      id: session.id,
-      featureId,
-      projectId: project.id,
-      kind: 'feature',
-      pid: session.pty.pid,
-    });
-    return session;
   }
 
   // ---------- Phasen ----------
@@ -260,10 +349,17 @@ export class Orchestrator {
     }
     this.startingPhases.add(featureId);
     try {
-      // before_phase-Gate: Start deferren, Phase bleibt idle (crash-sicher — ein
-      // Absturz während des Gates hinterlässt schlicht eine ungestartete Phase).
+      // before_phase-Vorlauf: Start deferren, Phase bleibt idle (crash-sicher — ein
+      // Absturz während des Vorlaufs hinterlässt schlicht eine ungestartete Phase).
+      // Deferriert wird für Schritte UND Agents; ohne beides bleibt der Weg exakt
+      // wie bisher (kein zusätzlicher Prozess, keine Verzögerung).
       const trigger = { kind: 'before_phase', phase } as const;
-      if (!opts.skipGates && this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger)) {
+      const deferred =
+        !opts.skipGates &&
+        (this.needsTestStack(feature, phase) ||
+          this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger) ||
+          this.deps.agentGate.hasAgentsFor(feature.projectId, featureId, trigger));
+      if (deferred) {
         const key = `${featureId}:${phase}`;
         if (!this.runningGates.has(key)) {
           this.runningGates.add(key);
@@ -298,8 +394,13 @@ export class Orchestrator {
   }
 
   /**
-   * before_phase-Gate asynchron ausführen: PASS startet die Phase (skipGates),
-   * blockierender FAIL erzeugt ein Inbox-Item — der Start unterbleibt.
+   * before_phase-Vorlauf asynchron ausführen: erst die Lebenszyklus-Schritte, dann
+   * das Agenten-Gate, dann der Phasenstart (skipGates). Ein blockierender Fehlschlag
+   * auf einer der beiden Stufen verhindert den Start — die Phase bleibt `idle`.
+   *
+   * Schritte VOR Agents (research.md E8): Schritte bereiten mechanisch vor
+   * (installieren, generieren, formatieren), Agents urteilen. Ein Agent soll den
+   * vorbereiteten Stand beurteilen, nicht einen halb vorbereiteten.
    */
   private async runBeforePhaseGate(
     key: string,
@@ -310,7 +411,27 @@ export class Orchestrator {
     try {
       const feature = this.mustFeature(featureId);
       const project = this.mustProject(feature.projectId);
-      const outcome = await this.deps.agentGate.runTrigger(feature, project, { kind: 'before_phase', phase });
+      const trigger = { kind: 'before_phase', phase } as const;
+
+      // Reihenfolge am gemeinsamen Punkt: STACK vor Schritten vor Agents (research E9).
+      // Ein Schritt darf Migrationen gegen die frisch hochgefahrene Datenbank fahren;
+      // ein Agent soll den vorbereiteten Stand beurteilen. Scheitert das Profil,
+      // startet die Phase NICHT und bleibt `idle` — die Meldung hat der StackService
+      // schon erzeugt (FR-019, US2 Szenario 5).
+      if (this.needsTestStack(feature, phase)) {
+        try {
+          await this.deps.stacks!.up(feature, project, 'test');
+        } catch {
+          return;
+        }
+      }
+
+      // Das Inbox-Item hat der Schritt-Service schon erzeugt; hier bleibt nur, den
+      // Start zu unterlassen (Human-Override über manuelles Starten bleibt möglich).
+      const steps = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      if (!steps.ok) return;
+
+      const outcome = await this.deps.agentGate.runTrigger(feature, project, trigger);
       if (outcome.ok) {
         await this.startPhaseRun(featureId, phase, extraPrompt, { skipGates: true });
         return;
@@ -330,6 +451,38 @@ export class Orchestrator {
     } finally {
       this.runningGates.delete(key);
     }
+  }
+
+  /**
+   * Muss vor dieser Phase das `test`-Profil hochgefahren werden (FR-014)?
+   *
+   * Nur beim Beginn von `implement` und nur, solange die Absicht noch nicht
+   * steht: über alle folgenden Läufe desselben Features bleibt der Stack stehen
+   * und wird NICHT pro Lauf herunter- und wieder hochgefahren (SC-006).
+   *
+   * Fast-Path: ohne Stack-Konfiguration ist das ein Blick auf ein leeres Objekt —
+   * kein Query, kein Spawn, keine messbare Verzögerung (SC-010).
+   */
+  private needsTestStack(feature: Feature, phase: FeaturePhase): boolean {
+    if (phase !== 'implement' || !this.deps.stacks) return false;
+    const project = this.deps.projects.get(feature.projectId);
+    if (!project || !this.deps.stacks.isConfigured(project)) return false;
+    return !this.deps.stacks.isRunning(feature.id);
+  }
+
+  /**
+   * Stack eines Features abbauen (FR-017). Für die Anlässe, an denen ein
+   * Fehlschlag den Vorgang nicht abbrechen darf — Session-Ende, Archivieren,
+   * Löschen: es entsteht die Meldung, der Vorgang läuft weiter (Edge Case
+   * „archiviert oder abgebrochen, ohne je gemergt zu werden").
+   */
+  async tearDownStack(featureId: string): Promise<void> {
+    if (!this.deps.stacks) return;
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return;
+    const project = this.deps.projects.get(feature.projectId);
+    if (!project) return;
+    await this.deps.stacks.down(feature, project, { quiet: true }).catch(() => {});
   }
 
   /** Blockierender Gate-FAIL: Inbox-Item + Notification (Human-Override bleibt möglich). */
@@ -353,11 +506,9 @@ export class Orchestrator {
 
   /** Freigabe/Verwerfen/Neustart einer Phase löst offene Gate-Meldungen des Features auf. */
   private resolveGateAttention(featureId: string): void {
-    const ids = this.deps.attention.resolveFor({
-      featureId,
-      kinds: ['phase_gate_failed', 'approval_required'],
-    });
-    for (const id of ids) bus.emitEvent('attention_resolved', id);
+    emitAttentionResolved(
+      this.deps.attention.resolveFor({ featureId, kinds: ['phase_gate_failed', 'approval_required'] }),
+    );
   }
 
   /** Fehlgeschlagenen Phasenstart zurückrollen (running → idle) und ein „braucht dich"-Item erzeugen. */
@@ -411,17 +562,21 @@ export class Orchestrator {
 
     // Offset VOR dem Reset festhalten: die Usage des Resets (z. B. /compact) gehört
     // zur realen Kosten dieses optimierten Laufs und wird so mitgemessen (faires A/B).
-    const { path: transcriptPathStart, offset: transcriptOffsetStart } = this.transcriptMarkFor(session);
+    const mark = markSession(session, Date.now());
     const executionId = this.deps.executions.start({
       projectId: feature.projectId,
       featureId: feature.id,
       kind: 'phase',
       phase,
       logPath: null,
-      transcriptOffsetStart,
+      transcriptOffsetStart: mark.transcriptOffsetStart,
       optContextStrategy: opt.contextStrategy,
       optCompression: opt.compression,
     });
+
+    // Lauf beim Telemetrie-Puffer anmelden: seine Meldungen dürfen nicht nach Alter
+    // verworfen werden, solange er läuft (siehe telemetryStore.sweep).
+    this.deps.meter.hold(session.id);
 
     // Wissens-Präambel nur anhängen, wenn nötig: bei erster Injektion, geändertem
     // Wissen oder nach einem Kontext-Reset (nach /clear ist sie weg, nach /compact
@@ -431,15 +586,20 @@ export class Orchestrator {
     const prevPreamble = this.lastPreamble.get(feature.id);
     const injectPreamble =
       plan.preamble.trim().length > 0 && (plan.reset !== null || plan.preamble !== prevPreamble);
-    const prompt = injectPreamble ? base + plan.preamble : base;
+    // Dokument-Verweis BEWUSST ohne Dedupe: er gehört zum Auftrag selbst und muss
+    // in jedem Schritt stehen, auch direkt nach /compact oder /clear (FR-007/FR-008,
+    // SC-003). Ohne Dokumente ist er leer — dann ist der Prompt zeichengleich mit
+    // dem bisherigen (FR-017, SC-006).
+    const docsBlock = this.documentsPreambleFor(feature, phase);
+    const prompt = injectPreamble
+      ? base + docsBlock + plan.preamble + templateHint(phase)
+      : base + docsBlock + templateHint(phase);
     if (injectPreamble) this.lastPreamble.set(feature.id, plan.preamble);
 
     this.runningPhases.set(feature.id, {
-      phase,
+      ...mark,
       executionId,
-      scrollbackStart: session.scrollback.length,
-      transcriptOffsetStart,
-      transcriptPathStart,
+      phase,
       promptText: prompt,
       promptConfirmed: false,
     });
@@ -447,13 +607,6 @@ export class Orchestrator {
     // Reset-Kommando (opt-in) VOR dem Phasenprompt; Session-Prozess/-ID bleiben.
     if (plan.reset) this.deps.ptys.sendPrompt(session.id, resetCommand(plan.reset));
     this.deps.ptys.sendPrompt(session.id, prompt);
-  }
-
-  /** Aktuelle Transkript-Startmarke der Session (Pfad + Byte-Offset; 0/null wenn unbekannt). */
-  private transcriptMarkFor(session: LiveSession): { path: string | null; offset: number } {
-    if (!session.claudeSessionId) return { path: null, offset: 0 };
-    const path = locateTranscript(session.cwd, session.claudeSessionId);
-    return { path, offset: path ? transcriptSize(path) : 0 };
   }
 
   private optimizationFor(feature: Feature): OptimizationSettings {
@@ -471,9 +624,9 @@ export class Orchestrator {
     this.resolveGateAttention(featureId);
 
     // Auto-Progress-Umleitung: hätte die Folgephase ein before_phase-Gate, wird
-    // ohne Auto-Start-Effekte approvt (advanceTo-Muster) und der Start über
-    // startPhaseRun angestoßen — der deferrt bis zum Gate-PASS. phaseMachine
-    // bleibt unangetastet (kein Agent-Wissen in der pure Machine).
+    // ohne Auto-Start-Effekte approvt und der Start über startPhaseRun angestoßen —
+    // der deferrt bis zum Gate-PASS. phaseMachine bleibt unangetastet (kein
+    // Agent-Wissen in der pure Machine).
     const next = nextPhase(feature.phases, phase);
     if (
       next !== null &&
@@ -499,26 +652,68 @@ export class Orchestrator {
   }
 
   /**
-   * Drag-to-Advance (speckit-Muster): alle Zwischenphasen bis zur Zielphase
-   * approven, dann die Zielphase starten.
+   * Arbeit ohne zugeordneten Lauf melden (Befund A12, 30.07.2026).
+   *
+   * Am 30.07. lief eine implement-Phase 30 Sekunden, wurde als fertig verbucht und
+   * freigegeben — und der Agent arbeitete danach 37 Minuten weiter: ungezählt,
+   * unbepreist, mit einem Phasenzustand, der Fertigstellung behauptete. In der
+   * Datenbank stand kein einziger Hinweis darauf. Sichtbar war es nur an der Ausgabe
+   * der Session, also an genau der Grösse, die diese Prüfung liest.
+   *
+   * Bewusst nur eine Meldung, kein Eingriff: der Agent soll weiterarbeiten dürfen.
+   * Was fehlt, ist die Zuordnung — und die kann nur ein Mensch klären.
+   *
+   * Je Session wird höchstens einmal gemeldet; erst wenn wieder ein Lauf offen ist,
+   * kann dieselbe Session erneut auffallen.
    */
-  async advanceTo(featureId: string, target: FeaturePhase): Promise<void> {
-    const feature = this.mustFeature(featureId);
-    const order = Object.keys(feature.phases) as FeaturePhase[];
-    for (const p of order) {
-      if (p === target) break;
-      const fresh = this.mustFeature(featureId);
-      const status = fresh.phases[p]?.status;
-      if (status === 'approved') continue;
-      if (status === 'awaiting_review') {
-        // Direkt approven ohne Auto-Progress-Effekte (das Ziel bestimmt der Drag).
-        const t = approvePhase(fresh.phases, p, { ...this.automationFor(fresh), autoProgressUntil: 'off', autoVerify: false }, Date.now());
-        this.deps.features.savePhases(featureId, t.phases);
-      } else {
-        throw new Error(`Phase ${p} ist ${status ?? 'unbekannt'} — kann nicht zu ${target} springen`);
+  checkWorkWithoutRun(now = Date.now()): void {
+    for (const session of this.deps.ptys.list()) {
+      if (session.kind !== 'feature' || !session.featureId || session.exited) continue;
+
+      const laeuftEinSchritt = this.runningPhases.has(session.featureId);
+      if (laeuftEinSchritt) {
+        this.workWithoutRunReported.delete(session.id); // Zuordnung wieder in Ordnung
+        continue;
       }
+
+      // Der Agent muss über einen längeren Zeitraum schreiben — die letzten Zuckungen
+      // eines gerade beendeten Turns sind kein Befund.
+      const seitAusgabe = now - session.lastOutputAt;
+      if (session.lastOutputAt === 0 || seitAusgabe > WORK_WITHOUT_RUN_QUIET_MS) continue;
+      const seitStart = now - session.startedAt;
+      if (seitStart < WORK_WITHOUT_RUN_MIN_AGE_MS) continue;
+      if (this.workWithoutRunReported.has(session.id)) continue;
+
+      this.workWithoutRunReported.add(session.id);
+      const feature = this.deps.features.get(session.featureId);
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: session.projectId,
+        featureId: session.featureId,
+        message:
+          `${feature?.name ?? session.featureId}: Der Agent arbeitet, aber kein Schritt ist offen — ` +
+          `dieser Verbrauch wird nicht gemessen. Schritt wieder öffnen oder Ergebnis prüfen.`,
+      });
+      bus.emitEvent('attention_raised', item);
+      console.warn(
+        `[zuordnung] ${session.id} (${feature?.name ?? session.featureId}): Ausgabe vor ${Math.round(
+          seitAusgabe / 1000,
+        )} s, kein offener Lauf`,
+      );
     }
-    await this.startPhaseRun(featureId, target);
+  }
+
+  /**
+   * Freigegebenen Schritt wieder öffnen (approved → idle), damit die Arbeit daran
+   * fortgesetzt werden kann. Nutzt bewusst `discardPhase`: dieselbe Zustandsänderung
+   * (Schritt auf idle, freigegebene Folgeschritte werden `stale`), keine Dateioperation —
+   * die Arbeit im Worktree bleibt unangetastet.
+   */
+  reopen(featureId: string, phase: FeaturePhase): void {
+    const feature = this.mustFeature(featureId);
+    const t = discardPhase(feature.phases, phase);
+    this.deps.features.savePhases(featureId, t.phases);
+    this.emitFeature(featureId);
   }
 
   discard(featureId: string, phase: FeaturePhase): void {
@@ -534,9 +729,48 @@ export class Orchestrator {
       if (e.kind === 'start_agent') {
         void this.startAgentForApprovedChain(featureId, e.phase);
       } else if (e.kind === 'start_integration') {
-        void this.mergeQueue?.beginIntegration(featureId);
+        // Auch der automatische Pfad unterliegt den Vorprüfungen (FR-004/FR-027):
+        // eine Ablehnung ist KEIN Erfolg und ändert nichts am Feature.
+        this.tryBeginIntegration(featureId, 0);
       }
     }
+  }
+
+  /**
+   * Automatischer Integrationsstart mit Wiederholung.
+   *
+   * Eine Ablehnung mit `retryable` heisst „noch nicht", nicht „nein": der Agent
+   * schreibt noch (siehe mergeQueueService.sessionStillWorking). Ohne Wiederholung
+   * bliebe das Feature stumm liegen — genau das passierte am 30.07.2026, als ein
+   * abgelehnter Auto-Start 40 Minuten lang niemandem auffiel. Nach Ablauf der
+   * Versuche wird es ein Inbox-Item, damit der Vorgang nicht still verschwindet.
+   */
+  private tryBeginIntegration(featureId: string, versuch: number): void {
+    const MAX_VERSUCHE = 20; // 20 × 30 s = 10 min Geduld mit einem arbeitenden Agenten
+    void this.mergeQueue?.beginIntegration(featureId).then((r) => {
+      if (r.started || !r.reason) return;
+      if (!r.retryable) {
+        console.warn(`[integration] ${featureId}: automatischer Start abgelehnt — ${r.reason}`);
+        return;
+      }
+      if (versuch + 1 >= MAX_VERSUCHE) {
+        const feature = this.deps.features.get(featureId);
+        const item = this.deps.attention.raise({
+          kind: 'agent_errored',
+          projectId: feature?.projectId ?? '',
+          featureId,
+          message: `${feature?.name ?? featureId}: Integration konnte nicht starten — ${r.reason}`,
+        });
+        bus.emitEvent('attention_raised', item);
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.backgroundTimers.delete(timer);
+        this.tryBeginIntegration(featureId, versuch + 1);
+      }, 30_000);
+      timer.unref?.();
+      this.backgroundTimers.add(timer);
+    });
   }
 
   /** Effekt start_agent: Phase ist in der Maschine schon running — nur Lauf starten. */
@@ -553,6 +787,21 @@ export class Orchestrator {
    * einen kompakten Pointer für die Prompt zurückgeben. Best-effort — Wissen darf
    * eine Phase nie blockieren.
    */
+  /**
+   * Verweis auf die hinterlegten Dokumente (Namen + Fundorte, nie Inhalte).
+   * Frisch aus dem Manifest gelesen, damit er Neustart, Kontext-Reset und das
+   * Entfernen einer Datei überlebt. Best-effort wie die Wissens-Präambel: ein
+   * defektes Manifest darf keinen Phasenstart blockieren.
+   */
+  private documentsPreambleFor(feature: Feature, phase: FeaturePhase): string {
+    try {
+      return buildDocumentsPreamble(phase, this.deps.featureDocuments.listDocuments(feature.id));
+    } catch (err) {
+      console.warn('[documents] Verweis übersprungen:', (err as Error).message);
+      return '';
+    }
+  }
+
   private knowledgePreambleFor(featureId: string): string {
     try {
       const feature = this.deps.features.get(featureId);
@@ -586,11 +835,12 @@ export class Orchestrator {
 
     // Wieder aktiv → offene Aufmerksamkeits-Items dieser Session sind erledigt.
     if (status === 'working') {
-      const ids = this.deps.attention.resolveFor({
-        sessionId: session.id,
-        kinds: ['awaiting_input', 'permission_request'],
-      });
-      for (const id of ids) bus.emitEvent('attention_resolved', id);
+      emitAttentionResolved(
+        this.deps.attention.resolveFor({
+          sessionId: session.id,
+          kinds: ['awaiting_input', 'permission_request'],
+        }),
+      );
     }
     // Zustandsgekoppelte Bereinigung: jede jetzt überholte Meldung auflösen (auch feature-weit,
     // z.B. „Agent-Fehler" sobald wieder gearbeitet wird). Nur in Nicht-Warte-Übergängen, damit
@@ -611,11 +861,13 @@ export class Orchestrator {
           projectId: session.projectId,
           featureId: session.featureId,
           sessionId: session.id,
-          message: awaitingMessage(
-            this.subjectOf(feature, session.featureId),
-            effect.awaiting,
-            effect.detail,
-          ),
+          // Worum es geht, gehört in die Meldung: Die Inbox ist das Instrument für
+          // „Monitoring by exception" — ohne den Fragetext sagt sie nur DASS etwas
+          // ansteht und zwingt zum Wechsel in die Konsole, um es einzuschätzen.
+          message:
+            effect.awaiting === 'plan_approval'
+              ? `${feature?.name ?? 'Session'}: wartet auf Plan-Freigabe${effect.detail ? ` — ${effect.detail}` : ''}`
+              : `${feature?.name ?? 'Session'}: ${effect.detail ?? 'hat eine Frage'}`,
         });
         bus.emitEvent('attention_raised', item);
         if (this.notifyThrottle.allow(session.id, 'input_requested')) {
@@ -652,7 +904,7 @@ export class Orchestrator {
 
     // Der Stop gehört noch nicht zu dieser Phase: Ihr Prompt ist nicht zugestellt,
     // also stammt er von einem vorgeschalteten Kommando (Reset). Die Phase läuft
-    // gleich erst an — sie hier abzuschliessen meldete Erfolg ohne jede Arbeit.
+    // gleich erst an — sie hier abzuschließen meldete Erfolg ohne jede Arbeit.
     if (running && !running.promptConfirmed) {
       console.warn(
         `[orchestrator] Turn-Ende vor Zustellung des Phasenprompts (${running.phase}) — Reset-Turn, Phase bleibt offen`,
@@ -662,12 +914,12 @@ export class Orchestrator {
 
     if (running) {
       this.runningPhases.delete(featureId);
-      // Kosten-Metering: autoritativ aus dem Transkript, Fallback auf Scrollback-Schätzung.
-      this.deps.executions.finishWithUsage(running.executionId, 0, this.meterTurn(session, running));
+      // Verbrauch: vorrangig aus den Meldungen der CLI, sonst wie bisher aus dem
+      // Transkript. Genau EIN Schreibpfad je Lauf — die Werte beider Quellen
+      // werden nie addiert (FR-016).
+      this.deps.meter.finish(session, running, 0);
       // Transkript-Endkoordinaten festhalten → Lauf-Log ist neustartfest abrufbar.
       this.persistTranscriptRange(session, running);
-      // ... und nach kurzer Frist erneut, weil die Schlusszeilen erst danach kommen.
-      this.scheduleTranscriptTailReconcile(session, running);
 
       // Task-Fortschritt aktualisieren (implement/tasks ändern tasks.md).
       if (feature.worktreePath) {
@@ -679,9 +931,11 @@ export class Orchestrator {
       this.deps.features.savePhases(featureId, t.phases);
       this.emitFeature(featureId);
 
-      // after_phase-Gate: läuft NACH dem Phasenabschluss und VOR dem Auto-
-      // Progress. Blockierender FAIL → Phase bleibt awaiting_review, Inbox-Item,
+      // after_phase-Vorlauf: läuft NACH dem Phasenabschluss und VOR dem Auto-
+      // Progress. Blockierender Fehlschlag → Phase bleibt awaiting_review, Inbox-Item,
       // kein Auto-Approve; manuelles Freigeben (Human-Override) bleibt möglich.
+      // Schritte vor Agents (E8) — und beide vor jedem Weiterlauf (FR-009).
+      if (await this.runAfterPhaseSteps(featureId, running.phase)) return;
       const gateBlocked = await this.runAfterPhaseGate(featureId, running.phase);
       if (gateBlocked) return;
 
@@ -716,6 +970,32 @@ export class Orchestrator {
   }
 
   /**
+   * after_phase-Schritte ausführen; true = blockierender Fehlschlag (Aufrufer stoppt
+   * Gate und Auto-Progress). Infrastruktur-Fehler blockieren nie (best-effort +
+   * behebbare Meldung) — dieselbe Linie wie beim Agenten-Gate.
+   */
+  private async runAfterPhaseSteps(featureId: string, phase: FeaturePhase): Promise<boolean> {
+    const feature = this.deps.features.get(featureId);
+    if (!feature) return false;
+    const trigger = { kind: 'after_phase', phase } as const;
+    if (!this.deps.lifecycleSteps.hasStepsFor(feature.projectId, featureId, trigger)) return false;
+    try {
+      const project = this.mustProject(feature.projectId);
+      const outcome = await this.deps.lifecycleSteps.runTrigger(feature, project, trigger);
+      return !outcome.ok;
+    } catch (err) {
+      const item = this.deps.attention.raise({
+        kind: 'agent_errored',
+        projectId: feature.projectId,
+        featureId,
+        message: `${feature.name}: Schritte nach Phase '${phase}' fehlgeschlagen — ${(err as Error).message}`,
+      });
+      bus.emitEvent('attention_raised', item);
+      return false;
+    }
+  }
+
+  /**
    * after_phase-Gate ausführen; true = blockierender FAIL (Aufrufer stoppt den
    * Auto-Progress). Infrastruktur-Fehler blockieren nie (best-effort + Meldung).
    */
@@ -743,87 +1023,17 @@ export class Orchestrator {
   }
 
   /**
-   * Verbrauch eines abgeschlossenen Phasen-Turns messen. Bevorzugt autoritative
-   * Usage aus dem Transkript-Delta (inkl. cache_read = akkumulierter Kontext);
-   * fällt auf die Scrollback-Schätzung zurück, wenn kein Transkript/keine Usage vorliegt.
-   */
-  private meterTurn(session: LiveSession, running: RunningPhase) {
-    if (session.claudeSessionId) {
-      const path = locateTranscript(session.cwd, session.claudeSessionId);
-      if (path) {
-        // Session-ID/Datei hat während der Phase gewechselt (/clear-Reset) →
-        // Start-Offset gilt nicht für die neue Datei, ab 0 messen.
-        const offset = path === running.transcriptPathStart ? running.transcriptOffsetStart : 0;
-        const usage = sumUsage(readTranscriptDelta(path, offset));
-        if (hasUsage(usage)) {
-          const { totalTokens, costUsd } = usageToCost(usage);
-          return {
-            costUsd,
-            tokens: totalTokens,
-            inputTokens: usage.inputTokens,
-            outputTokens: usage.outputTokens,
-            cacheReadTokens: usage.cacheReadTokens,
-            cacheCreationTokens: usage.cacheCreationTokens,
-            tokensSource: 'transcript' as const,
-          };
-        }
-      }
-    }
-    const outputText = session.scrollback.slice(running.scrollbackStart);
-    const cost = meter({ promptText: running.promptText, outputText });
-    return {
-      costUsd: cost.costUsd,
-      tokens: cost.totalTokens,
-      tokensSource: (cost.source === 'parsed' ? 'parsed' : 'estimated') as 'parsed' | 'estimated',
-    };
-  }
-
-  /**
    * Transkriptpfad + End-Offset eines abgeschlossenen Phasen-Laufs persistieren, damit
    * der Lauf-Log-Endpoint den Ausschnitt [start, end) auch nach Server-Neustart rendern
    * kann. Ohne Transkript (keine claudeSessionId) bleibt der Pfad null. Hat die Datei
    * während der Phase gewechselt (/clear), wird der Start-Offset auf 0 korrigiert.
    */
-  /**
-   * Transkript nach kurzer Frist erneut vermessen und die Zahl nachziehen.
-   *
-   * Claude Code schreibt die Schlusszeilen eines Turns samt `usage`-Record erst NACH
-   * dem Stop-Hook. `persistTranscriptRange` fotografiert den End-Offset aber genau
-   * beim Stop und schnitt sie damit systematisch ab.
-   *
-   * Gemessen am 27.07.2026 in einem realen Lauf, jeweils exakt die letzte Nachricht:
-   *   specify  1 483 586 verbucht, 117 169 verloren   (7,3 %)
-   *   clarify    144 280 verbucht,  61 520 verloren  (29,9 %)
-   * Die verbuchten Summen trafen `executions.tokens` exakt — die Differenz ist
-   * echter, nicht erfasster Verbrauch. Der Anteil ist NICHT konstant: je kürzer die
-   * Phase, desto schwerer wiegt ihre Schlussnachricht. Ein pauschaler
-   * Korrekturfaktor auf Altdaten wäre deshalb falsch.
-   *
-   * Schätzungen (Scrollback-Fallback) werden nicht nachgezogen — nur eine echte
-   * Transkript-Messung darf eine echte Transkript-Messung ersetzen.
-   */
-  private scheduleTranscriptTailReconcile(session: LiveSession, running: RunningPhase): void {
-    const timer = setTimeout(() => {
-      this.transcriptTailTimers.delete(timer);
-      try {
-        const usage = this.meterTurn(session, running);
-        if (usage.tokensSource !== 'transcript') return;
-        this.deps.executions.updateUsage(running.executionId, usage);
-        this.persistTranscriptRange(session, running);
-      } catch (err) {
-        console.warn('[metering] Nachtrag der Schlussnachricht fehlgeschlagen:', (err as Error).message);
-      }
-    }, TRANSCRIPT_TAIL_DELAY_MS);
-    timer.unref?.();
-    this.transcriptTailTimers.add(timer);
-  }
-
-  private persistTranscriptRange(session: LiveSession, running: RunningPhase): void {
+  persistTranscriptRange(session: LiveSession, running: RunMark): void {
     const path = session.claudeSessionId
       ? locateTranscript(session.cwd, session.claudeSessionId)
       : null;
     const offsetEnd = path ? transcriptSize(path) : 0;
-    const offsetStartFix = path && path !== running.transcriptPathStart ? 0 : null;
+    const offsetStartFix = path ? startOffsetIn(path, running) : null;
     this.deps.executions.recordTranscriptEnd(running.executionId, path, offsetEnd, offsetStartFix);
   }
 
@@ -877,9 +1087,7 @@ export class Orchestrator {
     }
     this.deps.sessions.end(session.id);
     // Beendete Session → eine offene „Frage" dieser Session ist hinfällig.
-    for (const id of this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] })) {
-      bus.emitEvent('attention_resolved', id);
-    }
+    emitAttentionResolved(this.deps.attention.resolveFor({ sessionId: session.id, kinds: ['awaiting_input'] }));
     if (session.featureId) {
       // Session ist tot → die injizierte Präambel steckt nicht mehr garantiert im
       // Kontext der (evtl. frisch gestarteten) Nachfolge-Session → einmalig neu erlauben.
@@ -890,11 +1098,7 @@ export class Orchestrator {
         this.runningPhases.delete(session.featureId);
         // Abgebrochene Läufe haben Tokens verbraucht — auch sie messen, sonst zeigt das
         // Dashboard 0 für real bezahlte Arbeit.
-        this.deps.executions.finishWithUsage(
-          running.executionId,
-          exitCode || 1,
-          this.meterTurn(session, running),
-        );
+        this.deps.meter.finish(session, running, exitCode || 1);
         // Auch abgebrochene/fehlgeschlagene Läufe behalten ihr Log (US1-Szenario 3).
         this.persistTranscriptRange(session, running);
         const feature = this.deps.features.get(session.featureId);
@@ -909,9 +1113,7 @@ export class Orchestrator {
             projectId: session.projectId,
             featureId: session.featureId,
             sessionId: session.id,
-            message:
-              `${feature?.name ?? 'Feature'}: Agent-Session in Phase '${running.phase}' abgestürzt ` +
-              `(exit ${exitCode}) — Phase erneut starten`,
+            message: `Agent-Session beendet (exit ${exitCode}) während Phase ${running.phase}`,
           });
           bus.emitEvent('attention_raised', item);
         }
@@ -951,8 +1153,7 @@ export class Orchestrator {
     // integration-Stage geprüft.
     const featureStages = new Map(this.deps.features.listAll().map((f) => [f.id, f.integration]));
     for (const stale of findStaleOnBoot(this.deps.attention.listOpen(), featureStages)) {
-      this.deps.attention.resolve(stale.id);
-      bus.emitEvent('attention_resolved', stale.id);
+      if (this.deps.attention.resolve(stale.id)) emitAttentionResolved([stale.id]);
     }
     if (orphaned > 0) {
       console.log(`[reaper] ${orphaned} verwaiste Executions bereinigt`);
@@ -966,19 +1167,15 @@ export class Orchestrator {
   reconcileOpenAttention(): void {
     const snap = this.buildReconcileSnapshot();
     for (const stale of findStaleRuntime(this.deps.attention.listOpen(), snap)) {
-      this.deps.attention.resolve(stale.id);
-      bus.emitEvent('attention_resolved', stale.id);
+      if (this.deps.attention.resolve(stale.id)) emitAttentionResolved([stale.id]);
     }
-  }
-
-  /**
-   * Betreff einer Meldung: Feature-Name plus laufende Phase, damit in der Inbox sofort
-   * erkennbar ist, an welcher Stelle des Workflows es klemmt.
-   */
-  private subjectOf(feature: Feature | null, featureId: string | null): string {
-    if (!feature) return 'Session';
-    const phase = featureId ? this.runningPhases.get(featureId)?.phase : undefined;
-    return phase ? `${feature.name} · Phase ${phase}` : feature.name;
+    // Die projektbezogene Verifikationslücke hängt an der Projektkonfiguration, nicht
+    // am Snapshot — sie wird hier aufgelöst, sobald ein Kommando konfiguriert ist
+    // (FR-007). Im Reconcile-Durchlauf und nicht im PATCH-Handler, damit es auch nach
+    // einem Neustart und bei Änderungen außerhalb der Route wirkt.
+    for (const id of resolveVerificationGaps({ attention: this.deps.attention, projects: this.deps.projects })) {
+      bus.emitEvent('attention_resolved', id);
+    }
   }
 
   private buildReconcileSnapshot(): ReconcileSnapshot {

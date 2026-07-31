@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
+import { formatBytes, type Feature, type FeatureArtifactStep, type FeatureDocument, type FeaturePhase } from '@sdd/shared';
 import { api, type ExecutionInfo, type RunSummary } from '../api.js';
+import { useStore } from '../store.js';
 import { RunCard } from './ExecutionsView.js';
 import { FeatureResultDialog } from './FeatureResultDialog.js';
 
@@ -11,9 +12,11 @@ import { FeatureResultDialog } from './FeatureResultDialog.js';
  * keine neue Session mehr.
  */
 export function FeatureDashboard({ feature }: { feature: Feature }) {
+  const { dispatch } = useStore();
   const [run, setRun] = useState<RunSummary | null>(null);
   const [detail, setDetail] = useState<ExecutionInfo[]>([]);
   const [steps, setSteps] = useState<FeatureArtifactStep[]>([]);
+  const [documents, setDocuments] = useState<FeatureDocument[]>([]);
   const [expanded, setExpanded] = useState(true);
   const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
   const [logFor, setLogFor] = useState<string | null>(null);
@@ -26,6 +29,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
       .catch(() => {});
     void api.executions(feature.id).then(setDetail).catch(() => {});
     void api.featureArtifacts(feature.id).then(setSteps).catch(() => {});
+    void api.featureDocuments(feature.id).then(setDocuments).catch(() => {});
   }, [feature.id]);
 
   useEffect(() => {
@@ -47,9 +51,9 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
     <div className="flex min-h-0 flex-1">
       <div className={`${logFor ? 'w-1/2' : 'w-full'} min-h-0 space-y-6 overflow-auto p-4`}>
         <section>
-          <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">Artefakte</h2>
+          <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Artefakte</h2>
           {available.length === 0 ? (
-            <p className="text-xs text-zinc-600">Keine Artefakte erzeugt.</p>
+            <p className="text-xs text-zinc-400">Keine Artefakte erzeugt.</p>
           ) : (
             <div className="flex flex-wrap gap-2">
               {available.map((s) => (
@@ -60,7 +64,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
                   className="rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-left text-sm text-zinc-200 hover:bg-zinc-800"
                 >
                   📄 {s.label}
-                  <span className="ml-2 text-xs text-zinc-500">
+                  <span className="ml-2 text-xs text-zinc-400">
                     {s.files.length} Datei{s.files.length === 1 ? '' : 'en'}
                   </span>
                 </button>
@@ -69,8 +73,32 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
           )}
         </section>
 
+        {/* Ausgangsmaterial des Features — auch nach dem Merge nachvollziehbar (SC-007). */}
+        {documents.length > 0 && (
+          <section>
+            <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">Dokumente</h2>
+            <div className="flex flex-wrap gap-2">
+              {documents.map((doc) => (
+                <button
+                  key={doc.storedName}
+                  onClick={() =>
+                    void api
+                      .openFeatureDocument(feature.id, doc.storedName)
+                      .catch((e: Error) => dispatch({ type: 'error', message: e.message }))
+                  }
+                  title={`${doc.relPath} — mit der Systemanwendung öffnen`}
+                  className="rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-left text-sm text-zinc-200 hover:bg-zinc-800"
+                >
+                  📎 {doc.name}
+                  <span className="ml-2 text-xs text-zinc-400">{formatBytes(doc.bytes)}</span>
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
         <section>
-          <h2 className="mb-2 text-[11px] font-semibold tracking-wide text-zinc-500 uppercase">
+          <h2 className="mb-2 text-xs font-semibold tracking-wide text-zinc-400 uppercase">
             Token-Verbrauch &amp; Statistik
           </h2>
           {run ? (
@@ -82,7 +110,7 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
               onOpenLog={(id) => setLogFor(logFor === id ? null : id)}
             />
           ) : (
-            <p className="text-xs text-zinc-600">Keine Lauf-Daten vorhanden.</p>
+            <p className="text-xs text-zinc-400">Keine Lauf-Daten vorhanden.</p>
           )}
         </section>
       </div>
@@ -91,11 +119,11 @@ export function FeatureDashboard({ feature }: { feature: Feature }) {
         <div className="flex w-1/2 flex-col border-l border-zinc-800">
           <div className="flex items-center justify-between px-3 py-2">
             <span className="text-xs font-semibold text-zinc-400">Log {logFor}</span>
-            <button onClick={() => setLogFor(null)} className="rounded px-2 text-zinc-500 hover:bg-zinc-800">
+            <button onClick={() => setLogFor(null)} className="rounded px-2 text-zinc-400 hover:bg-zinc-800">
               ✕
             </button>
           </div>
-          <pre className="min-h-0 flex-1 overflow-auto bg-[#0a0a0c] p-3 font-mono text-xs whitespace-pre-wrap text-zinc-400">
+          <pre className="min-h-0 flex-1 overflow-auto bg-zinc-950 p-3 font-mono text-xs whitespace-pre-wrap text-zinc-400">
             {log === null ? 'Lade …' : log === '' ? '(leer)' : log}
           </pre>
         </div>

@@ -14,6 +14,7 @@ import {
 } from '@sdd/shared';
 import type { ChatRepo, ExecutionRepo, ProjectRepo } from '../db/repos.js';
 import { buildChatArgv } from '../pty/commandBuilder.js';
+import { headlessTelemetry } from '../telemetry/headlessTelemetry.js';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
 import { bus } from '../events.js';
 import { buildChatSystemPrompt } from './chatPrompt.js';
@@ -56,6 +57,8 @@ export class ChatService {
       chat: ChatRepo;
       executions: ExecutionRepo;
       dataDir: string;
+      /** Port des eigenen Servers — Ziel der Telemetrie-Meldungen. */
+      port: number;
       model?: string;
     },
   ) {
@@ -184,17 +187,20 @@ export class ChatService {
       `=== Chat-Turn (${project.name}) ===\nConversation: ${conversation.id}${resume ? ` · resume ${resume}` : ''}\n\n`,
     );
 
+    // Ein Chat-Turn ist ein eigener Lauf — Meldungen tragen direkt die execId.
+    const tele = headlessTelemetry(this.deps.dataDir, execId, this.deps.port);
     const argv = buildChatArgv(prompt, {
       systemPrompt: buildChatSystemPrompt(project),
       ...(resume ? { resume } : {}),
       ...(this.deps.model ? { model: this.deps.model } : {}),
+      settingsPath: tele.settingsPath,
     });
 
     let streamed = '';
     let result: Extract<ChatStreamEvent, { kind: 'result' }> | null = null;
     let timedOut = false;
 
-    const env = await loginShellEnv();
+    const env = { ...(await loginShellEnv()), ...tele.env };
     const [cmd, ...args] = argv;
     const child = spawn(cmd!, args, { cwd: project.path, env, stdio: ['ignore', 'pipe', 'pipe'] });
     turn.child = child;
@@ -264,23 +270,21 @@ export class ChatService {
     if (turnResult && !turnResult.isError) {
       const finalText = turnResult.text || streamed;
       const { cleanText, proposal } = parseFeatureProposal(finalText);
-      // Kosten (R7): primär aus dem Result-Event, sonst costMeter-Schätzung.
+      // Tokens (R7): primär aus dem Result-Event, sonst costMeter-Schätzung.
       const fallback = meter({
         ...(this.deps.model ? { model: this.deps.model } : {}),
         promptText: prompt,
         outputText: finalText,
       });
-      const costUsd = turnResult.costUsd ?? fallback.costUsd;
       const tokens = turnResult.tokens ?? fallback.totalTokens;
       log.end();
       finish({
         status: 'complete',
         content: cleanText,
         proposal: proposal ? { ...proposal, status: 'offen' } : null,
-        costUsd,
         tokens,
       });
-      executions.finish(execId, 0, costUsd, tokens);
+      executions.finish(execId, 0, tokens);
       return;
     }
 

@@ -81,13 +81,13 @@ describe('adfToMarkdown (FR-019)', () => {
         {
           type: 'paragraph',
           content: [
-            { type: 'mention', attrs: { id: 'abc123', text: '@Ada Lovelace' } },
+            { type: 'mention', attrs: { id: 'abc123', text: '@Louis Michel' } },
             { type: 'text', text: ' übernimmt.' },
           ],
         },
       ],
     });
-    expect(md).toBe('Ada Lovelace übernimmt.');
+    expect(md).toBe('Louis Michel übernimmt.');
     expect(md).not.toContain('abc123');
   });
 
@@ -119,9 +119,9 @@ describe('wikiMarkupToMarkdown (Altformat)', () => {
   });
 
   it('ersetzt Account-Erwähnungen durch lesbaren Text', () => {
-    const md = wikiMarkupToMarkdown('Bitte [~accountid:557058:abc] prüfen, danke [~alovelace].');
+    const md = wikiMarkupToMarkdown('Bitte [~accountid:557058:abc] prüfen, danke [~lmichel].');
     expect(md).not.toContain('accountid');
-    expect(md).toContain('alovelace');
+    expect(md).toContain('lmichel');
   });
 });
 
@@ -136,7 +136,7 @@ describe('fieldValueToText (FR-017: nur ausgefüllte Felder)', () => {
 
   it('reduziert Jira-Objekte auf ihren Anzeigwert', () => {
     expect(fieldValueToText({ name: 'Bug' })).toBe('Bug');
-    expect(fieldValueToText({ displayName: 'Ada Lovelace' })).toBe('Ada Lovelace');
+    expect(fieldValueToText({ displayName: 'Louis Michel' })).toBe('Louis Michel');
     expect(fieldValueToText({ value: 'Hoch' })).toBe('Hoch');
     expect(fieldValueToText([{ name: 'backend' }, { name: 'jira' }])).toBe('backend, jira');
   });
@@ -150,15 +150,15 @@ describe('fieldValueToText (FR-017: nur ausgefüllte Felder)', () => {
 
 describe('formatComment / buildTicketDossier (FR-017)', () => {
   it('formatiert Kommentare mit Autor + Zeitpunkt', () => {
-    const md = formatComment({ author: 'Ada Lovelace', createdAt: '2026-07-20T09:30:00.000Z', body: 'Bitte prüfen.' });
-    expect(md).toContain('### Ada Lovelace — 2026-07-20 09:30 UTC');
+    const md = formatComment({ author: 'Louis Michel', createdAt: '2026-07-20T09:30:00.000Z', body: 'Bitte prüfen.' });
+    expect(md).toContain('### Louis Michel — 2026-07-20 09:30 UTC');
     expect(md).toContain('Bitte prüfen.');
   });
 
   it('baut ein vollständiges Dossier ohne rohe Markup-Reste', () => {
     const md = buildTicketDossier(
-      { key: 'PROJ-7', url: 'https://example.atlassian.net/browse/PROJ-7', title: 'Login bauen', description: 'Als Nutzer…' },
-      [{ author: 'Ada Lovelace', createdAt: '2026-07-20T09:30:00.000Z', body: 'Kommentar 1' }],
+      { key: 'PROJ-7', url: 'https://iwf.atlassian.net/browse/PROJ-7', title: 'Login bauen', description: 'Als Nutzer…' },
+      [{ author: 'Louis Michel', createdAt: '2026-07-20T09:30:00.000Z', body: 'Kommentar 1' }],
       [
         { name: 'Priorität', value: 'Hoch' },
         { name: 'Labels', value: 'backend, auth' },
@@ -167,12 +167,12 @@ describe('formatComment / buildTicketDossier (FR-017)', () => {
       ['`logo.png` → jira/attachments/logo.png', '`groß.zip` — nicht abrufbar: https://…/groß.zip'],
     );
     expect(md).toContain('# PROJ-7: Login bauen');
-    expect(md).toContain('[PROJ-7](https://example.atlassian.net/browse/PROJ-7)');
+    expect(md).toContain('[PROJ-7](https://iwf.atlassian.net/browse/PROJ-7)');
     expect(md).toContain('## Beschreibung');
     expect(md).toContain('| Priorität | Hoch |');
     expect(md).not.toContain('Leeres Feld');
     expect(md).toContain('## Kommentare (1)');
-    expect(md).toContain('### Ada Lovelace');
+    expect(md).toContain('### Louis Michel');
     expect(md).toContain('## Anhänge');
     expect(md).toContain('nicht abrufbar');
   });

@@ -86,16 +86,6 @@ export async function isAncestor(cwd: string, ancestor: string, ref: string): Pr
   return r.code === 0;
 }
 
-/**
- * Anzahl Commits, die `base` gegenüber `ref` voraus ist (`ref..base`) — also wie weit
- * `ref` hinterherhinkt. Nicht bestimmbar ⇒ 0 (konservativ: nichts nachzuziehen).
- */
-export async function behindCount(cwd: string, base: string, ref: string): Promise<number> {
-  const r = await git(cwd, ['rev-list', '--count', `${ref}..${base}`]);
-  if (r.code !== 0) return 0;
-  return Number.parseInt(r.stdout.trim(), 10) || 0;
-}
-
 /** Abzweigpunkt (Merge-Base) von `a` und `b`; null wenn nicht bestimmbar. */
 export async function mergeBase(cwd: string, a: string, b: string): Promise<string | null> {
   const r = await git(cwd, ['merge-base', a, b]);

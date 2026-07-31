@@ -20,8 +20,14 @@ export interface ArtifactStepSpec {
 /**
  * Nur diese Schritte erzeugen ein einsehbares Ergebnis-Artefakt.
  * Clarify (schreibt in spec.md), Analyze (Report) und Implement (Code) erhalten kein Icon.
+ *
+ * Die Reihenfolge wird NICHT von Hand gepflegt, sondern unten aus FEATURE_PHASES
+ * abgeleitet: Bis 27.07.2026 stand `checklist` in dieser Liste hinter `tasks`,
+ * in den Lanes aber davor — die Icons auf der Kachel liefen der Lane-Ordnung
+ * entgegen. Sortieren statt Umsortieren macht ein erneutes Auseinanderlaufen
+ * unmöglich (Drift-Guard-Muster wie in workflowModel.ts).
  */
-export const ARTIFACT_STEP_SPECS: readonly ArtifactStepSpec[] = [
+const ARTIFACT_STEP_SPECS_UNSORTED: readonly ArtifactStepSpec[] = [
   {
     phase: 'specify',
     label: 'Specify',
@@ -55,6 +61,14 @@ export const ARTIFACT_STEP_SPECS: readonly ArtifactStepSpec[] = [
     globDirs: ['checklists'],
   },
 ];
+
+/**
+ * Artefakt-Schritte in der Reihenfolge der SDD-Lanes. Eine neue oder umsortierte
+ * Phase in FEATURE_PHASES verschiebt die Icons automatisch mit.
+ */
+export const ARTIFACT_STEP_SPECS: readonly ArtifactStepSpec[] = FEATURE_PHASES.flatMap(
+  (phase) => ARTIFACT_STEP_SPECS_UNSORTED.filter((s) => s.phase === phase),
+);
 
 /** Spezifikation eines Schritts (oder undefined, wenn der Schritt kein Artefakt erzeugt). */
 export function artifactStepSpec(phase: FeaturePhase): ArtifactStepSpec | undefined {

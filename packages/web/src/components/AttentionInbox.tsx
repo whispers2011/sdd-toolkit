@@ -1,6 +1,9 @@
-import type { AttentionKind } from '@sdd/shared';
+import { useState } from 'react';
+import { evaluateAction, type AttentionKind, type FeatureActionContext } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
+import { ReviewPortal } from './ReviewPortal.js';
 
 const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: string }> = {
   awaiting_input: { label: 'Frage', icon: '❓', tone: 'text-amber-400' },
@@ -9,25 +12,166 @@ const KIND_META: Record<AttentionKind, { label: string; icon: string; tone: stri
   gate_failed: { label: 'Review-Gate FAIL', icon: '⛔', tone: 'text-red-400' },
   merge_conflict_escalated: { label: 'Merge-Konflikt', icon: '⚡', tone: 'text-red-400' },
   review_due: { label: 'Review fällig', icon: '👀', tone: 'text-sky-400' },
+  // Projektbezogen (featureId === null): keine Eskalation, aber nur ein Mensch
+  // kann die Konfiguration nachholen — daher Amber.
+  verification_unconfigured: { label: 'Verifikation fehlt', icon: '⚠', tone: 'text-amber-400' },
   agent_errored: { label: 'Agent-Fehler', icon: '💥', tone: 'text-red-400' },
   run_interrupted: { label: 'Lauf unterbrochen', icon: '⏸', tone: 'text-amber-400' },
   phase_gate_failed: { label: 'Phasen-Gate FAIL', icon: '🚧', tone: 'text-red-400' },
   approval_required: { label: 'Freigabe erforderlich', icon: '✋', tone: 'text-amber-400' },
+  lifecycle_step_failed: { label: 'Schritt fehlgeschlagen', icon: '⛔', tone: 'text-red-400' },
+  // Datenbefunde: bernsteinfarben, denn es ist nichts kaputt, es ist etwas unklar.
+  // Rot bleibt für „rot geworden" reserviert (verify_failed, gate_failed) — ausser
+  // bei metering_conflict, wo nachweislich eine von zwei Zahlen falsch ist.
+  run_unpriced: { label: 'Verbrauch ohne Preis', icon: '💸', tone: 'text-amber-400' },
+  phase_false_start: { label: 'Fehlstart', icon: '🧨', tone: 'text-amber-400' },
+  project_without_runs: { label: 'Projekt ohne Lauf', icon: '🕸', tone: 'text-zinc-400' },
+  metering_conflict: { label: 'Messung widersprüchlich', icon: '⚖️', tone: 'text-red-400' },
+  server_outage: { label: 'Server-Ausfall', icon: '🕳', tone: 'text-red-400' },
+  // Der Mensch ist am Zug, nichts ist kaputt — amber wie review_due-Verwandte.
+  manual_test_due: { label: 'Abnahme fällig', icon: '🧪', tone: 'text-amber-400' },
+  stack_failed: { label: 'Stack fehlgeschlagen', icon: '⛔', tone: 'text-red-400' },
+  worktree_cleanup_failed: { label: 'Aufräumen fehlgeschlagen', icon: '🧹', tone: 'text-red-400' },
+  // Kein Fehler, aber es liegt etwas herum, das Platte frisst.
+  orphan_worktree: { label: 'Verwaister Worktree', icon: '🗂', tone: 'text-amber-400' },
 };
+
+const BTN = 'rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700';
+
+/**
+ * Die nächste Aktion eines Feature-Items — abgeleitet aus derselben Policy wie
+ * Board und Konsole (FR-014/FR-022), nicht aus der Meldungsart. Vorher stand hier
+ * unabhängig vom Zustand „Zur Konsole", auch wenn das Feature längst auf ein
+ * menschliches Review wartete.
+ *
+ * Reihenfolge entspricht der Stufen-Klassifikation (FR-025): wartet das Feature
+ * auf das Review, ist das Review die Aktion; in den übrigen Entscheidungsstufen
+ * ist es die Wiederaufnahme. Sonst bleibt die Konsole der richtige Weg — etwa bei
+ * einer offenen Rückfrage der Session.
+ */
+function NextAction({
+  featureId,
+  kind,
+  ctx,
+  onReview,
+  onConsole,
+  onBoard,
+  onWorktrees,
+  run,
+}: {
+  featureId: string;
+  kind: AttentionKind;
+  ctx: FeatureActionContext | null;
+  onReview: (featureId: string) => void;
+  onConsole: (featureId: string) => void;
+  onBoard: () => void;
+  onWorktrees: () => void;
+  run: (key: string, fn: () => Promise<unknown>) => void;
+}) {
+  // Die Abnahme und ein fehlgeschlagener Stack werden dort erledigt, wo die
+  // Karte liegt — in der Spalte „Abnahme" des Boards (ui-contract §8).
+  if (ctx?.integration === 'awaiting_manual_test' || kind === 'manual_test_due' || kind === 'stack_failed') {
+    return (
+      <button onClick={onBoard} className={BTN}>
+        Zur Abnahme
+      </button>
+    );
+  }
+
+  // Ein fehlgeschlagenes Aufräumen ist wiederholbar (FR-037) — direkt von hier.
+  if (kind === 'worktree_cleanup_failed') {
+    return (
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => run(`cleanup:${featureId}`, () => api.retryCleanup(featureId))}
+          className={BTN}
+        >
+          Aufräumen erneut anstoßen
+        </button>
+        <button onClick={onWorktrees} className={BTN}>
+          Worktrees
+        </button>
+      </div>
+    );
+  }
+
+  if (ctx?.integration === 'awaiting_human_review') {
+    return (
+      <button onClick={() => onReview(featureId)} className={BTN}>
+        👀 Review
+      </button>
+    );
+  }
+
+  const retry = ctx ? evaluateAction('integration_retry', ctx) : null;
+  if (retry && retry.availability !== 'hidden') {
+    return (
+      <ActionGroup reason={blockedReason(retry)} actionsClassName="">
+        <ActionButton
+          verdict={retry}
+          onClick={() => run(`retry:${featureId}`, () => api.retryIntegration(featureId))}
+          className={BTN}
+        >
+          ↻ Erneut
+        </ActionButton>
+      </ActionGroup>
+    );
+  }
+
+  return (
+    <button onClick={() => onConsole(featureId)} className={BTN}>
+      Zur Konsole →
+    </button>
+  );
+}
+
+/**
+ * Meldungstext eines Server-Ausfalls. Anders als die übrigen Arten steckt hier alles
+ * Wissenswerte im Text selbst — Beginn, Ende, Dauer und die betroffenen Features (D18).
+ * Zugeklappt bleibt die Zeile so schmal wie jede andere; aufgeklappt ist sie vollständig
+ * lesbar, ohne dass es dafür einen eigenen Detail-Endpunkt braucht (C4.8).
+ */
+function OutageMessage({
+  message,
+  open,
+  onToggle,
+}: {
+  message: string;
+  open: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={open}
+      title={open ? 'Zuklappen' : 'Ganzen Meldungstext zeigen'}
+      className="flex w-full items-start gap-1.5 text-left text-sm text-zinc-300 hover:text-zinc-100"
+    >
+      <span className="shrink-0 text-xs text-zinc-500">{open ? '▾' : '▸'}</span>
+      <span className={open ? 'break-words' : 'min-w-0 truncate'}>{message}</span>
+    </button>
+  );
+}
 
 /** Berichtspfad aus einer approval_required-Meldung (`… [Bericht: specs/…md]`). */
 function reportPathOf(message: string): string | null {
   return message.match(/\[Bericht:\s*([^\]]+)\]/)?.[1]?.trim() ?? null;
 }
 
-/** Der Pfad steckt schon im „Bericht öffnen"-Button — im Text nur Rauschen. */
-function stripReportPath(message: string): string {
-  return message.replace(/\s*\[Bericht:\s*[^\]]+\]/, '').trim();
-}
-
 /** Exception-Inbox: Monitoring by exception — der Level-3-Arbeitsmodus. */
 export function AttentionInbox() {
   const { state, dispatch } = useStore();
+  const runAction = useAction();
+  const [portalFeature, setPortalFeature] = useState<string | null>(null);
+  // Aufgeklappte Ausfallmeldungen: der Text trägt Fenster, Dauer und betroffene Features
+  // (D18) — abgeschnitten wäre er nutzlos, dauerhaft mehrzeilig sprengte die Liste.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  const toggleExpanded = (id: string) =>
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
   if (!state.app) return null;
 
   // Kontext-Trennung: Inbox respektiert den Projekt-Scope (genau 1 Projekt).
@@ -48,12 +192,15 @@ export function AttentionInbox() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-2 p-4">
+      {portalFeature && (
+        <ReviewPortal featureId={portalFeature} onClose={() => setPortalFeature(null)} />
+      )}
       {items.map((item) => {
         const meta = KIND_META[item.kind];
         return (
           <div
             key={item.id}
-            className="flex items-start gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"
+            className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"
           >
             <span className="text-xl">{meta.icon}</span>
             <div className="min-w-0 flex-1">
@@ -64,34 +211,41 @@ export function AttentionInbox() {
                   {new Date(item.createdAt).toLocaleTimeString('de-CH')}
                 </span>
               </div>
-              {/* Nicht kürzen: der Fragetext bzw. Fehlergrund IST die Information. */}
-              <p className="whitespace-pre-wrap break-words text-sm text-zinc-300">
-                {stripReportPath(item.message)}
-              </p>
+              {item.kind === 'server_outage' ? (
+                <OutageMessage
+                  message={item.message}
+                  open={expanded.has(item.id)}
+                  onToggle={() => toggleExpanded(item.id)}
+                />
+              ) : (
+                <p className="truncate text-sm text-zinc-300">{item.message}</p>
+              )}
             </div>
             {item.kind === 'approval_required' && item.featureId && reportPathOf(item.message) && (
               <button
                 onClick={() => void api.openInEditor(item.featureId!, reportPathOf(item.message)!, null)}
-                className="shrink-0 rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+                className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
                 title="Agent-Bericht im Editor öffnen"
               >
                 Bericht öffnen
               </button>
             )}
             {item.featureId && (
-              <button
-                onClick={() =>
-                  dispatch({ type: 'set_view', view: { kind: 'console', featureId: item.featureId! } })
-                }
-                className="shrink-0 rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
-              >
-                Zur Konsole →
-              </button>
+              <NextAction
+                featureId={item.featureId}
+                kind={item.kind}
+                ctx={featureActionContext(state, item.featureId)}
+                onReview={setPortalFeature}
+                onConsole={(id) => dispatch({ type: 'set_view', view: { kind: 'console', featureId: id } })}
+                onBoard={() => dispatch({ type: 'set_view', view: { kind: 'board' } })}
+                onWorktrees={() => dispatch({ type: 'set_view', view: { kind: 'worktrees' } })}
+                run={runAction}
+              />
             )}
             {!item.featureId && item.conversationId && (
               <button
                 onClick={() => dispatch({ type: 'open_chat', projectId: item.projectId })}
-                className="shrink-0 rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
+                className="rounded bg-zinc-800 px-2.5 py-1 text-xs text-zinc-200 hover:bg-zinc-700"
               >
                 Zum Chat →
               </button>
@@ -102,7 +256,7 @@ export function AttentionInbox() {
                   .resolveAttention(item.id)
                   .then(() => dispatch({ type: 'attention_resolved', id: item.id }))
               }
-              className="shrink-0 rounded px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
+              className="rounded px-2 py-1 text-xs text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300"
               title="Als erledigt markieren"
             >
               ✓

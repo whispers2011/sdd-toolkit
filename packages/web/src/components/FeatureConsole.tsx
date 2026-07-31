@@ -1,12 +1,25 @@
-import { useState } from 'react';
-import { FEATURE_PHASES, type FeaturePhase } from '@sdd/shared';
+import { useEffect, useState } from 'react';
+import { FEATURE_PHASES, evaluateAction, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api } from '../api.js';
-import { useStore } from '../store.js';
+import { featureActionContext, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { TerminalPane } from './TerminalPane.js';
 import { VoiceButton } from './VoiceButton.js';
 import { FeatureKnowledgeSelect } from './FeatureKnowledgeSelect.js';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
-import { CodeIcon, CopyIcon, DeleteIcon, FolderOpenIcon, KnowledgeIcon, ShieldIcon } from './icons.js';
+import { FeatureLifecycleStepSelect } from './FeatureLifecycleStepSelect.js';
+import { StackPanel } from './StackPanel.js';
+import { FeatureDocumentsDialog } from './FeatureDocumentsDialog.js';
+import {
+  CodeIcon,
+  CopyIcon,
+  DeleteIcon,
+  DocumentIcon,
+  FolderOpenIcon,
+  KnowledgeIcon,
+  ShieldIcon,
+  StepsIcon,
+} from './icons.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { FeatureDashboard } from './FeatureDashboard.js';
 
@@ -16,15 +29,33 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   const [connected, setConnected] = useState(false);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const [showSteps, setShowSteps] = useState(false);
   const [showDelete, setShowDelete] = useState(false);
+  const [showDocuments, setShowDocuments] = useState(false);
+  // Einstieg nur zeigen, wenn es etwas zu zeigen gibt (FR-016).
+  const [documentCount, setDocumentCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .featureDocuments(featureId)
+      .then((d) => !cancelled && setDocumentCount(d.length))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [featureId]);
 
   const feature = state.app?.features.find((f) => f.id === featureId);
   const project = state.app?.projects.find((p) => p.id === feature?.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
+  const ctx = featureActionContext(state, featureId);
+  // Löschen ist destruktiv und trifft uncommittete Arbeit — seit 27.07.2026 sperrt
+  // die Policy es, solange gearbeitet wird, statt nur im Dialog davor zu warnen.
+  const deleteV = ctx ? evaluateAction('delete', ctx) : null;
 
   if (!feature) return <div className="p-8 text-zinc-500">Feature nicht gefunden.</div>;
 
-  const runningPhase = FEATURE_PHASES.find((p) => feature.phases[p]?.status === 'running');
   // Abgeschlossen (gemergt/archiviert) → keine neue Session mehr; statt Terminal ein
   // Ergebnis-Dashboard (Artefakte, Token-Statistik, Logs).
   const completed = feature.integration === 'merged' || !!feature.archivedAt;
@@ -32,6 +63,10 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
   // nur die Toolkit-Spuren, NICHT die gemergten Projektdateien. Nur bei ungemergter
   // Arbeit gehen Worktree/Branch (und damit Code) verloren.
   const merged = feature.integration === 'merged';
+  // Ab `implement` gibt es einen Stack zu bedienen; auf der Abnahme-Stufe steht
+  // das Feld offen, weil dort genau damit gearbeitet wird.
+  const stackRelevant = feature.phases.implement?.status !== 'idle' || feature.integration !== 'none';
+  const stackOpen = feature.integration === 'awaiting_manual_test';
 
   return (
     <div className="flex h-full flex-col">
@@ -57,6 +92,12 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
             {feature.worktreePath}
           </span>
         )}
+        {/* Die Zurückweisung bleibt sichtbar, bis der letzte Schritt neu freigegeben ist (FR-026). */}
+        {feature.reviewRejectedAt !== null && (
+          <span className="rounded bg-amber-950/60 px-1.5 py-0.5 text-xs whitespace-nowrap text-amber-300">
+            ↩ im Review zurückgewiesen
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           {/* Worktree-abhängige Aktionen nur zeigen, wenn ein Worktree existiert (nach Abschluss entfernt). */}
           {feature.worktreePath && (
@@ -75,6 +116,15 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
               </HeaderIcon>
             </>
           )}
+          {/* Ausgangsmaterial bleibt auch nach Abschluss einsehbar (SC-007). */}
+          {documentCount > 0 && (
+            <HeaderIcon
+              title={`Hinterlegte Dokumente (${documentCount})`}
+              onClick={() => setShowDocuments(true)}
+            >
+              <DocumentIcon />
+            </HeaderIcon>
+          )}
           {/* Wissen/Agents konfigurieren künftige Läufe — nach Abschluss wirkungslos, daher ausgeblendet. */}
           {!completed && (
             <>
@@ -83,6 +133,9 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
               </HeaderIcon>
               <HeaderIcon title="Agents für dieses Feature" onClick={() => setShowAgents(true)}>
                 <ShieldIcon />
+              </HeaderIcon>
+              <HeaderIcon title="Schritte für dieses Feature" onClick={() => setShowSteps(true)}>
+                <StepsIcon />
               </HeaderIcon>
             </>
           )}
@@ -93,6 +146,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
                 : 'Feature löschen (Worktree + Branch + alle Spuren entfernen)'
             }
             onClick={() => setShowDelete(true)}
+            disabledReason={deleteV && deleteV.availability !== 'available' ? deleteV.reason : null}
           >
             <DeleteIcon />
           </HeaderIcon>
@@ -101,17 +155,29 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
           {completed ? 'abgeschlossen ✓' : connected ? 'verbunden' : 'getrennt …'}
         </span>
       </div>
+      {/* Stack-Feld: dieselbe Darstellung wie in der Lane, kompakt. Sichtbar ab
+          Beginn von `implement` — davor gibt es nichts zu bedienen (ui-contract §3). */}
+      {stackRelevant && (
+        <details className="border-b border-zinc-800 px-3 py-2" open={stackOpen}>
+          <summary className="cursor-pointer text-xs font-medium text-zinc-300">Stack</summary>
+          <div className="pt-2">
+            <StackPanel featureId={featureId} compact />
+          </div>
+        </details>
+      )}
+      {showDocuments && <FeatureDocumentsDialog featureId={featureId} onClose={() => setShowDocuments(false)} />}
       {showKnowledge && <FeatureKnowledgeSelect featureId={featureId} onClose={() => setShowKnowledge(false)} />}
       {showAgents && <FeatureAgentSelect featureId={featureId} onClose={() => setShowAgents(false)} />}
+      {showSteps && <FeatureLifecycleStepSelect featureId={featureId} onClose={() => setShowSteps(false)} />}
       {showDelete && (
         <ConfirmDialog
           title={merged ? 'Feature aus dem Toolkit entfernen?' : 'Feature löschen?'}
           message={
-            merged
+            (merged
               ? `„${feature.name}" wird aus dem Toolkit entfernt: Läufe, Logs, Verlauf und interne Spuren. ` +
                 `Der bereits in „${project?.defaultBranch ?? 'den Haupt-Branch'}" gemergte Code bleibt vollständig erhalten.`
               : `„${feature.name}" wird endgültig gelöscht: Worktree und Branch (inkl. NICHT gemergter Arbeit), ` +
-                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`
+                `Läufe, Logs und alle Spuren werden entfernt. Das kann nicht rückgängig gemacht werden.`)
           }
           confirmLabel={merged ? 'Aus Toolkit entfernen' : 'Endgültig löschen'}
           onConfirm={() => {
@@ -128,7 +194,7 @@ export function FeatureConsole({ featureId }: { featureId: string }) {
         <FeatureDashboard feature={feature} />
       ) : (
         <>
-          <PhaseStrip featureId={featureId} runningPhase={runningPhase ?? null} />
+          <PhaseStrip featureId={featureId} />
 
           <div className="min-h-0 flex-1 bg-[#09090b] p-2">
             <TerminalPane key={featureId} featureId={featureId} focused onConnectionChange={setConnected} />
@@ -145,13 +211,24 @@ function HeaderIcon({
   title,
   onClick,
   children,
+  disabledReason,
 }: {
   title: string;
   onClick: () => void;
   children: React.ReactNode;
+  /** Gesetzt ⇒ Icon ist gesperrt und nennt im Tooltip den Grund. */
+  disabledReason?: string | null;
 }) {
+  const blocked = !!disabledReason;
   return (
-    <button onClick={onClick} title={title} className="rounded px-1.5 py-0.5 text-base leading-none text-zinc-300 hover:bg-zinc-800">
+    <button
+      onClick={blocked ? undefined : onClick}
+      disabled={blocked}
+      title={disabledReason ?? title}
+      className={`rounded px-1.5 py-0.5 text-base leading-none ${
+        blocked ? 'cursor-not-allowed text-zinc-600' : 'text-zinc-300 hover:bg-zinc-800'
+      }`}
+    >
       {children}
     </button>
   );
@@ -213,25 +290,38 @@ function PromptBar({ featureId }: { featureId: string }) {
   );
 }
 
-/** Phasen-Leiste über der Konsole: Status + Aktion pro Phase. */
-function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPhase: FeaturePhase | null }) {
-  const { state, dispatch } = useStore();
+/**
+ * Phasen-Leiste über der Konsole: Status + Aktion pro Phase. Welche Aktion eine
+ * Kachel anbietet und ob sie auslösbar ist, entscheidet ausschließlich die
+ * gemeinsame Festlegung (FR-022) — die Leiste prüft nichts mehr selbst. Der
+ * Grund einer Sperrung steht dauerhaft unter der Leiste, nicht im Tooltip (FR-028).
+ */
+function PhaseStrip({ featureId }: { featureId: string }) {
+  const { state } = useStore();
+  const run = useAction();
   const feature = state.app?.features.find((f) => f.id === featureId);
   const session = state.app?.sessions.find((s) => s.featureId === featureId && !s.exited);
-  if (!feature) return null;
-
-  const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => {
-      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
-      if (/läuft bereits/i.test(e.message)) return;
-      dispatch({ type: 'error', message: e.message });
-    });
+  const ctx = featureActionContext(state, featureId);
+  if (!feature || !ctx) return null;
 
   const live = !!session && (session.status === 'working' || session.status === 'awaiting_input');
+  const phases = FEATURE_PHASES.filter((p) => feature.phases[p]);
+  const integrateV = evaluateAction('integrate', ctx);
+  const reason = blockedReason(
+    ...phases.flatMap((phase) => [
+      evaluateAction('phase_start', ctx, { phase }),
+      evaluateAction('phase_approve', ctx, { phase }),
+    ]),
+    integrateV,
+  );
 
   return (
-    <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-800 px-4 py-1.5">
-      {FEATURE_PHASES.filter((p) => feature.phases[p]).map((phase) => {
+    <ActionGroup
+      reason={reason}
+      className="border-b border-zinc-800 px-4 py-1.5"
+      actionsClassName="flex items-center gap-1 overflow-x-auto"
+    >
+      {phases.map((phase) => {
         const ps = feature.phases[phase];
         const cls =
           ps.status === 'approved'
@@ -243,53 +333,71 @@ function PhaseStrip({ featureId, runningPhase }: { featureId: string; runningPha
               : ps.status === 'awaiting_review'
                 ? 'text-amber-400 border-amber-800'
                 : 'text-zinc-500 border-zinc-800';
+        const chipClass = `rounded border px-2 py-0.5 text-xs whitespace-nowrap ${cls} ${ps.stale ? 'line-through' : ''}`;
+        const label = `${ps.status === 'approved' ? '✓ ' : ''}${phase}`;
+        const startV = evaluateAction('phase_start', ctx, { phase });
+        const approveV = evaluateAction('phase_approve', ctx, { phase });
+        // Genau eine Aktion je Kachel — welche, sagt die Policy: ein offener
+        // Schritt lässt sich starten, ein wartender freigeben. Trifft keine zu,
+        // ist die Kachel reine Statusanzeige.
+        if (startV.availability !== 'hidden') {
+          return (
+            <ActionButton
+              key={phase}
+              verdict={startV}
+              onClick={() => run(`start:${featureId}:${phase}`, () => api.startPhase(featureId, phase))}
+              className={chipClass}
+            >
+              {label}
+            </ActionButton>
+          );
+        }
+        if (approveV.availability !== 'hidden') {
+          return (
+            <ActionButton
+              key={phase}
+              verdict={approveV}
+              onClick={() => run(`approve:${featureId}:${phase}`, () => api.approvePhase(featureId, phase))}
+              className={chipClass}
+            >
+              {label}
+            </ActionButton>
+          );
+        }
         return (
-          <button
-            key={phase}
-            disabled={runningPhase !== null || (ps.status === 'idle' && live)}
-            title={
-              ps.status === 'idle'
-                ? live
-                  ? 'Session ist beschäftigt — läuft gerade'
-                  : `/speckit.${phase} starten`
-                : ps.status === 'awaiting_review'
-                  ? 'Klick = approven'
-                  : ps.status === 'running'
-                    ? live
-                      ? 'läuft …'
-                      : 'wird gestartet …'
-                    : ps.status
-            }
-            onClick={() => {
-              if (ps.status === 'idle') void call(() => api.startPhase(featureId, phase));
-              else if (ps.status === 'awaiting_review') void call(() => api.approvePhase(featureId, phase));
-            }}
-            className={`rounded border px-2 py-0.5 text-xs whitespace-nowrap disabled:opacity-60 ${cls} ${ps.stale ? 'line-through' : ''}`}
-          >
-            {ps.status === 'approved' ? '✓ ' : ''}
-            {phase}
-          </button>
+          <span key={phase} className={chipClass}>
+            {label}
+          </span>
         );
       })}
       {state.gateRunning[featureId] && (
-        <span
-          className="animate-pulse rounded border border-violet-800 px-2 py-0.5 text-xs whitespace-nowrap text-violet-300"
-          title="Ein Qualitäts-Gate (Agent) läuft — Start/Fortschritt folgt nach PASS"
-        >
+        <span className="animate-pulse rounded border border-violet-800 px-2 py-0.5 text-xs whitespace-nowrap text-violet-300">
           ⚖ Gate läuft …
         </span>
       )}
-      <span className="mx-2 text-zinc-700">|</span>
-      {feature.integration === 'none' ? (
-        <button
-          onClick={() => void call(() => api.integrate(featureId))}
-          className="rounded border border-sky-900 px-2 py-0.5 text-xs whitespace-nowrap text-sky-400 hover:border-sky-700"
-        >
-          ⇥ Integrieren
-        </button>
-      ) : (
-        <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-sky-400">{feature.integration}</span>
+      {/* Trenner nur, wenn rechts davon überhaupt etwas steht. */}
+      {(integrateV.availability !== 'hidden' || feature.integration !== 'none') && (
+        <span className="mx-2 text-zinc-700">|</span>
       )}
-    </div>
+      <ActionButton
+        verdict={integrateV}
+        onClick={() => run(`integrate:${featureId}`, () => api.integrate(featureId))}
+        className="rounded border border-sky-900 px-2 py-0.5 text-xs whitespace-nowrap text-sky-400 hover:border-sky-700"
+      >
+        ⇥ Integrieren
+      </ActionButton>
+      {feature.integration !== 'none' && (
+        // Beschriftung und Ton aus dem geteilten Katalog: hier stand der Rohbezeichner
+        // in Sky-Blau, der Farbe für laufende Vorgänge — „keine Verifikation
+        // konfiguriert" hätte damit wie Fortschritt gelesen (FR-001a, SC-001).
+        <span
+          className={`rounded bg-zinc-800 px-2 py-0.5 text-xs ${
+            INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]
+          }`}
+        >
+          {INTEGRATION_STAGE_META[feature.integration].label}
+        </span>
+      )}
+    </ActionGroup>
   );
 }

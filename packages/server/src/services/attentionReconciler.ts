@@ -21,9 +21,16 @@ export interface ReconcileSnapshot {
  */
 export const STAGE_FOR_KIND: Partial<Record<AttentionKind, IntegrationStage>> = {
   review_due: 'awaiting_human_review',
+  // Die Meldung verschwindet mit dem Stufenwechsel — bestätigt oder abgelehnt,
+  // in beiden Fällen ist die Abnahme erledigt (FR-024, research E10).
+  manual_test_due: 'awaiting_manual_test',
   verify_failed: 'verify_failed',
   gate_failed: 'gate_failed',
   merge_conflict_escalated: 'conflict_escalated',
+  // Absichtlich KEIN Eintrag für 'verification_unconfigured': die Art ist
+  // projektbezogen (featureId === null). Eine Stufen-Kopplung würde den Eintrag bei
+  // jedem Stufenwechsel jedes Features auflösen und beim nächsten Feature erneut
+  // entstehen lassen — genau die Dauerlast, die FR-006 ausschließt.
 };
 
 function findSession(item: AttentionItem, snap: ReconcileSnapshot): LiveSessionState | undefined {
@@ -43,6 +50,12 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
   switch (item.kind) {
     case 'permission_request':
       return true;
+    case 'server_outage':
+      // Ein Ausfall ist ein Ereignis der Vergangenheit — es gibt keinen „aktiven Zustand",
+      // an dem er sich prüfen liesse. Nur der Mensch erledigt ihn. Der `default: true`
+      // unten würde das heute zufällig richtig machen; der explizite Fall hält es richtig,
+      // wenn jemand später den Default umdreht (D14).
+      return true;
     case 'awaiting_input': {
       const s = findSession(item, snap);
       return !!s && s.status === 'awaiting_input';
@@ -61,7 +74,24 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       const s = findSession(item, snap);
       return !(s && s.status === 'working');
     }
+    case 'lifecycle_step_failed':
+      // Ein fehlgeschlagener Lebenszyklus-Schritt (z. B. `pnpm install`) ist nicht
+      // dadurch behoben, dass irgendeine Session desselben Features arbeitet oder
+      // die Integration eine Stufe weiterrückt. Die Meldung bleibt gültig, bis ein
+      // erfolgreicher Wiederanlauf desselben Auslösers sie auflöst — oder der Mensch
+      // sie in der Inbox erledigt. Bewusst NICHT im Zweig der „Prozess"-Meldungen
+      // und bewusst ohne Eintrag in STAGE_FOR_KIND (sonst räumt jeder setStage() sie ab).
+      return true;
+    case 'verification_unconfigured':
+      // Gültigkeit kommt aus der Projektkonfiguration, nicht aus Session- oder
+      // Stufenzustand: solange das Projekt keine Verifikationskommandos hat, gibt es
+      // etwas zu tun. Aufgelöst wird der Eintrag ausschließlich von
+      // `resolveVerificationGaps()`, sobald ein Kommando konfiguriert ist (FR-007) —
+      // oder von Hand. Ein eigener `case` statt des `default`-Zweigs, damit die
+      // Entscheidung hier steht und nicht aus einem Fallback zu lesen ist.
+      return true;
     case 'review_due':
+    case 'manual_test_due':
     case 'verify_failed':
     case 'gate_failed':
     case 'merge_conflict_escalated': {
@@ -70,6 +100,34 @@ export function isAttentionValid(item: AttentionItem, snap: ReconcileSnapshot): 
       if (stage === undefined) return false;
       return stage === STAGE_FOR_KIND[item.kind];
     }
+    case 'stack_failed':
+    case 'worktree_cleanup_failed':
+      // Dieselbe Linie wie `lifecycle_step_failed`: ein fehlgeschlagenes
+      // Profilkommando bzw. ein fehlgeschlagenes Aufräumen ist nicht dadurch
+      // behoben, dass irgendeine Session arbeitet oder die Integration eine Stufe
+      // weiterrückt. Aufgelöst wird die Meldung ausschließlich von einem
+      // erfolgreichen Wiederanlauf desselben Vorgangs — oder vom Menschen.
+      // Bewusst KEIN Eintrag in STAGE_FOR_KIND (sonst räumt jeder setStage() sie ab).
+      return true;
+    case 'orphan_worktree':
+      // Gültig, solange der verwaiste Eintrag in einer Erhebung erscheint. Anders
+      // als bei den Datenbefunden ist das Wiederauftauchen hier RICHTIG: solange
+      // ein Verzeichnis herumliegt, ist etwas zu tun (research E14). Die Auflösung
+      // übernimmt der Aufrufer, wenn der Eintrag aus der Erhebung verschwindet.
+      return true;
+    case 'run_unpriced':
+    case 'phase_false_start':
+    case 'project_without_runs':
+    case 'metering_conflict':
+      // Datenbefunde: der Widerspruch steht in der Datenbank und besteht unabhängig
+      // davon, ob gerade ein Agent arbeitet (FR-016) oder ob das Toolkit neu gestartet
+      // wurde (FR-017). Nur ein Mensch löst sie auf; danach kehren sie erst bei
+      // gewachsenem Bestand zurück (Wasserstand in plausibility_state).
+      //
+      // Sie fielen ohnehin in den default-Zweig — die Zweige stehen explizit da, damit
+      // ein späteres Umsortieren des switch sie nicht versehentlich in eine
+      // Prozess-Gruppe zieht. Kein Eintrag in STAGE_FOR_KIND: nicht stufengebunden.
+      return true;
     default:
       return true;
   }
@@ -93,6 +151,12 @@ export function findStaleOnBoot(
   const snap: ReconcileSnapshot = { sessions: [], featureStages };
   return open.filter((i) => {
     if (i.kind === 'permission_request') return false;
+    // Ein Ausfall wird gerade BEIM Boot gemeldet — er darf im selben Boot nicht wieder
+    // aufgelöst werden und auch nicht in den pauschalen Stale-Zweig unten geraten (C4.7).
+    if (i.kind === 'server_outage') return false;
+    // Ein fehlgeschlagener Lebenszyklus-Schritt überlebt den Neustart: er hängt an
+    // keiner Session und ist ohne Wiederanlauf weiterhin offen.
+    if (i.kind === 'lifecycle_step_failed') return false;
     if (i.kind === 'awaiting_input' || i.kind === 'agent_errored') return true;
     return !isAttentionValid(i, snap);
   });

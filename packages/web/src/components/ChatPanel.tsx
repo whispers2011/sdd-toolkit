@@ -1,8 +1,17 @@
 import { useEffect, useState } from 'react';
+import {
+  CHAT_HYGIENE_LIMITS,
+  CHAT_NOT_PAUSED,
+  formatHistorySize,
+  formatIdleSpan,
+  ratioLabel,
+  type ChatCostProfile,
+} from '@sdd/shared';
 import { api, type ChatState } from '../api.js';
 import { useStore } from '../store.js';
 import { TerminalPane } from './TerminalPane.js';
-import { CloseIcon, GitMergeIcon, IdeaIcon, RestartIcon, WarningIcon } from './icons.js';
+import { fmtCost, fmtTokens } from './charts.js';
+import { CloseIcon, IdeaIcon, RestartIcon, WarningIcon } from './icons.js';
 
 const MIN_W = 340;
 const MIN_H = 320;
@@ -37,8 +46,10 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const [size, setSize] = useState(loadSize);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [restarting, setRestarting] = useState(false);
-  const [adopting, setAdopting] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  /** Beim Öffnen wurde ein neuer Chat begonnen, weil der alte zu lange ruhte — wird angesagt. */
+  const [startedFresh, setStartedFresh] = useState(false);
+  /** Uhr für die laufende Pause: nur damit das Angebot verschwindet, wenn sie abläuft. */
+  const [now, setNow] = useState(() => Date.now());
 
   const load = () =>
     void api
@@ -46,21 +57,25 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       .then(setChat)
       .catch((e: Error) => setError(e.message));
 
-  // Beim Öffnen: erst den Zustand prüfen. Eine wegen Inaktivität pausierte (fortsetzbare)
-  // Session wird NICHT still resumt — stattdessen fragt die Karte den Nutzer. Eine frische
-  // Unterhaltung startet wie gehabt automatisch.
+  // Beim Öffnen: erst den Zustand prüfen. Eine wegen Inaktivität pausierte, noch fortsetzbare
+  // Session wird NICHT still resumt — stattdessen fragt die Karte den Nutzer. Ist die Pause
+  // abgelaufen, beginnt `ensure()` serverseitig eine frische Unterhaltung; der alte Verlauf
+  // wird also nicht wieder in jeden Turn gezogen. Eine frische startet wie gehabt automatisch.
   useEffect(() => {
     let cancelled = false;
     setReady(false);
     setError(null);
+    setStartedFresh(false);
     void api
       .getChat(projectId)
       .then((st) => {
         if (cancelled) return undefined;
         setChat(st);
-        if (st.workPaused && !st.workSession) return undefined; // pausiert → Karte, nicht starten
-        return api.ensureChatWorkSession(projectId).then(() => {
+        setNow(Date.now());
+        if (st.workPause?.paused && st.workPause.resumable && !st.workSession) return undefined; // → Karte
+        return api.ensureChatWorkSession(projectId).then((res) => {
           if (cancelled) return;
+          setStartedFresh(res.startedFresh);
           setReady(true);
           load();
         });
@@ -86,25 +101,37 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const status = liveWork?.status ?? chat?.workSession?.status ?? 'idle';
   const projectName = state.app?.projects.find((p) => p.id === projectId)?.name ?? '';
   // Wegen 5 min Inaktivität pausiert: Session beendet, Verlauf erhalten. Der Nutzer
-  // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird.
-  const paused = !!chat?.workPaused;
-
-  // Stand der Arbeitskopie gegenüber main — nur melden, wenn das Nachziehen NICHT geklappt hat.
-  const sync = chat?.workSession?.sync ?? null;
-  const staleHint =
-    sync?.state === 'blocked_dirty'
-      ? `Arbeitskopie ist ${sync.behind} Commit(s) hinter main und hat uncommittete Änderungen — sie wurde nicht nachgezogen. Übernehmen oder Änderungen abschließen, sonst arbeitet der Chat auf altem Stand.`
-      : sync?.state === 'conflict'
-        ? `Arbeitskopie ist ${sync.behind} Commit(s) hinter main; das Nachziehen scheiterte an Konflikten. Im Chat auflösen oder neu starten.`
-        : null;
+  // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird — bis die Pause
+  // `resumeMaxIdleMs` erreicht: dann steht nur noch der neue Chat zur Wahl.
+  const pause = chat?.workPause ?? null;
+  const paused = !!pause?.paused;
+  // Der Server liefert den Stand des Abrufs; hier läuft die Uhr weiter, damit ein offenes
+  // Panel nach Ablauf der Pause kein Fortsetzen mehr anbietet.
+  const pausedMs = pause?.since != null ? Math.max(0, now - pause.since) : (pause?.idleMs ?? null);
+  const resumable = pausedMs === null ? !!pause?.resumable : pausedMs < CHAT_HYGIENE_LIMITS.resumeMaxIdleMs;
+  // Bewertung der letzten Turn-Grenze. Der Verlauf kann auch aus Kosten teuer geworden sein —
+  // dann trägt entweder die Pausiert-Karte den Grund mit oder der Streifen über der Konsole
+  // fragt, nie beides (FR-013).
+  const costProfile = chat?.costProfile ?? null;
+  const costReasons = costProfile?.reasons.filter((r) => r !== 'idle') ?? [];
+  const offerOpen = !!costProfile?.offerOpen && !paused;
+  const pausedMessage =
+    costReasons.length > 0 && costProfile?.message
+      ? costProfile.message
+      : `Nach ${formatIdleSpan(CHAT_HYGIENE_LIMITS.idleMs)} ohne Aktivität wurde die Session beendet. Dein Verlauf ist erhalten.`;
 
   // Bei neuem Vorschlag alle Features vorauswählen.
   useEffect(() => {
     if (pending) setSelected(new Set(pending.features.map((f) => f.name)));
-    // Absichtlich nur die Vorschlags-ID: `pending` als Dependency würde die Auswahl
-    // der nutzenden Person bei jedem Re-Render zurücksetzen.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending?.id]);
+
+  // Solange pausiert wird, läuft die Uhr mit: Ohne sie bliebe „Chat fortsetzen" auch nach
+  // Ablauf der Pause stehen — es vergeht nur Zeit, es kommt kein Ereignis vom Server.
+  useEffect(() => {
+    if (!paused) return;
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [paused]);
 
   const toggle = (name: string) =>
     setSelected((cur) => {
@@ -122,6 +149,10 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   };
 
   const dismiss = () => void api.dismissChatFeatures(projectId).catch((e: Error) => setError(e.message));
+
+  /** „Chat fortsetzen": Angebot ablehnen, ohne die laufende Session anzufassen (FR-008). */
+  const dismissOffer = () =>
+    void api.dismissChatRestartOffer(projectId).catch((e: Error) => setError(e.message));
 
   // Neustart: frische Session. Bei drohendem Verlust erst bestätigen lassen (FR-006).
   const runRestart = async (confirm: boolean): Promise<void> => {
@@ -146,37 +177,17 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       .finally(() => setRestarting(false));
   };
 
-  // Übernehmen: Arbeit der Chat-Arbeitskopie nach main (committen → rebasen → mergen).
-  // Blocker verändern nichts und werden als Meldung erklärt, nicht als Fehler verschluckt.
-  const onAdopt = () => {
-    if (adopting) return;
-    setAdopting(true);
-    setError(null);
-    setNotice(null);
-    void api
-      .adoptChatWork(projectId)
-      .then((res) => {
-        if ('blocked' in res) {
-          setError(res.files?.length ? `${res.message} (${res.files.join(', ')})` : res.message);
-          return;
-        }
-        setNotice(
-          `${res.files} Datei(en) nach ${res.target} übernommen${res.committed ? ' (uncommittete Arbeit mit committet)' : ''}.`,
-        );
-        load();
-      })
-      .catch((e: Error) => setError(e.message))
-      .finally(() => setAdopting(false));
-  };
-
   // Pausierten Chat fortsetzen: Karte sofort ausblenden, Terminal mounten → dessen
   // getSession() resumt die alte Unterhaltung (claude --resume + Scrollback-Snapshot).
   // Bewusst kein load() hier: getChat könnte zurückkommen, bevor die resumte Session
   // serverseitig live ist (workPaused kurz wieder true → Karten-Flackern). Der Status
   // aktualisiert sich über den App-WS; chat_updated-Events lösen später ein load() aus.
+  // Ein offenes Kosten-Angebot wird mit abgelehnt: sonst springt direkt nach „Chat fortsetzen"
+  // der Streifen an und stellt dieselbe Frage ein zweites Mal.
   const resume = () => {
     setError(null);
-    setChat((c) => (c ? { ...c, workPaused: false } : c));
+    dismissOffer();
+    setChat((c) => (c ? { ...c, workPause: CHAT_NOT_PAUSED } : c));
     setReady(true);
   };
 
@@ -233,18 +244,10 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         <span className="text-sm font-semibold text-zinc-100">Projekt-Chat</span>
         <span className="truncate text-xs text-zinc-500">{projectName}</span>
         <button
-          onClick={onAdopt}
-          disabled={adopting || paused}
-          title="Arbeit dieser Arbeitskopie nach main übernehmen (committen → rebasen → mergen)"
-          className="ml-auto rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-        >
-          <GitMergeIcon />
-        </button>
-        <button
           onClick={onRestart}
           disabled={restarting}
           title="Chat neu starten (frische Session)"
-          className="rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+          className="ml-auto rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
         >
           <RestartIcon />
         </button>
@@ -258,39 +261,57 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       </header>
 
       {error && (
-        <div className="flex items-start justify-between border-b border-red-900 bg-red-950/60 px-3 py-1.5 text-xs text-red-300">
-          <span className="min-w-0 break-words">{error}</span>
+        <div className="flex items-center justify-between border-b border-red-900 bg-red-950/60 px-3 py-1.5 text-xs text-red-300">
+          <span className="truncate">{error}</span>
           <button
             onClick={() => setError(null)}
             title="Fehler ausblenden"
-            className="ml-2 shrink-0 text-red-400 hover:text-red-200"
+            className="ml-2 text-red-400 hover:text-red-200"
           >
             <CloseIcon />
           </button>
         </div>
       )}
 
-      {notice && (
-        <div className="flex items-start justify-between border-b border-emerald-900 bg-emerald-950/50 px-3 py-1.5 text-xs text-emerald-300">
-          <span className="min-w-0 break-words">{notice}</span>
-          <button
-            onClick={() => setNotice(null)}
-            title="Meldung ausblenden"
-            className="ml-2 shrink-0 text-emerald-400 hover:text-emerald-200"
-          >
-            <CloseIcon />
-          </button>
-        </div>
-      )}
-
-      {/* Konnte die Arbeitskopie beim Start nicht nachgezogen werden, arbeitet der Chat auf
-          veraltetem Code — das muss sichtbar sein, nicht still passieren. */}
-      {staleHint && (
-        <div className="flex items-start gap-2 border-b border-amber-900 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-300">
-          <span className="mt-px shrink-0">
-            <WarningIcon />
+      {/* Der Verlauf ist teuer geworden (FR-002/003/004): dieselbe Entscheidung wie beim
+          Leerlauf, aber als Streifen — die Konsole bleibt bedienbar (FR-008, SC-006). */}
+      {offerOpen && costProfile?.message && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-amber-900 bg-amber-950/50 px-3 py-1.5 text-xs text-amber-200">
+          <span className="text-amber-400">
+            <WarningIcon title="Hinweis" />
           </span>
-          <span className="min-w-0 break-words">{staleHint}</span>
+          <span className="min-w-0 flex-1">{costProfile.message}</span>
+          <button
+            onClick={dismissOffer}
+            className="rounded border border-amber-800 px-2 py-0.5 text-amber-200 hover:bg-amber-900/50"
+          >
+            Chat fortsetzen
+          </button>
+          <button
+            onClick={onRestart}
+            disabled={restarting}
+            className="rounded bg-emerald-700 px-2 py-0.5 font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40"
+          >
+            Neuen Chat starten
+          </button>
+        </div>
+      )}
+
+      {/* Beim Öffnen wurde nicht fortgesetzt, sondern neu begonnen — das sagt das Panel an,
+          damit niemand einen leeren Verlauf für einen Fehler hält. */}
+      {startedFresh && (
+        <div className="flex items-center gap-2 border-b border-sky-900 bg-sky-950/50 px-3 py-1.5 text-xs text-sky-200">
+          <span className="min-w-0 flex-1">
+            Der vorherige Chat ruhte länger als {formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} — er
+            wurde beendet und ein neuer gestartet. Sein Verlauf bleibt erhalten.
+          </span>
+          <button
+            onClick={() => setStartedFresh(false)}
+            title="Hinweis ausblenden"
+            className="text-sky-400 hover:text-sky-200"
+          >
+            <CloseIcon />
+          </button>
         </div>
       )}
 
@@ -303,22 +324,34 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
               ⏸
             </span>
             <div>
-              <p className="text-sm font-semibold text-zinc-200">Chat wegen Inaktivität pausiert</p>
+              <p className="text-sm font-semibold text-zinc-200">
+                {resumable ? 'Chat wegen Inaktivität pausiert' : 'Chat pausiert — Fortsetzen entfällt'}
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">{pausedMessage}</p>
               <p className="mt-1 text-xs text-zinc-500">
-                Seit 5 min keine Aktivität — die Session wurde beendet. Dein Verlauf ist erhalten.
+                {pausedMs !== null && `Pausiert seit ${formatIdleSpan(pausedMs)}. `}
+                {resumable
+                  ? `Nach ${formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} Pause startet stattdessen ein neuer Chat.`
+                  : `Länger als ${formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} — der alte Verlauf wird nicht fortgesetzt, sonst zahlt ihn jeder weitere Turn mit.`}
               </p>
             </div>
             <div className="flex flex-col gap-2">
-              <button
-                onClick={resume}
-                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600"
-              >
-                Chat fortsetzen
-              </button>
+              {resumable && (
+                <button
+                  onClick={resume}
+                  className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600"
+                >
+                  Chat fortsetzen
+                </button>
+              )}
               <button
                 onClick={onRestart}
                 disabled={restarting}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                className={
+                  resumable
+                    ? 'rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40'
+                    : 'rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40'
+                }
               >
                 Neuen Chat starten
               </button>
@@ -328,7 +361,14 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           <TerminalPane
             key={conversationId ?? 'boot'}
             featureId={null}
-            getSession={() => api.ensureChatWorkSession(projectId)}
+            // Auch hier kann ein neuer Chat entstehen: Fortsetzen kurz vor Ablauf der Pause
+            // oder ein Reconnect danach landet serverseitig in einer frischen Unterhaltung.
+            getSession={() =>
+              api.ensureChatWorkSession(projectId).then((res) => {
+                if (res.startedFresh) setStartedFresh(true);
+                return res;
+              })
+            }
             focused
             fontSize={12}
           />
@@ -336,6 +376,9 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           !error && <p className="p-4 text-xs text-zinc-500">Claude-Session wird gestartet …</p>
         )}
       </div>
+
+      {/* Was der zuletzt beendete Turn gekostet hat — ohne Wechsel der Ansicht (FR-014/015) */}
+      {!paused && <CostStrip profile={costProfile} />}
 
       {/* Feature-Vorschlag der Session → Bestätigungskarte */}
       {pending && (
@@ -382,6 +425,49 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Eine Kennzahl im Streifen. `critical` markiert sie sichtbar, ohne Emoji (FR-015). */
+function Metric({ label, value, critical = false }: { label: string; value: string; critical?: boolean }) {
+  return (
+    <span className="flex items-baseline gap-1 whitespace-nowrap">
+      <span className="text-zinc-500">{label}</span>
+      {critical ? (
+        <span className="flex items-center gap-1 font-medium text-amber-400">
+          <WarningIcon title="kritisch" />
+          {value}
+        </span>
+      ) : (
+        <span className="text-zinc-300">{value}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Kennzahlen des zuletzt beendeten Turns unter der Konsole (FR-014/FR-015): gelesener Kontext,
+ * Kosten, Verhältnis gelesener Kontext : Ausgabe und Verlaufsgröße. Fehlende Werte stehen als
+ * „unbekannt", nie als `0` oder `$0.00` (FR-016) — vor der ersten Messung steht dort nur ein
+ * unauffälliges „noch keine Messung".
+ */
+function CostStrip({ profile }: { profile: ChatCostProfile | null }) {
+  const last = profile?.lastTurn ?? null;
+  if (!profile || !last) {
+    return <div className="border-t border-zinc-800 px-3 py-1 text-[11px] text-zinc-500">noch keine Messung</div>;
+  }
+  const ratio = profile.ratio;
+  const critical = ratio.kind === 'value' && ratio.ratio >= CHAT_HYGIENE_LIMITS.ratioCritical;
+  return (
+    <div
+      title="Zahlen des zuletzt beendeten Turns"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-zinc-800 px-3 py-1 text-[11px]"
+    >
+      <Metric label="Kontext" value={last.cacheReadTokens === null ? 'unbekannt' : fmtTokens(last.cacheReadTokens)} />
+      <Metric label="Kosten" value={last.costMicros === null ? 'unbekannt' : fmtCost(last.costMicros)} />
+      <Metric label="Kontext : Ausgabe" value={ratioLabel(ratio)} critical={critical} />
+      <Metric label="Verlauf" value={formatHistorySize(profile.historyBytes)} />
     </div>
   );
 }

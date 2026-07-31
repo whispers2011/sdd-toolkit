@@ -4,9 +4,18 @@ import { fmtTokens } from '../charts.js';
 
 /**
  * Verify-Dashboard (aufbereitete Verify-Executions, keine Report-Parser):
- * Status/Dauer/Exit-Code pro Lauf, aggregierte Token/Kosten, Log-Viewer.
+ * Status/Dauer/Exit-Code pro Lauf, aggregierte Tokens, Log-Viewer.
  */
-export function TestsPane({ featureId, onError }: { featureId: string; onError: (e: Error) => void }) {
+export function TestsPane({
+  featureId,
+  verificationConfigured,
+  onError,
+}: {
+  featureId: string;
+  /** Hat das Projekt Verifikationskommandos? Entscheidet den Leerfall (FR-008). */
+  verificationConfigured: boolean;
+  onError: (e: Error) => void;
+}) {
   const [executions, setExecutions] = useState<ExecutionInfo[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [log, setLog] = useState<string | null>(null);
@@ -31,17 +40,23 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
   const totals = useMemo(() => {
     const list = executions ?? [];
     return {
-      cost: list.reduce((s, e) => s + (e.costUsd ?? 0), 0),
       tokens: list.reduce((s, e) => s + (e.tokens ?? 0), 0),
       passed: list.filter((e) => e.status === 'succeeded').length,
     };
   }, [executions]);
 
-  if (!executions) return <p className="p-4 text-sm text-zinc-600">Lade Verify-Läufe …</p>;
+  if (!executions) return <p className="p-4 text-sm text-zinc-400">Lade Verify-Läufe …</p>;
   if (executions.length === 0) {
-    return (
-      <p className="p-4 text-sm text-zinc-600">
-        Keine Verifikations-Läufe — verifyCommands im Projekt konfigurieren, um Tests/Build vor dem Merge zu prüfen.
+    // Zwei verschiedene Sachverhalte, die vorher gleich aussahen: „konfiguriert, aber
+    // noch nicht gelaufen" und „es gibt nichts, was laufen könnte" (FR-008). Der
+    // zweite ist der gefährliche — hier wird er benannt.
+    return verificationConfigured ? (
+      <p className="p-4 text-sm text-zinc-400">
+        Noch kein Verifikations-Lauf — die im Projekt hinterlegten Kommandos laufen mit der nächsten Integration.
+      </p>
+    ) : (
+      <p className="p-4 text-sm text-amber-400">
+        Für dieses Projekt ist keine Verifikation konfiguriert — es wurde nichts geprüft.
       </p>
     );
   }
@@ -52,7 +67,6 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
         <StatCard label="Läufe" value={`${totals.passed}/${executions.length} grün`} />
         <StatCard label="Letzter Lauf" value={executions[0]!.status === 'succeeded' ? '✓ bestanden' : '✗ fehlgeschlagen'} tone={executions[0]!.status === 'succeeded' ? 'ok' : 'bad'} />
         <StatCard label="Tokens" value={fmtTokens(totals.tokens)} />
-        <StatCard label="Kosten" value={`$${totals.cost.toFixed(2)}`} />
       </div>
       <ul className="space-y-1">
         {executions.map((e) => (
@@ -67,17 +81,16 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
                 {e.status === 'succeeded' ? '●' : e.status === 'running' ? '◐' : '●'}
               </span>
               <span className="text-zinc-300">{new Date(e.startedAt).toLocaleString('de-CH')}</span>
-              <span className="text-zinc-500">
+              <span className="text-zinc-400">
                 {e.finishedAt ? `${Math.round((e.finishedAt - e.startedAt) / 1000)}s` : 'läuft …'}
               </span>
-              {e.exitCode !== null && <span className="text-zinc-600">exit {e.exitCode}</span>}
-              <span className="ml-auto text-zinc-500">
+              {e.exitCode !== null && <span className="text-zinc-400">exit {e.exitCode}</span>}
+              <span className="ml-auto text-zinc-400">
                 {e.tokens ? `${fmtTokens(e.tokens)} tok` : ''}
-                {e.costUsd ? ` · $${e.costUsd.toFixed(2)}` : ''}
               </span>
             </button>
             {selected === e.id && (
-              <pre className="mt-1 max-h-72 overflow-auto rounded border border-zinc-800 bg-[#0a0a0c] p-2 text-[11px] leading-4 whitespace-pre-wrap text-zinc-400">
+              <pre className="mt-1 max-h-72 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] leading-4 whitespace-pre-wrap text-zinc-400">
                 {log ?? 'Lade Log …'}
               </pre>
             )}
@@ -91,7 +104,7 @@ export function TestsPane({ featureId, onError }: { featureId: string; onError: 
 function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'ok' | 'bad' }) {
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
-      <div className="text-[10px] tracking-wide text-zinc-500 uppercase">{label}</div>
+      <div className="text-[10px] tracking-wide text-zinc-400 uppercase">{label}</div>
       <div className={`text-sm font-semibold ${tone === 'ok' ? 'text-emerald-400' : tone === 'bad' ? 'text-red-400' : 'text-zinc-200'}`}>
         {value}
       </div>

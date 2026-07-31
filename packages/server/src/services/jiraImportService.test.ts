@@ -7,7 +7,7 @@ import { openMemoryDatabase } from '../db/database.js';
 import { FeatureRepo, ProjectRepo } from '../db/repos.js';
 import { JiraImportService } from './jiraImportService.js';
 
-const SITE = { id: 'site-1', name: 'Example', url: 'https://example.atlassian.net' };
+const SITE = { id: 'site-1', name: 'IWF', url: 'https://iwf.atlassian.net' };
 
 function fullIssue(key: string, summary: string) {
   return {
@@ -29,15 +29,15 @@ function fullIssue(key: string, summary: string) {
       comment: {
         comments: [
           {
-            author: { displayName: 'Ada Lovelace' },
+            author: { displayName: 'Louis Michel' },
             created: '2026-07-20T09:30:00.000Z',
             body: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'Bitte beachten.' }] }] },
           },
         ],
       },
       attachment: [
-        { id: '900', filename: 'skizze.png', content: 'https://example.atlassian.net/rest/api/3/attachment/content/900' },
-        { id: '901', filename: 'geheim.pdf', content: 'https://example.atlassian.net/rest/api/3/attachment/content/901' },
+        { id: '900', filename: 'skizze.png', content: 'https://iwf.atlassian.net/rest/api/3/attachment/content/900' },
+        { id: '901', filename: 'geheim.pdf', content: 'https://iwf.atlassian.net/rest/api/3/attachment/content/901' },
       ],
       issuelinks: [
         {
@@ -135,7 +135,7 @@ describe('JiraImportService.importIssues (US3)', () => {
     expect(results).toEqual([{ issueKey: 'PROJ-1', status: 'created', featureId: expect.any(String) }]);
     const feature = features.get(results[0]!.featureId!)!;
     expect(feature.name).toBe('login-bauen');
-    expect(feature.jiraRef).toMatchObject({ key: 'PROJ-1', url: 'https://example.atlassian.net/browse/PROJ-1' });
+    expect(feature.jiraRef).toMatchObject({ key: 'PROJ-1', url: 'https://iwf.atlassian.net/browse/PROJ-1' });
     expect(features.listJiraKeys(project.id)).toEqual(['PROJ-1']);
 
     // Specify startet mit Ticketmaterial + Dossier-Verweis (FR-016/FR-017).
@@ -147,7 +147,7 @@ describe('JiraImportService.importIssues (US3)', () => {
     // Dossier liegt im Worktree (US4).
     const dossier = readFileSync(join(worktreeRoot, 'specs', 'login-bauen', 'jira', 'ticket.md'), 'utf8');
     expect(dossier).toContain('# PROJ-1: Login bauen');
-    expect(dossier).toContain('Ada Lovelace');
+    expect(dossier).toContain('Louis Michel');
     expect(dossier).toContain('| Priorität | Hoch |');
     expect(dossier).toContain('| Akzeptanzkriterien | AK: Login klappt |');
     expect(dossier).toContain('blockiert PROJ-99: Anderes Ticket');

@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openMemoryDatabase, type DB } from '../db/database.js';
 import { ExecutionRepo } from '../db/repos.js';
-import { buildServer, type ApiDeps } from './server.js';
 import { buildAllowedOrigins } from './originGuard.js';
+import { buildServer, type ApiDeps } from './server.js';
 
 /**
  * Endpoint-Vertrag GET /api/executions/:id/log (contracts/executions-log.md).
@@ -24,8 +24,7 @@ describe('GET /api/executions/:id/log', () => {
   const line = (obj: unknown) => JSON.stringify(obj) + '\n';
 
   const build = async (ptys: unknown) => {
-    // inject() spricht den Server als `localhost:80` an — dieser Origin muss erlaubt sein.
-    const deps = { executions, dataDir, ptys, allowedOrigins: buildAllowedOrigins([80]) } as unknown as ApiDeps;
+    const deps = { executions, dataDir, ptys , allowedOrigins: buildAllowedOrigins([80]) } as unknown as ApiDeps;
     app = await buildServer(deps);
   };
 

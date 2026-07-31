@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
@@ -41,6 +41,48 @@ export function transcriptSize(path: string): number {
     return statSync(path).size;
   } catch {
     return 0;
+  }
+}
+
+/**
+ * Byte-Offset der ersten JSONL-Zeile mit `timestamp >= startedAt` — die Startmarke
+ * für einen Lauf, dessen Transkriptdatei beim Start noch nicht bekannt war (z. B.
+ * fortgesetzte Session: die Claude-Session-ID steht erst fest, nachdem die Phase
+ * schon läuft). Ohne diese Marke würde die ganze Datei abgerechnet, inklusive
+ * aller früheren Läufe darin.
+ *
+ * Gibt die Dateigröße zurück, wenn keine Zeile neu genug ist (nichts zu messen),
+ * und 0, wenn die Datei fehlt oder keine verwertbaren Zeitstempel enthält.
+ */
+export function offsetAtTimestamp(path: string, startedAt: number): number {
+  let content: Buffer;
+  try {
+    content = readFileSync(path);
+  } catch {
+    return 0;
+  }
+  let offset = 0;
+  let sawTimestamp = false;
+  for (const line of content.toString('utf8').split('\n')) {
+    const size = Buffer.byteLength(line, 'utf8') + 1; // + '\n'
+    const ts = line.trim() ? timestampOf(line) : null;
+    if (ts !== null) {
+      sawTimestamp = true;
+      if (ts >= startedAt) return offset;
+    }
+    offset += size;
+  }
+  return sawTimestamp ? content.length : 0;
+}
+
+function timestampOf(line: string): number | null {
+  try {
+    const raw = (JSON.parse(line) as { timestamp?: unknown }).timestamp;
+    if (typeof raw !== 'string') return null;
+    const ms = Date.parse(raw);
+    return Number.isNaN(ms) ? null : ms;
+  } catch {
+    return null;
   }
 }
 

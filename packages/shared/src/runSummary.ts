@@ -5,6 +5,7 @@
  * Verbrauch in Spezifikation vs. Coding vs. Overhead. Reine Funktionen, keine IO.
  */
 import { FEATURE_PHASES, type ExecutionRecord, type Feature, type IntegrationStage } from './types.js';
+import { featureProgressLabel } from './workflowModel.js';
 import type { CostRollup, TokensSource } from './costBreakdown.js';
 
 export type RunCategory = 'spec' | 'coding' | 'overhead' | 'chat';
@@ -20,19 +21,30 @@ export const RUN_CATEGORY_LABELS: Record<RunCategory, string> = {
 export function categorizeExecution(e: Pick<ExecutionRecord, 'kind' | 'phase'>): RunCategory {
   if (e.kind === 'phase') return e.phase === 'implement' ? 'coding' : 'spec';
   if (e.kind === 'chat' || e.kind === 'chat_work') return 'chat';
-  return 'overhead'; // verify, review, conflict_resolution
+  return 'overhead'; // verify, review, conflict_resolution, lifecycle_step
 }
 
 /** Anzeige-Reihenfolge der Steps eines Laufs: Workflow-Phasen, danach Integrations-Overhead. */
 const STEP_ORDER: readonly string[] = [
   'constitution',
   ...FEATURE_PHASES,
+  'lifecycle_step',
   'verify',
   'review',
   'conflict_resolution',
   'chat',
   'chat_work',
 ];
+
+/**
+ * Läufe, an denen es nichts zu messen gibt. Ein Lebenszyklus-Schritt ist ein
+ * Shell-Kommando — es verbraucht keine Tokens und meldet keine Herkunft. Im Nenner
+ * der Mess-Herkunft würde er als „ungemessen" zählen und damit den Messanteil eines
+ * Laufs künstlich drücken, obwohl nichts fehlt.
+ */
+function countsTowardSourceMix(e: ExecutionRecord): boolean {
+  return e.kind !== 'lifecycle_step';
+}
 
 export interface RunStep {
   /** Phase (specify, plan, …) oder Kind (verify, review, …). */
@@ -47,7 +59,19 @@ export interface RunSummary {
   projectId: string;
   branch: string;
   integration: IntegrationStage;
+  /**
+   * Bearbeitungsstand als Satzteil („Umsetzen läuft", „Bereit zum Review", „Abgeschlossen").
+   * Dieselbe Ableitung wie in der Worktree-Übersicht — ein Lauf vor der Integration hiess in
+   * dieser Liste bisher nur „offen" und verriet den Prozessschritt nicht.
+   */
+  progressLabel: string;
   archived: boolean;
+  /**
+   * Die Arbeitskopie existiert noch — nur dann lässt sie sich öffnen. Nach dem Merge
+   * wird sie entfernt; ein Öffnen-Knopf würde dann den Haupt-Checkout zeigen und damit
+   * etwas anderes, als er verspricht.
+   */
+  hasWorktree: boolean;
   /** Erste Execution des Laufs (0, wenn noch keine existiert). */
   startedAt: number;
   /** Letzte Aktivität (Ende bzw. Start der jüngsten Execution). */
@@ -59,6 +83,36 @@ export interface RunSummary {
   byCategory: Record<RunCategory, CostRollup>;
   /** Anteil je Mess-Herkunft (transcript = autoritativ). */
   sourceMix: Record<TokensSource, number>;
+  /**
+   * Aufgabenstand des zugehörigen Features — Durchreichung, keine neue Erhebung
+   * (FR-017). Steht im Objekt, weil die Läufe-Ansicht das Feature nicht mitliefert.
+   */
+  tasksDone: number;
+  /** `0` = keine Aufgabenliste vorhanden (nie als „0 von 0 erledigt" anzeigen). */
+  tasksTotal: number;
+}
+
+export interface CostPerTask {
+  /** Mikro-USD je erledigter Aufgabe; `null` = nicht bestimmbar ⇒ Strich (FR-020/FR-021). */
+  micros: number | null;
+  /** Mindestens eine Ausführung des Laufs hat keinen Betrag gemeldet (FR-021). */
+  incomplete: boolean;
+}
+
+/**
+ * Bezugsgrösse eines Laufs: gemeldeter Betrag je ERLEDIGTER Aufgabe. Nie geschätzt.
+ *
+ * Eine Funktion statt eines Feldes, damit Läufe-Liste und Lauf-Dashboard nicht
+ * auseinanderlaufen können (FR-019) und keine weitere Kennzahl gespeichert wird.
+ *
+ * Zwei Fälle liefern bewusst `null` statt einer Zahl: ohne erledigte Aufgabe gibt
+ * es keinen Nenner, und ohne gemeldeten Betrag wäre `0` eine Behauptung über
+ * Kosten, die niemand gemessen hat.
+ */
+export function costPerTask(run: Pick<RunSummary, 'total' | 'tasksDone'>): CostPerTask {
+  const incomplete = run.total.runsWithoutCost > 0;
+  if (run.tasksDone <= 0 || run.total.costMicros <= 0) return { micros: null, incomplete };
+  return { micros: Math.round(run.total.costMicros / run.tasksDone), incomplete };
 }
 
 function emptyRollup(): CostRollup {
@@ -69,7 +123,9 @@ function emptyRollup(): CostRollup {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
-    costUsd: 0,
+    costMicros: 0,
+    runsWithoutCost: 0,
+    subagentTokens: 0,
   };
 }
 
@@ -80,7 +136,10 @@ function add(r: CostRollup, e: ExecutionRecord): void {
   r.outputTokens += e.outputTokens ?? 0;
   r.cacheReadTokens += e.cacheReadTokens ?? 0;
   r.cacheCreationTokens += e.cacheCreationTokens ?? 0;
-  r.costUsd += e.costUsd ?? 0;
+  // Nur gemeldete Beträge summieren; Läufe ohne Betrag zählen, statt geschätzt zu werden (FR-024).
+  if (e.costMicros === null) r.runsWithoutCost += 1;
+  else r.costMicros += e.costMicros;
+  r.subagentTokens += e.subagentTokens ?? 0;
 }
 
 function stepKeyOf(e: ExecutionRecord): string {
@@ -96,7 +155,7 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     overhead: emptyRollup(),
     chat: emptyRollup(),
   };
-  const sourceCounts: Record<TokensSource, number> = { transcript: 0, parsed: 0, estimated: 0 };
+  const sourceCounts: Record<TokensSource, number> = { telemetry: 0, transcript: 0, parsed: 0, estimated: 0 };
   let sourceTotal = 0;
   let startedAt = 0;
   let lastActivityAt = 0;
@@ -112,19 +171,22 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     if (!step) stepMap.set(key, (step = { key, category, rollup: emptyRollup() }));
     add(step.rollup, e);
 
-    // Nenner sind ALLE Läufe, nicht nur die bereits gemessenen: sonst meldet ein Lauf
-    // mit 1 gemessenen und 10 ungemessenen Executions „100 % gemessen". Der fehlende
-    // Rest zu 1 ist der ungemessene Anteil.
-    sourceTotal += 1;
-    if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
+    // Nenner sind ALLE Läufe, an denen es etwas zu messen gibt — nicht nur die bereits
+    // gemessenen: sonst meldet ein Lauf mit 1 gemessenen und 10 ungemessenen Executions
+    // „100 % gemessen". Der fehlende Rest zu 1 ist der ungemessene Anteil.
+    if (countsTowardSourceMix(e)) {
+      sourceTotal += 1;
+      if (e.tokensSource) sourceCounts[e.tokensSource] += 1;
+    }
     if (startedAt === 0 || e.startedAt < startedAt) startedAt = e.startedAt;
     const activity = e.finishedAt ?? e.startedAt;
     if (activity > lastActivityAt) lastActivityAt = activity;
     if (e.status === 'running') running = true;
   }
 
-  const sourceMix: Record<TokensSource, number> = { transcript: 0, parsed: 0, estimated: 0 };
+  const sourceMix: Record<TokensSource, number> = { telemetry: 0, transcript: 0, parsed: 0, estimated: 0 };
   if (sourceTotal > 0) {
+    sourceMix.telemetry = sourceCounts.telemetry / sourceTotal;
     sourceMix.transcript = sourceCounts.transcript / sourceTotal;
     sourceMix.parsed = sourceCounts.parsed / sourceTotal;
     sourceMix.estimated = sourceCounts.estimated / sourceTotal;
@@ -142,7 +204,9 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     projectId: feature.projectId,
     branch: feature.branch,
     integration: feature.integration,
+    progressLabel: featureProgressLabel(feature),
     archived: feature.archivedAt !== null,
+    hasWorktree: feature.worktreePath !== null,
     startedAt,
     lastActivityAt,
     running,
@@ -150,6 +214,8 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     byStep,
     byCategory,
     sourceMix,
+    tasksDone: feature.tasksDone,
+    tasksTotal: feature.tasksTotal,
   };
 }
 

@@ -7,7 +7,7 @@ import {
   parseVerdict,
   resolveAgentsForTrigger,
 } from './agentSelect.js';
-import type { AgentDefinition, AgentFeatureDecision } from './types.js';
+import type { AgentDefinition, AgentFeatureDecision, AgentTrigger } from './types.js';
 
 function agent(overrides: Partial<AgentDefinition>): AgentDefinition {
   return {

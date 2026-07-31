@@ -105,4 +105,16 @@ describe('MergeQueueService.setStage — Stage-Konsistenz der Attention-Items', 
     setStage('merged'); // betrifft nur `feature`
     expect(openKinds()).toEqual(['verify_failed']);
   });
+
+  it('lässt den projektbezogenen verification_unconfigured-Eintrag stehen (FR-006, R3.2)', () => {
+    // featureId === null: die stufengekoppelte Bereinigung greift nur Meldungen
+    // DIESES Features. Der Eintrag zur fehlenden Verifikation gilt dem Projekt und
+    // darf keinen Stufenwechsel mitnehmen — sonst entstünde er bei jedem Feature neu.
+    attention.raise({ kind: 'verification_unconfigured', projectId, featureId: null, message: 'p' });
+    attention.raise({ kind: 'review_due', projectId, featureId: feature.id, message: 'r' });
+
+    setStage('queued');
+
+    expect(openKinds()).toEqual(['verification_unconfigured']);
+  });
 });

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'" />
+    <title>SDD Toolkit</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+        --bg: #09090b;
+        --fg: #a1a1aa;
+        --accent: #34d399;
+        --track: #27272a;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #f4f4f5;
+          --fg: #52525b;
+          --track: #d4d4d8;
+        }
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.75rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 400 0.875rem/1.4 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .mark {
+        width: 76px;
+        height: 76px;
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+      .bar {
+        width: 190px;
+        height: 3px;
+        border-radius: 999px;
+        background: var(--track);
+        overflow: hidden;
+      }
+      .bar::after {
+        content: '';
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--accent);
+        animation: slide 1.3s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(250%);
+        }
+      }
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.55;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .mark,
+        .bar::after {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <g fill="none" stroke="#34d399" stroke-width="2.6" stroke-linecap="round">
+        <path d="M10 9v14" />
+        <path d="M22 9v2.5a5.5 5.5 0 0 1-5.5 5.5H10" />
+      </g>
+      <g fill="#34d399">
+        <circle cx="10" cy="9" r="2.5" />
+        <circle cx="22" cy="9" r="2.5" />
+        <circle cx="10" cy="23" r="2.5" />
+      </g>
+    </svg>
+    <div class="bar"></div>
+    <p>SDD Toolkit startet …</p>
+  </body>
+</html>

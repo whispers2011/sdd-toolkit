@@ -90,7 +90,6 @@ export function FeatureAgentSelect({ featureId, onClose }: { featureId: string; 
                     <span className="ml-auto shrink-0">
                       {new Date(lastRun.createdAt).toLocaleString('de-CH')}
                       {lastRun.totalTokens ? ` · ${fmtTokens(lastRun.totalTokens)} tok` : ''}
-                      {lastRun.costUsd ? ` · $${lastRun.costUsd.toFixed(2)}` : ''}
                     </span>
                   </div>
                 )}

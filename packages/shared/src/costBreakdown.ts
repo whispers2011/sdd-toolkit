@@ -14,7 +14,12 @@ export interface CostRollup {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
-  costUsd: number;
+  /** Summe der von der CLI gemeldeten Beträge in Mikro-USD (nie geschätzt, FR-022). */
+  costMicros: number;
+  /** Wie viele der enthaltenen Läufe keinen Betrag beitragen (FR-024). */
+  runsWithoutCost: number;
+  /** Anteil, den Subagenten verursacht haben (FR-010). */
+  subagentTokens: number;
 }
 
 export interface FeatureCostBreakdown {
@@ -36,7 +41,9 @@ function emptyRollup(): CostRollup {
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
-    costUsd: 0,
+    costMicros: 0,
+    runsWithoutCost: 0,
+    subagentTokens: 0,
   };
 }
 
@@ -47,7 +54,11 @@ function add(r: CostRollup, e: ExecutionRecord): void {
   r.outputTokens += e.outputTokens ?? 0;
   r.cacheReadTokens += e.cacheReadTokens ?? 0;
   r.cacheCreationTokens += e.cacheCreationTokens ?? 0;
-  r.costUsd += e.costUsd ?? 0;
+  // Nur gemeldete Beträge summieren; Läufe ohne Betrag werden gezählt statt geschätzt,
+  // damit eine Summe nie so aussieht, als deckte sie alle enthaltenen Läufe ab (FR-024).
+  if (e.costMicros === null) r.runsWithoutCost += 1;
+  else r.costMicros += e.costMicros;
+  r.subagentTokens += e.subagentTokens ?? 0;
 }
 
 /**
@@ -62,7 +73,7 @@ export function aggregateBreakdown(
   const phaseMap = new Map<WorkflowPhase, CostRollup>();
   const kindMap = new Map<ExecutionKind, CostRollup>();
   const optMap = new Map<string, CostRollup>();
-  const sourceCounts: Record<TokensSource, number> = { transcript: 0, parsed: 0, estimated: 0 };
+  const sourceCounts: Record<TokensSource, number> = { telemetry: 0, transcript: 0, parsed: 0, estimated: 0 };
   let sourceTotal = 0;
 
   for (const e of executions) {
@@ -91,8 +102,9 @@ export function aggregateBreakdown(
     }
   }
 
-  const sourceMix: Record<TokensSource, number> = { transcript: 0, parsed: 0, estimated: 0 };
+  const sourceMix: Record<TokensSource, number> = { telemetry: 0, transcript: 0, parsed: 0, estimated: 0 };
   if (sourceTotal > 0) {
+    sourceMix.telemetry = sourceCounts.telemetry / sourceTotal;
     sourceMix.transcript = sourceCounts.transcript / sourceTotal;
     sourceMix.parsed = sourceCounts.parsed / sourceTotal;
     sourceMix.estimated = sourceCounts.estimated / sourceTotal;

@@ -110,11 +110,17 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
       const verifyExec = deps.executions
         .list(feature.id)
         .find((e) => e.kind === 'verify' && e.status !== 'running');
+      // Reihenfolge: ein stattgefundener Lauf schlägt die Konfiguration. Ein Projekt,
+      // dessen Kommandos nach einem grünen Lauf entfernt wurden, zeigt weiterhin den
+      // Lauf — er hat stattgefunden. Umgekehrt behauptet 'unconfigured' nichts über
+      // Läufe, und 'none' bleibt „konfiguriert, aber nichts gelaufen" (FR-009).
       const verify: ReviewOverviewItem['verify'] = verifyExec
         ? verifyExec.status === 'succeeded'
           ? { status: 'passed', executionId: verifyExec.id }
           : { status: 'failed', executionId: verifyExec.id }
-        : { status: 'none' };
+        : project.verifyCommands.length === 0
+          ? { status: 'unconfigured' }
+          : { status: 'none' };
 
       items.push({
         feature,
@@ -253,9 +259,9 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
     const feature = mustFeature(req.params.id);
     const project = mustProject(feature.projectId);
     const runs = deps.agentRuns.listForFeature(feature.id);
-    const withCosts = runs.map((run) => attachCosts(run, deps.executions));
+    const withTokens = runs.map((run) => attachTokens(run, deps.executions));
     const fallback = await markdownFallback(feature, project, runs);
-    return [...withCosts, ...fallback];
+    return [...withTokens, ...fallback];
   });
 
   app.get<{ Params: { id: string; runId: string } }>('/api/features/:id/agent-runs/:runId/report', async (req) => {
@@ -271,12 +277,12 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
   });
 }
 
-/** costUsd/totalTokens aus der verknüpften Execution anreichern. */
-function attachCosts(run: AgentRunSummary, executions: ExecutionRepo): AgentRunSummary {
+/** totalTokens aus der verknüpften Execution anreichern. */
+function attachTokens(run: AgentRunSummary, executions: ExecutionRepo): AgentRunSummary {
   if (!run.executionId) return run;
   const exec = executions.get(run.executionId);
   if (!exec) return run;
-  return { ...run, costUsd: exec.costUsd, totalTokens: exec.tokens };
+  return { ...run, totalTokens: exec.tokens };
 }
 
 /** Jüngster Lauf je Agent inkl. Markdown-Fallback (für Audit-Zähler der Übersicht). */

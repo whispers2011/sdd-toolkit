@@ -1,0 +1,69 @@
+appId: ch.iwf.sdd-toolkit
+productName: SDD Toolkit
+copyright: © 2026 IWF
+
+directories:
+  app: app
+  buildResources: build
+  output: release
+
+# Rebuild passiert bereits deterministisch in build.mjs (@electron/rebuild).
+npmRebuild: false
+
+# Kompilat behalten, Bauschutt der nativen Module weglassen (~80 MB).
+files:
+  - '**/*'
+  - '!**/node_modules/*/build/Release/obj.target/**'
+  - '!**/node_modules/*/build/Release/.deps/**'
+  - '!**/node_modules/*/build/Release/*.a'
+  - '!**/node_modules/*/build/Makefile'
+  - '!**/node_modules/*/build/binding.Makefile'
+  - '!**/node_modules/*/build/config.gypi'
+  - '!**/node_modules/*/build/gyp-mac-tool'
+  - '!**/node_modules/*/build/*.mk'
+  - '!**/node_modules/better-sqlite3/{deps,src,bin}/**'
+  - '!**/node_modules/better-sqlite3/build/Release/test_extension.node'
+  - '!**/node_modules/node-pty/{src,deps,scripts,typings}/**'
+  - '!package-lock.json'
+  - '!.native-stamp'
+
+asar: true
+# Der Server läuft als eigener Prozess mit nativen Modulen und liest das
+# Web-Bundle von der Platte — alles drei muss außerhalb des Archivs liegen.
+asarUnpack:
+  - node_modules/**
+  - server/**
+  - web/**
+
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.icns
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    LSMinimumSystemVersion: '12.0'
+    NSAppleEventsUsageDescription: >-
+      SDD Toolkit öffnet den macOS-Ordnerdialog, damit Sie ein
+      Projekt-Repository auswählen können.
+    NSDesktopFolderUsageDescription: &folder >-
+      SDD Toolkit arbeitet auf den Git-Repositories, die Sie als Projekt
+      registrieren.
+    NSDocumentsFolderUsageDescription: *folder
+    NSDownloadsFolderUsageDescription: *folder
+
+dmg:
+  title: SDD Toolkit ${version}
+  contents:
+    - x: 140
+      y: 200
+      type: file
+    - x: 400
+      y: 200
+      type: link
+      path: /Applications

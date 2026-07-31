@@ -1,46 +1,60 @@
 import { createContext, useContext, useEffect, useState, type DragEvent } from 'react';
 import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES } from '@sdd/shared';
+import { FEATURE_PHASES, evaluateAction, resolveAutomation } from '@sdd/shared';
 import { api } from '../api.js';
-import { isShowCompleted, useStore } from '../store.js';
+import { featureActionContext, isShowCompleted, useStore } from '../store.js';
+import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
 import { ReviewPortal } from './ReviewPortal.js';
 import { PhaseDefinitionDialog } from './PhaseDefinitionDialog.js';
 import { FeatureResultDialog } from './FeatureResultDialog.js';
 import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
-import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS } from '@sdd/shared';
-import { RESULT_ICONS } from './icons.js';
+import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
+import { FeatureAgentSelect } from './FeatureAgentSelect.js';
+import { ManualTestBlock, ManualTestLaneProvider } from './ManualTest.js';
+import {
+  AUTOMATIC_COLUMNS,
+  INTEGRATION_COLUMN_LABELS,
+  IntegrationColumnDialog,
+  PHASE_LABELS,
+  columnOf,
+  isIntegrationColumn,
+  type Column,
+  type IntegrationColumn,
+} from './boardColumns.js';
+import {
+  SpecifyResultIcon,
+  PlanResultIcon,
+  TasksResultIcon,
+  ChecklistResultIcon,
+  SettingsIcon,
+  ShieldIcon,
+  ArchiveIcon,
+  ScalesIcon,
+  ArrowRightIcon,
+  RestartIcon,
+  ReviewIcon,
+  type IconProps,
+} from './icons.js';
 
-const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
-
-type Column = FeaturePhase | 'integration' | 'done';
-
-const PHASE_LABELS: Record<FeaturePhase, string> = {
-  specify: 'Specify',
-  clarify: 'Clarify',
-  plan: 'Plan',
-  checklist: 'Checklist',
-  analyze: 'Analyze',
-  tasks: 'Tasks',
-  implement: 'Implement',
+/** Icon je artefakt-erzeugendem Schritt (Kachel-Ergebnis-Icons). */
+const RESULT_ICONS: Partial<Record<FeaturePhase, (p: IconProps) => React.ReactElement>> = {
+  specify: SpecifyResultIcon,
+  plan: PlanResultIcon,
+  tasks: TasksResultIcon,
+  checklist: ChecklistResultIcon,
 };
 
-/** Spalte, in der ein Feature aktuell steht. */
-function columnOf(feature: Feature): Column {
-  if (feature.integration === 'merged') return 'done';
-  if (feature.integration !== 'none') return 'integration';
-  for (const p of FEATURE_PHASES) {
-    const state = feature.phases[p];
-    if (state && state.status !== 'approved') return p;
-  }
-  return 'integration'; // alles approved → bereit zur Integration
-}
+const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
 
 export function KanbanBoard() {
   const { state, dispatch } = useStore();
   const [dragOver, setDragOver] = useState<Column | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const [reviewFeatureId, setReviewFeatureId] = useState<string | null>(null);
   const [defPhase, setDefPhase] = useState<FeaturePhase | null>(null);
+  const [defColumn, setDefColumn] = useState<IntegrationColumn | null>(null);
+  const run = useAction();
   if (!state.app) return null;
 
   const showCompleted = isShowCompleted(state, state.selectedProjectId);
@@ -53,27 +67,57 @@ export function KanbanBoard() {
     for (const phase of p.enabledPhases) enabledUnion.add(phase);
   }
   const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));
+
+  // Die menschlichen Spalten hängen an den Schaltern, die sie überhaupt
+  // erzeugen. Zusätzlich zeigen wir sie, wenn dort tatsächlich etwas steht: der
+  // Schalter gilt pro Projekt, kann aber am Feature übersteuert sein — sonst
+  // stünde ein Feature auf einer Stufe ohne Spalte.
+  const project = state.app.projects.find((p) => p.id === state.selectedProjectId);
+  const automation = project
+    ? resolveAutomation(state.app.automation, project.automation, {})
+    : null;
+  const occupied = new Set(features.map(columnOf));
+  const showAccept = automation?.manualTestGate === true || occupied.has('accept');
+  const showReview = automation?.autoMerge !== true || occupied.has('review');
+
   // Done-Spalte nur zeigen, wenn Abgeschlossene eingeblendet sind.
-  const columns: Column[] = [...phaseColumns, 'integration', ...(showCompleted ? (['done'] as Column[]) : [])];
+  const columns: Column[] = [
+    ...phaseColumns,
+    'verify',
+    ...(showAccept ? (['accept'] as Column[]) : []),
+    ...(showReview ? (['review'] as Column[]) : []),
+    'merge',
+    ...(showCompleted ? (['done'] as Column[]) : []),
+  ];
 
-  const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => {
-      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
-      if (/läuft bereits/i.test(e.message)) return;
-      dispatch({ type: 'error', message: e.message });
-    });
+  const waitingIds = features
+    .filter((f) => f.integration === 'awaiting_manual_test')
+    .map((f) => f.id);
 
-  const onDrop = (column: Column) => (e: DragEvent) => {
+  /** Der Integrations-Befund des gerade gezogenen Features (null = kein Zug aktiv). */
+  const integrateVerdict = (featureId: string | null) => {
+    const ctx = featureId ? featureActionContext(state, featureId) : null;
+    return ctx ? evaluateAction('integrate', ctx) : null;
+  };
+
+  // FR-018: Der Kartenzug in die erste Integrations-Spalte ist ein Bedienweg wie
+  // jeder andere und unterliegt derselben Festlegung. Schritt-Spalten sind gar
+  // kein Drop-Ziel mehr (FR-029) — es gibt keine Sammel-Freigabe. „Abnahme",
+  // „Review" und „Merge" ebenso wenig: dorthin kommt ein Feature nur durch die
+  // Pipeline, nicht durch einen Zug.
+  const onDropIntegration = (e: DragEvent) => {
     e.preventDefault();
     setDragOver(null);
     const featureId = e.dataTransfer.getData('text/feature-id');
     if (!featureId) return;
-    if (column === 'done') return;
-    if (column === 'integration') {
-      void call(() => api.integrate(featureId));
-    } else {
-      void call(() => api.advance(featureId, column));
+    const verdict = integrateVerdict(featureId);
+    if (!verdict || verdict.availability !== 'available') {
+      // Der Zug ist eine ausdrückliche Absicht — der Grund gehört genannt,
+      // auch wenn die Schaltfläche im aktuellen Zustand gar nicht erschiene.
+      if (verdict?.reason) dispatch({ type: 'error', message: verdict.reason });
+      return;
     }
+    run(`integrate:${featureId}`, () => api.integrate(featureId));
   };
 
   return (
@@ -99,63 +143,110 @@ export function KanbanBoard() {
           />
         );
       })()}
+    {defColumn && (
+      <IntegrationColumnDialog
+        column={defColumn}
+        automation={automation}
+        onClose={() => setDefColumn(null)}
+      />
+    )}
+    <ManualTestLaneProvider projectId={state.selectedProjectId} waitingIds={waitingIds}>
     <div className="flex h-full gap-3 overflow-x-auto p-4">
       {columns.map((column) => {
         const items = features.filter((f) => columnOf(f) === column);
+        // Nur die Integrations-Spalte nimmt Karten an; die Markierung erscheint
+        // ausschließlich, wenn der Zug auch etwas bewirken würde.
+        const isDropTarget = column === 'verify';
+        const wouldAccept = isDropTarget && integrateVerdict(draggingId)?.availability === 'available';
+        const isPhase = !isIntegrationColumn(column);
+        // Die Automatik-Spalten sind fast immer leer und brauchen keine
+        // Aktionsleiste — schmal, damit die Spalten mit Entscheidungen Platz haben.
+        const width = AUTOMATIC_COLUMNS.has(column) ? 'w-44' : 'w-64';
         return (
           <div
             key={column}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(column);
-            }}
-            onDragLeave={() => setDragOver(null)}
-            onDrop={onDrop(column)}
-            className={`flex w-64 shrink-0 flex-col rounded-lg border ${
+            {...(isDropTarget
+              ? {
+                  onDragOver: (e: DragEvent) => {
+                    e.preventDefault();
+                    setDragOver(wouldAccept ? column : null);
+                  },
+                  onDragLeave: () => setDragOver(null),
+                  onDrop: onDropIntegration,
+                }
+              : {})}
+            className={`flex ${width} shrink-0 flex-col rounded-lg border ${
               dragOver === column ? 'border-emerald-600 bg-zinc-900' : 'border-zinc-800 bg-zinc-925'
             }`}
           >
             <div className="flex items-center justify-between px-3 py-2">
               <div className="flex items-center gap-1.5">
                 <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
-                  {column === 'integration' ? 'Integration' : column === 'done' ? 'Done' : PHASE_LABELS[column]}
+                  {isPhase
+                    ? PHASE_LABELS[column as FeaturePhase]
+                    : INTEGRATION_COLUMN_LABELS[column as IntegrationColumn]}
                 </h3>
-                {column !== 'integration' && column !== 'done' && (
-                  <button
-                    onClick={() => setDefPhase(column)}
-                    title="Was macht dieser Schritt? (Spezifikation ansehen/bearbeiten)"
-                    className="flex h-4 w-4 items-center justify-center rounded-full border border-zinc-600 text-[10px] leading-none font-serif text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
-                  >
-                    i
-                  </button>
-                )}
+                {/*
+                  Beide Spaltenarten erklären sich — die Quelle ist nur eine
+                  andere: bei Schritt-Spalten die (bearbeitbare) Kommando-
+                  Definition, bei Integrations-Spalten die Pipeline-Beschreibung
+                  aus INTEGRATION_STEPS.
+                */}
+                <button
+                  onClick={() =>
+                    isPhase
+                      ? setDefPhase(column as FeaturePhase)
+                      : setDefColumn(column as IntegrationColumn)
+                  }
+                  title={
+                    isPhase
+                      ? 'Was macht dieser Schritt? (Spezifikation ansehen/bearbeiten)'
+                      : 'Was passiert in dieser Spalte?'
+                  }
+                  className="flex h-4 w-4 items-center justify-center rounded-full border border-zinc-600 text-[10px] leading-none font-serif text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
+                >
+                  i
+                </button>
               </div>
               <span className="text-xs text-zinc-600">{items.length}</span>
             </div>
             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto px-2 pb-2">
               {items.map((feature) => (
-                <FeatureCard key={feature.id} feature={feature} column={column} />
+                <FeatureCard
+                  key={feature.id}
+                  feature={feature}
+                  column={column}
+                  onDragState={setDraggingId}
+                />
               ))}
             </div>
           </div>
         );
       })}
     </div>
+    </ManualTestLaneProvider>
     </OpenReviewContext.Provider>
   );
 }
 
-function FeatureCard({ feature, column }: { feature: Feature; column: Column }) {
+function FeatureCard({
+  feature,
+  column,
+  onDragState,
+}: {
+  feature: Feature;
+  column: Column;
+  onDragState: (featureId: string | null) => void;
+}) {
   const { state, dispatch } = useStore();
-  const [showAutomation, setShowAutomation] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [steps, setSteps] = useState<FeatureArtifactStep[]>([]);
   const [resultPhase, setResultPhase] = useState<FeaturePhase | null>(null);
+  const run = useAction();
   const project = state.app?.projects.find((p) => p.id === feature.projectId);
   const session = state.app?.sessions.find((s) => s.featureId === feature.id && !s.exited);
-  // „Lebt gerade" = Session arbeitet oder wartet auf Eingabe. Dann ist der Start
-  // eines Phasenlaufs unsinnig (die Session ist beschäftigt) — der Grund, warum eine
-  // laufende Session sonst trotzdem „▶ Start" anbot.
   const live = !!session && (session.status === 'working' || session.status === 'awaiting_input');
 
   // Ergebnis-Artefakte laden; neu laden, wenn sich ein Phasen-Status ändert (z. B. spec.md entsteht).
@@ -169,21 +260,33 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feature.id, phaseSig]);
 
-  const call = (fn: () => Promise<unknown>) =>
-    fn().catch((e: Error) => {
-      // Doppel-Start („läuft bereits") ist harmlos — nicht als Fehler anzeigen.
-      if (/läuft bereits/i.test(e.message)) return;
-      dispatch({ type: 'error', message: e.message });
-    });
+  const phase = isIntegrationColumn(column) ? null : column;
+  const phaseState = phase ? feature.phases[phase] : undefined;
 
-  const phaseState = column !== 'integration' && column !== 'done' ? feature.phases[column] : undefined;
+  // Sämtliche Aktions-Sichtbarkeit und -Sperrung kommt aus der gemeinsamen
+  // Festlegung — die Karte trifft keine eigene Entscheidung mehr (FR-022/SC-004).
+  const ctx = featureActionContext(state, feature.id);
+  const verdict = (action: Parameters<typeof evaluateAction>[0]) =>
+    ctx ? evaluateAction(action, ctx, phase ? { phase } : undefined) : null;
+  const startV = phase ? verdict('phase_start') : null;
+  const approveV = phase ? verdict('phase_approve') : null;
+  const discardV = phase ? verdict('phase_discard') : null;
+  const integrateV = verdict('integrate');
+  const retryV = verdict('integration_retry');
+  const archiveV = verdict('archive');
+  const reason = blockedReason(startV, approveV, discardV, integrateV, retryV, archiveV);
 
   return (
     <div
       draggable
-      onDragStart={(e) => e.dataTransfer.setData('text/feature-id', feature.id)}
+      onDragStart={(e) => {
+        e.dataTransfer.setData('text/feature-id', feature.id);
+        onDragState(feature.id);
+      }}
+      onDragEnd={() => onDragState(null)}
       className="cursor-grab rounded-md border border-zinc-800 bg-zinc-900 p-2.5 shadow-sm hover:border-zinc-700 active:cursor-grabbing"
     >
       <div className="flex items-center gap-2">
@@ -195,17 +298,18 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
           {feature.name}
         </button>
         {state.gateRunning[feature.id] && (
-          <span className="ml-auto animate-pulse text-xs text-violet-300" title="Qualitäts-Gate (Agent) läuft">
-            ⚖
+          <span className="ml-auto animate-pulse text-violet-300" title="Qualitäts-Gate (Agent) läuft">
+            <ScalesIcon />
           </span>
         )}
         {session && <span className={`status-dot status-${session.status} ${state.gateRunning[feature.id] ? '' : 'ml-auto'}`} />}
         <button
-          onClick={() => setShowAutomation(!showAutomation)}
-          className={`${session || state.gateRunning[feature.id] ? '' : 'ml-auto '}rounded px-1 text-xs text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
-          title="Automation-Override für dieses Feature"
+          onClick={() => setShowSettings(!showSettings)}
+          className={`${session || state.gateRunning[feature.id] ? '' : 'ml-auto '}rounded px-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300`}
+          title="Einstellungen für dieses Feature"
+          aria-expanded={showSettings}
         >
-          ⚙
+          <SettingsIcon />
         </button>
       </div>
       <div className="mt-1 flex items-center gap-2 text-xs text-zinc-500">
@@ -257,39 +361,66 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         />
       )}
 
-      {showAutomation && (
-        <div className="mt-2 space-y-1">
+      {/*
+        Feature-Einstellungen: Automation, Agenten und Aufräumen unter EINEM Einstieg.
+        Vorher war die Automation der einzige Inhalt des Zahnrads, die Agenten hingen
+        an einem eigenen Icon in der Konsolen-Kopfleiste (nur bei geöffneter Konsole
+        erreichbar) und Aufräumen war ein Dauerbutton auf der Karte.
+      */}
+      {showSettings && (
+        <div className="mt-2 space-y-2 rounded border border-zinc-800 bg-zinc-900/60 p-2">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500">Automation</div>
           <div className="flex gap-1">
             <PresetChip
               active={Object.keys(feature.automation).length === 0}
-              onClick={() => void call(() => api.updateFeature(feature.id, { automation: {} }))}
+              onClick={() => run(`automation:${feature.id}`, () => api.updateFeature(feature.id, { automation: {} }))}
             >
               erben
             </PresetChip>
             <PresetChip
               active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL2_DEFAULTS)}
-              onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL2_DEFAULTS }))}
+              onClick={() =>
+                run(`automation:${feature.id}`, () => api.updateFeature(feature.id, { automation: LEVEL2_DEFAULTS }))
+              }
             >
               L2
             </PresetChip>
             <PresetChip
               active={JSON.stringify(feature.automation) === JSON.stringify(LEVEL3_DEFAULTS)}
-              onClick={() => void call(() => api.updateFeature(feature.id, { automation: LEVEL3_DEFAULTS }))}
+              onClick={() =>
+                run(`automation:${feature.id}`, () => api.updateFeature(feature.id, { automation: LEVEL3_DEFAULTS }))
+              }
             >
               L3
             </PresetChip>
           </div>
-          {feature.integration !== 'merged' && (
+
+          <div className="flex flex-wrap items-center gap-1 border-t border-zinc-800 pt-2">
             <button
-              onClick={() => void call(() => api.markDone(feature.id))}
-              className="w-full rounded bg-zinc-800 px-1.5 py-0.5 text-left text-xs text-emerald-400 hover:bg-zinc-700"
-              title="Ohne Merge als erledigt markieren — für Features, die außerhalb des Tools gebaut wurden"
+              onClick={() => setShowAgents(true)}
+              className={`${CARD_ACTION_CLASS} flex items-center gap-1`}
+              title="Agents für dieses Feature aktivieren oder deaktivieren"
             >
-              ✓ Als abgeschlossen markieren
+              <ShieldIcon /> Agents
             </button>
-          )}
+            {/*
+              Aufräumen ist destruktiv und trifft uncommittete Arbeit — die Policy
+              sperrt es, solange gearbeitet wird, und nennt den Grund. Bis 27.07.2026
+              war es in jedem Zustand auslösbar, abgesichert nur durch einen Warnsatz.
+            */}
+            {archiveV && (
+              <ActionButton
+                verdict={archiveV}
+                onClick={() => setConfirmArchive(true)}
+                className={`${CARD_ACTION_CLASS} flex items-center gap-1`}
+              >
+                <ArchiveIcon /> Aufräumen
+              </ActionButton>
+            )}
+          </div>
         </div>
       )}
+      {showAgents && <FeatureAgentSelect featureId={feature.id} onClose={() => setShowAgents(false)} />}
 
       {live ? (
         <div className="mt-2 flex items-center gap-1.5 text-xs text-emerald-400">
@@ -301,6 +432,10 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         </div>
       ) : null}
       {phaseState?.stale && <div className="mt-1 text-xs text-amber-500">⚠ stale — Upstream geändert</div>}
+      {/* Die Zurückweisung bleibt sichtbar, bis der letzte Schritt neu freigegeben ist (FR-026). */}
+      {feature.reviewRejectedAt !== null && (
+        <div className="mt-1 text-xs text-amber-300">↩ im Review zurückgewiesen</div>
+      )}
       {feature.tasksTotal > 0 && (
         <div className="mt-2">
           <div className="h-1 overflow-hidden rounded bg-zinc-800">
@@ -315,27 +450,66 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
         </div>
       )}
 
-      <div className="mt-2 flex flex-wrap gap-1">
-        {phaseState?.status === 'idle' && !live && column !== 'integration' && column !== 'done' && (
-          <CardAction onClick={() => void call(() => api.startPhase(feature.id, column))}>▶ Start</CardAction>
+      {/* Die Abnahme findet HIER statt, nicht in einer Zweitansicht: Adresse der
+          laufenden Anwendung, Dienstzustand und die Entscheidung auf der Karte. */}
+      {feature.integration === 'awaiting_manual_test' && <ManualTestBlock featureId={feature.id} />}
+
+      <ActionGroup reason={reason} className="mt-2">
+        {phase && startV && (
+          <ActionButton
+            verdict={startV}
+            onClick={() => run(`start:${feature.id}:${phase}`, () => api.startPhase(feature.id, phase))}
+            className={CARD_ACTION_CLASS}
+          >
+            ▶ Start
+          </ActionButton>
         )}
-        {phaseState?.status === 'awaiting_review' && column !== 'integration' && column !== 'done' && (
-          <>
-            <CardAction onClick={() => void call(() => api.approvePhase(feature.id, column))}>✓ Approve</CardAction>
-            <CardAction onClick={() => void call(() => api.discardPhase(feature.id, column))}>↺ Verwerfen</CardAction>
-          </>
+        {phase && approveV && (
+          <ActionButton
+            verdict={approveV}
+            onClick={() => run(`approve:${feature.id}:${phase}`, () => api.approvePhase(feature.id, phase))}
+            className={CARD_ACTION_CLASS}
+          >
+            ✓ Approve
+          </ActionButton>
         )}
-        {column === 'integration' && feature.integration === 'none' && (
-          <CardAction onClick={() => void call(() => api.integrate(feature.id))}>⇥ Integrieren</CardAction>
+        {phase && discardV && (
+          <ActionButton
+            verdict={discardV}
+            onClick={() => run(`discard:${feature.id}:${phase}`, () => api.discardPhase(feature.id, phase))}
+            className={CARD_ACTION_CLASS}
+          >
+            ↺ Verwerfen
+          </ActionButton>
         )}
-        {feature.integration === 'awaiting_human_review' && (
-          <OpenReviewButton featureId={feature.id} />
+        {integrateV && (
+          <ActionButton
+            verdict={integrateV}
+            onClick={() => run(`integrate:${feature.id}`, () => api.integrate(feature.id))}
+            className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
+          >
+            <ArrowRightIcon /> Integrieren
+          </ActionButton>
         )}
-        {(feature.integration === 'verify_failed' || feature.integration === 'conflict_escalated') && (
-          <CardAction onClick={() => void call(() => api.retryIntegration(feature.id))}>↻ Erneut</CardAction>
+        {/* Betrachtend (FR-007): das Portal öffnet nur eine Ansicht und wird nie gesperrt. */}
+        {feature.integration === 'awaiting_human_review' && <OpenReviewButton featureId={feature.id} />}
+        {retryV && (
+          <ActionButton
+            verdict={retryV}
+            onClick={() => run(`retry:${feature.id}`, () => api.retryIntegration(feature.id))}
+            className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
+          >
+            <RestartIcon /> Erneut
+          </ActionButton>
         )}
         {feature.integration !== 'none' && feature.integration !== 'merged' && (
-          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-sky-400">{feature.integration}</span>
+          <span
+            className={`rounded bg-zinc-800 px-1.5 py-0.5 text-xs ${
+              INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]
+            }`}
+          >
+            {INTEGRATION_STAGE_META[feature.integration].label}
+          </span>
         )}
         {feature.integration === 'merged' && project?.integrationMode === 'pr' && (
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-emerald-400">PR erstellt</span>
@@ -350,35 +524,32 @@ function FeatureCard({ feature, column }: { feature: Feature; column: Column }) 
               → {feature.integrationTarget}
             </span>
           )}
-        {column === 'done' && (
-          <CardAction onClick={() => setConfirmArchive(true)}>🗄 Archivieren</CardAction>
-        )}
+        {/* Aufräumen sitzt im Zahnrad-Menü, nicht mehr als Dauerbutton auf der Karte. */}
         {confirmArchive && (
           <ConfirmDialog
             title="Feature archivieren"
-            message={`„${feature.name}" archivieren?\n\nDie Session wird beendet; Specs und Git-Historie bleiben im Repo erhalten.`}
+            message={
+              `„${feature.name}" archivieren?\n\nArchivieren räumt auf — es schließt das Feature nicht ab. ` +
+              `Die Session wird beendet; Specs und Git-Historie bleiben im Repo erhalten.`
+            }
             confirmLabel="Archivieren"
-            onConfirm={() => void call(() => api.archiveFeature(feature.id))}
+            onConfirm={() => run(`archive:${feature.id}`, () => api.archiveFeature(feature.id))}
             onClose={() => setConfirmArchive(false)}
           />
         )}
-      </div>
+      </ActionGroup>
     </div>
   );
 }
 
+const CARD_ACTION_CLASS =
+  'rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100';
+
 function OpenReviewButton({ featureId }: { featureId: string }) {
   const openReview = useContext(OpenReviewContext);
-  return <CardAction onClick={() => openReview(featureId)}>👀 Review</CardAction>;
-}
-
-function CardAction({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
-    <button
-      onClick={onClick}
-      className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-zinc-300 hover:bg-zinc-700 hover:text-zinc-100"
-    >
-      {children}
+    <button onClick={() => openReview(featureId)} className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}>
+      <ReviewIcon /> Review
     </button>
   );
 }

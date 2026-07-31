@@ -50,10 +50,12 @@ export function TerminalPane({
       scrollback: 20_000,
       allowProposedApi: true,
     });
-    // Live-Umfärben bei Moduswechsel — ohne Remount, damit PTY-Verbindung,
-    // Scrollback und Eingabefokus erhalten bleiben (FR-003/FR-009).
-    const unsubscribeTheme = onThemeChange((mode) => {
-      term.options.theme = terminalTheme(mode);
+    // Live-Umfärben bei Designwechsel — ohne Remount, damit PTY-Verbindung,
+    // Scrollback und Eingabefokus erhalten bleiben (U2.4, FR-022). Das Design
+    // steht bewusst NICHT in den Abhängigkeiten dieses Effekts: sonst würde das
+    // Terminal bei jedem Wechsel neu aufgebaut und die Sitzung ginge verloren.
+    const unsubscribeTheme = onThemeChange((id) => {
+      term.options.theme = terminalTheme(id);
     });
     const fit = new FitAddon();
     term.loadAddon(fit);

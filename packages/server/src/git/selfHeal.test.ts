@@ -71,7 +71,7 @@ describe('Merge-Queue Self-Healing (git-Layer)', () => {
      */
     it('meldet einen Branch ohne eigene Commits fälschlich als gemergt — Worktree-Inhalt ist der einzige Unterschied', async () => {
       const wt = await worktrees.create({
-        projectId: 'p1',
+        project: { id: 'p1', name: 'Demo' },
         projectPath: repo,
         featureName: 'nocommit',
         branch: 'feature/nocommit',
@@ -99,7 +99,7 @@ describe('Merge-Queue Self-Healing (git-Layer)', () => {
   describe('WorktreeManager.ensureValid', () => {
     it("meldet 'ok' für einen gesunden Worktree", async () => {
       const wt = await worktrees.create({
-        projectId: 'p',
+        project: { id: 'p', name: 'Demo' },
         projectPath: repo,
         featureName: 'feat',
         branch: 'feature/feat',
@@ -110,7 +110,7 @@ describe('Merge-Queue Self-Healing (git-Layer)', () => {
 
     it("repariert einen Worktree mit gelöschter .git-Verknüpfung ('repaired')", async () => {
       const wt = await worktrees.create({
-        projectId: 'p',
+        project: { id: 'p', name: 'Demo' },
         projectPath: repo,
         featureName: 'feat2',
         branch: 'feature/feat2',

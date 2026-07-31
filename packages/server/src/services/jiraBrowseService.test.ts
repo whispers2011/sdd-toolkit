@@ -20,12 +20,12 @@ describe('JiraBrowseService.listSites', () => {
     const svc = new JiraBrowseService(
       mockJira({
         getAccessibleAtlassianResources: [
-          { id: 'site-1', name: 'Example', url: 'https://example.atlassian.net', scopes: [] },
+          { id: 'site-1', name: 'IWF', url: 'https://iwf.atlassian.net', scopes: [] },
           { id: '', url: 'https://kaputt' },
         ],
       }),
     );
-    expect(await svc.listSites()).toEqual([{ id: 'site-1', name: 'Example', url: 'https://example.atlassian.net' }]);
+    expect(await svc.listSites()).toEqual([{ id: 'site-1', name: 'IWF', url: 'https://iwf.atlassian.net' }]);
   });
 });
 

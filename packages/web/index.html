@@ -7,21 +7,24 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <title>SDD Toolkit</title>
-    <!-- FOUC-Guard (Contract C2): Modus vor dem ersten Paint setzen.
-         Auflösung: localStorage['sdd-theme'] → prefers-color-scheme → Dark. -->
+    <!-- FOUC-Guard (Contract C2/U1): Design vor dem ersten Paint setzen.
+         Auflösung: localStorage['sdd-theme'] → prefers-color-scheme → Dark.
+         Die akzeptierten Werte laufen mit ThemeId in theme.ts gleich; ein Test
+         über den Quelltext dieser Datei nagelt das fest (FR-026, SC-009). -->
     <script>
       (function () {
         try {
           var s = localStorage.getItem('sdd-theme');
           var m =
-            s === 'light' || s === 'dark'
+            s === 'light' || s === 'dark' || s === 'high-contrast'
               ? s
               : matchMedia('(prefers-color-scheme: dark)').matches
                 ? 'dark'
                 : 'light';
           var r = document.documentElement;
           r.dataset.theme = m;
-          r.style.colorScheme = m;
+          // Nur 'light' ist hell — jedes andere Design ist dunkel (U1.2).
+          r.style.colorScheme = m === 'light' ? 'light' : 'dark';
         } catch (e) {
           var el = document.documentElement;
           el.dataset.theme = 'dark';

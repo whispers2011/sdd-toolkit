@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
+import { WS_ORIGIN_REJECTED, isOriginAllowed, registerOriginGuard } from './originGuard.js';
 import multipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { readFile } from 'node:fs/promises';
@@ -9,14 +10,31 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { exec, execFile } from 'node:child_process';
 import { loginShellEnv } from '../pty/loginShellEnv.js';
-import type { AgentDefinition, ApproveMergeRequest, FeaturePhase } from '@sdd/shared';
+import type {
+  AgentDefinition,
+  ApproveMergeRequest,
+  FeaturePhase,
+  LifecycleStageId,
+  LifecycleStep,
+  ManualTestRejection,
+  SystemStatus,
+} from '@sdd/shared';
 import {
+  CHAT_NOT_PAUSED,
   FEATURE_PHASES,
+  INTEGRATION_STAGE_IDS,
+  LIFECYCLE_TRIGGER_KINDS,
+  MAX_DOCUMENT_BYTES,
   aggregateBreakdown,
   buildRunSummaries,
   compileReviewPrompt,
   detectCycle,
+  evaluatePressure,
+  orderedPhases,
+  parseStackConfig,
   renderTranscriptLog,
+  reopenLastPhase,
+  validateStackConfig,
 } from '@sdd/shared';
 import type {
   AttentionRepo,
@@ -29,7 +47,10 @@ import type {
   SettingsRepo,
 } from '../db/repos.js';
 import type { AgentRepo, AgentRunRepo } from '../db/agentRepo.js';
+import type { StackRepo } from '../db/stackRepo.js';
+import type { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
 import type { AgentGateService } from '../services/agentGateService.js';
+import type { LifecycleStepService } from '../services/lifecycleStepService.js';
 import type { KnowledgeRepo } from '../db/knowledgeRepo.js';
 import type { KnowledgeService } from '../services/knowledgeService.js';
 import type { Applicability, SelectionDecision } from '@sdd/shared';
@@ -43,10 +64,19 @@ import type { JiraSelection } from '@sdd/shared';
 import type { OnboardingService } from '../services/onboardingService.js';
 import type { ChatService } from '../services/chatService.js';
 import type { ChatWorkService } from '../services/chatWorkService.js';
+import type { WorktreeOverviewService } from '../services/worktreeOverviewService.js';
+import type { ResourceMonitor } from '../services/resourceMonitor.js';
+import type { OutageMonitor } from '../services/outageMonitor.js';
 import type { PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, readTranscriptRange, transcriptSize } from '../pty/transcriptWatcher.js';
 import { readBranch } from '../git/branchReader.js';
-import { collectUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
+import { git } from '../git/git.js';
+import type { WorktreeManager } from '../git/worktrees.js';
+import { collectUnmergedChanges, hasUnmergedChanges, unmergedFileDiff } from '../services/unmergedChanges.js';
+import { ActionGuard } from '../services/actionGuard.js';
+import { registerOtlpRoute } from '../telemetry/otlpRoute.js';
+import { TelemetryStore } from '../telemetry/telemetryStore.js';
+import { detectForeignOtelConfig, telemetryEndpoint } from '../telemetry/telemetryEnv.js';
 import { hasSpecKit, phaseDefinitionPath } from '../services/artifacts.js';
 import { DefinitionError, readPhaseDefinition, writePhaseDefinition } from '../services/phaseDefinition.js';
 import {
@@ -55,10 +85,14 @@ import {
   readFeatureArtifact,
   writeFeatureArtifact,
 } from '../services/featureArtifacts.js';
-import { bus, BUS_EVENT_NAMES } from '../events.js';
+import type { FeatureDocumentsService, IncomingDocument } from '../services/featureDocuments.js';
+import { bus, BUS_EVENT_NAMES, emitAttentionResolved } from '../events.js';
 import { displayStatus } from '@sdd/shared';
 import { registerReviewRoutes } from './reviewRoutes.js';
-import { WS_ORIGIN_REJECTED, isOriginAllowed, registerOriginGuard } from './originGuard.js';
+import { registerWorktreeRoutes } from './worktreeRoutes.js';
+import { registerTestingLaneRoutes } from './testingLaneRoutes.js';
+import { StackRunError, type StackService } from '../services/stackService.js';
+import type { TestingLaneService } from '../services/testingLaneService.js';
 
 export interface ApiDeps {
   projects: ProjectRepo;
@@ -71,6 +105,8 @@ export interface ApiDeps {
   agents: AgentRepo;
   agentRuns: AgentRunRepo;
   agentGate: AgentGateService;
+  lifecycleStepRepo: LifecycleStepRepo;
+  lifecycleSteps: LifecycleStepService;
   reviewComments: ReviewCommentRepo;
   knowledge: KnowledgeRepo;
   knowledgeService: KnowledgeService;
@@ -82,22 +118,62 @@ export interface ApiDeps {
   jira: AtlassianMcpClient;
   jiraBrowse: JiraBrowseService;
   jiraImport: JiraImportService;
+  featureDocuments: FeatureDocumentsService;
+  worktreeOverview: WorktreeOverviewService;
+  /** Stack-Profile eines Features (Testing-Lane, Feature-Konsole). */
+  stackService: StackService;
+  /** Zusammenstellung der Testing-Lane und die manuelle Abnahme. */
+  testingLane: TestingLaneService;
+  /** Stack-Absicht, Abnahme-Entscheidungen und Befunde. */
+  stackRepo: StackRepo;
+  /** Ressourcendruck für die Kopfleiste (Feature „server-ausfaelle-sichtbar-machen", C3). */
+  resourceMonitor: ResourceMonitor;
+  /** Quelle des zuletzt registrierten Ausfalls (FR-023, D13). */
+  outageMonitor: OutageMonitor;
+  worktrees: WorktreeManager;
   ptys: PtySessionManager;
-  /** Browser-Origins, die HTTP-API und WebSockets nutzen dürfen (api/originGuard.ts). */
-  allowedOrigins: readonly string[];
+  /** Puffer der Verbrauchsmeldungen (Feature "token-und-kostenmessung..."). */
+  telemetry: TelemetryStore;
   dataDir: string;
+  /** Port, unter dem der Server erreichbar ist — Ziel der Telemetrie-Meldungen. */
+  port: number;
+  /** Breite eines Portblocks — Obergrenze der Dienst-Abstände (config.portBlockSize). */
+  portBlockSize: number;
   /** Gebautes Web-Bundle für den Prod-Ein-Prozess-Modus; null/undefined = Web nicht ausliefern (Dev). */
   webDir?: string | null;
+  /** Browser-Origins, die HTTP-API und WebSockets nutzen dürfen (api/originGuard.ts). */
+  allowedOrigins: readonly string[];
+  /** Systemöffner für Dokumente; ohne Angabe `open <pfad>` (Injektion für Tests). */
+  openDocument?: (path: string) => void;
 }
 
 export async function buildServer(deps: ApiDeps) {
   const app = Fastify({ logger: { level: 'info' } });
+  // Der lokale Server ist über localhost von JEDER Webseite erreichbar — ohne
+  // Origin-Prüfung könnte eine beliebige Seite im Browser die API bedienen.
   const allowedOrigins = deps.allowedOrigins;
-  // Vor CORS registrieren, damit auch Preflights aus fremden Origins abgewiesen werden.
   registerOriginGuard(app, allowedOrigins);
   await app.register(cors, { origin: (origin, cb) => cb(null, isOriginAllowed(origin, allowedOrigins)) });
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
   await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
+
+  // OTLP-Empfänger der Claude-CLI (contracts/otlp-receiver.md). Gekapselt, mit
+  // eigenem nachsichtigen JSON-Parser — antwortet IMMER 200.
+  registerOtlpRoute(app, deps.telemetry);
+
+  // Serverseitige Durchsetzung der Aktions-Policy (FR-024): dieselbe Festlegung,
+  // die die Oberfläche rendert — kein Bedienweg kommt an ihr vorbei.
+  const actionGuard = new ActionGuard({
+    features: deps.features,
+    ptys: deps.ptys,
+    orchestrator: deps.orchestrator,
+    // Die Stack-Bedingungen werden serverseitig durchgesetzt, nicht nur in der
+    // Oberfläche (FR-032/FR-033).
+    projects: deps.projects,
+    stackRunning: (featureId) => deps.stackService.isRunning(featureId),
+    openBlockers: (featureId) =>
+      deps.stackRepo.openFindingsFor(featureId).filter((f) => f.severity === 'blocker').length,
+  });
 
   // Review-Portal-Routen (Übersicht, Branches, Dateibaum/Editor, Kommentare, Audits).
   registerReviewRoutes(app, {
@@ -106,6 +182,29 @@ export async function buildServer(deps: ApiDeps) {
     executions: deps.executions,
     reviewComments: deps.reviewComments,
     agentRuns: deps.agentRuns,
+  });
+
+  // Worktree-Übersicht (tool-weit: Bestand, geänderte Dateien, Warnungen, Aufräumen).
+  registerWorktreeRoutes(app, { worktreeOverview: deps.worktreeOverview });
+
+  // Testing-Lane: die Zusammenstellung für die manuelle Abnahme vor dem Merge.
+  registerTestingLaneRoutes(app, { testingLane: deps.testingLane, stacks: deps.stackRepo });
+
+  // Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck und der zuletzt
+  // registrierte Ausfall. Antwortet IMMER 200 — auch wenn jede einzelne Kennzahl
+  // fehlschlägt, dann stehen dort `null` (C3.1). Die Bewertung kommt aus derselben
+  // reinen Funktion, die auch getestet wird; die Oberfläche entscheidet keine
+  // Schwellen selbst (C3.5).
+  app.get('/api/system/status', async (): Promise<SystemStatus> => {
+    const resources = await deps.resourceMonitor.snapshot();
+    return {
+      resources,
+      pressure: evaluatePressure(resources),
+      // `null`, solange im Betriebsprotokoll kein Ausfall steht. Der Wert überlebt das
+      // Erledigen der Aufmerksamkeitsmeldung — die Attention-Tabelle wird geleert,
+      // das Protokoll nicht (FR-023, C3.4, D13).
+      lastOutage: deps.outageMonitor.lastOutage,
+    };
   });
 
   // ---------- Bootstrap ----------
@@ -134,6 +233,10 @@ export async function buildServer(deps: ApiDeps) {
       queues: Object.fromEntries(projects.map((p) => [p.id, deps.queue.listByProject(p.id)])),
       automation: deps.settings.getAutomation(),
       optimization: deps.settings.getOptimization(),
+      // Individuelle Einstellungen fahren im Boot-Zustand mit (research D8):
+      // sonst käme das erste WS-Ereignis womöglich vor ihnen an und würde mit
+      // Standardwerten vertont. Immer vollständig, nie null (A1.1).
+      personal: deps.settings.getPersonal(),
     };
   });
 
@@ -216,13 +319,38 @@ export async function buildServer(deps: ApiDeps) {
     for (const key of ['name', 'color', 'defaultBranch', 'enabledPhases', 'verifyCommands', 'automation', 'optimization', 'mergeMode', 'editorCmd', 'integrationMode'] as const) {
       if (key in b) allowed[key] = b[key];
     }
+    // Stack-Konfiguration serverseitig prüfen — mit DENSELBEN Sätzen, die die
+    // Oberfläche am Feld zeigt (FR-011, contracts/http-api.md). Eine leere
+    // Konfiguration ist gültig und bedeutet „kein Stack" (FR-013).
+    if ('stack' in b) {
+      const stack = parseStackConfig(b.stack);
+      const errors = validateStackConfig(stack, deps.portBlockSize);
+      if (errors.length > 0) throw httpError(400, errors[0]!);
+      allowed.stack = stack;
+    }
     deps.projects.update(req.params.id, allowed);
     return deps.projects.get(req.params.id);
   });
 
-  app.delete<{ Params: { id: string } }>('/api/projects/:id', (req) => {
+  /**
+   * Projekt löschen — inklusive seiner Arbeitsverzeichnisse. Ohne diesen Schritt
+   * blieben Worktrees und ihre git-Registrierungen im Ziel-Repo zurück, während
+   * das Projekt aus der DB verschwand (so entstanden neun verwaiste Worktrees).
+   * Uncommittete Arbeit wird nicht gelöscht, sondern als `kept` zurückgegeben.
+   */
+  app.delete<{ Params: { id: string } }>('/api/projects/:id', async (req) => {
+    const project = deps.projects.get(req.params.id);
+    const cleanup = project
+      ? await deps.worktrees.removeAllForProject(project, project.path).catch((err: Error) => {
+          app.log.warn(`Worktree-Aufräumen für '${project.name}' fehlgeschlagen: ${err.message}`);
+          return { removed: [], kept: [{ path: project.path, reason: err.message }] };
+        })
+      : { removed: [], kept: [] };
+    for (const k of cleanup.kept) {
+      app.log.warn(`Worktree bleibt stehen (${k.reason}): ${k.path}`);
+    }
     deps.projects.remove(req.params.id);
-    return { ok: true };
+    return { ok: true, ...cleanup };
   });
 
   /** Projekt-Terminal (WP11): persistente Login-Shell im Projekt-cwd. */
@@ -401,9 +529,13 @@ export async function buildServer(deps: ApiDeps) {
     if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
     const base = deps.chat.getState(req.params.id);
     const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
-    const workPaused = base.conversation ? deps.chatWork.workPaused(base.conversation) : false;
+    // Pausiert samt Dauer: Ab `resumeMaxIdleMs` bietet das Panel kein Fortsetzen mehr an.
+    const workPause = base.conversation ? deps.chatWork.pauseState(base.conversation) : CHAT_NOT_PAUSED;
     const pendingFeatures = deps.chatWork.proposalForProject(req.params.id);
-    return { ...base, workSession, workPaused, pendingFeatures };
+    // Nur der an der letzten Turn-Grenze gebildete Stand — diese Route erzeugt kein
+    // Angebot (FR-007).
+    const costProfile = base.conversation ? deps.chatWork.costProfileFor(base.conversation) : null;
+    return { ...base, workSession, workPause, pendingFeatures, costProfile };
   });
 
   /** Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
@@ -421,17 +553,6 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
-  /**
-   * Arbeit des Wissens-Chats in den Default-Branch übernehmen (committen → rebasen → mergen).
-   * 409 { blocked, message } wenn nichts verändert wurde (laufender Turn, Konflikt, dreckiger
-   * Haupt-Checkout, nichts zu übernehmen).
-   */
-  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/adopt', async (req, reply) => {
-    const result = await deps.chatWork.adopt(req.params.id);
-    if ('blocked' in result) void reply.code(409);
-    return result;
-  });
-
   /** Bestätigte Feature(s) aus dem Vorschlag anlegen (Teilmenge per Name). */
   app.post<{ Params: { id: string }; Body: { names?: string[] } }>(
     '/api/projects/:id/chat/work/features/create',
@@ -445,6 +566,13 @@ export async function buildServer(deps: ApiDeps) {
   /** Feature-Vorschlag verwerfen. */
   app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/features/dismiss', (req) => {
     deps.chatWork.dismissProposal(req.params.id);
+    return { ok: true };
+  });
+
+  /** Neustart-Angebot ablehnen: Wasserstand merken, bis der Verlauf weiter gewachsen ist (FR-009). */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/chat/work/offer/dismiss', (req) => {
+    if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
+    deps.chatWork.dismissOffer(req.params.id);
     return { ok: true };
   });
 
@@ -486,22 +614,153 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
+  /**
+   * Feature anlegen und Dokumente mitgeben (US1, multipart). Die Reihenfolge im
+   * Formular ist der Schutz aus FR-015: `name` kommt vor den Dateien, das Feature
+   * entsteht VOR dem ersten Byte auf Disk. Scheitert das Anlegen, wurde nichts
+   * geschrieben. Erst nach den Dokumenten startet der Specify-Lauf (R4).
+   */
+  app.post<{ Params: { id: string } }>('/api/projects/:id/features/with-documents', async (req) => {
+    const project = deps.projects.get(req.params.id);
+    if (!project) throw httpError(404, 'Projekt nicht gefunden');
+
+    // `throwFileSizeLimit: false` (Default ist true!): eine zu große Datei kommt als
+    // `file.truncated` an und wird einzeln verworfen, statt den ganzen Request
+    // abzubrechen (R6). Die Option liest die Laufzeit von `parts()`, ihr Typ führt
+    // sie nicht — deshalb über eine Variable statt als Objekt-Literal.
+    const partOptions = { limits: { fileSize: MAX_DOCUMENT_BYTES }, throwFileSizeLimit: false };
+    // Eigener Iterator statt `for await`: ein `break` würde den Strom schließen
+    // und die Dateien nach dem Feldteil unerreichbar machen.
+    const parts = req.parts(partOptions);
+    let name = '';
+    let description = '';
+    let sawName = false;
+    let firstFile: Awaited<ReturnType<typeof parts.next>>['value'] | null = null;
+
+    for (;;) {
+      const { value, done } = await parts.next();
+      if (done) break;
+      if (value.type === 'file') {
+        firstFile = value;
+        break;
+      }
+      if (value.fieldname === 'name') {
+        sawName = true;
+        name = String(value.value ?? '');
+      } else if (value.fieldname === 'description') {
+        description = String(value.value ?? '');
+      }
+    }
+
+    if (firstFile && !sawName) {
+      firstFile.file.resume();
+      throw httpError(400, 'name muss vor den Dateien gesendet werden');
+    }
+    if (!name.trim()) {
+      firstFile?.file.resume();
+      throw httpError(400, 'Feature-Name fehlt');
+    }
+    if (!firstFile) throw httpError(400, 'Kein Dokument im Formular');
+
+    let feature;
+    try {
+      // Ohne description — der Specify-Lauf startet erst nach den Dokumenten.
+      feature = await deps.orchestrator.createFeature(project.id, name.trim());
+    } catch (err) {
+      firstFile.file.resume();
+      const message = (err as Error).message;
+      if (message.includes('existiert bereits')) throw httpError(400, message);
+      throw err;
+    }
+
+    const pending = firstFile;
+    async function* documentParts(): AsyncGenerator<IncomingDocument> {
+      yield { filename: pending.filename, mimeType: pending.mimetype, stream: pending.file };
+      for (;;) {
+        const { value, done } = await parts.next();
+        if (done) return;
+        if (value.type === 'file') {
+          yield { filename: value.filename, mimeType: value.mimetype, stream: value.file };
+        }
+      }
+    }
+
+    const { documents, rejected } = await deps.featureDocuments.writeDocuments(feature, documentParts());
+    // Auch ohne Beschreibung starten (FR-010) — die Dokumente tragen den Lauf.
+    await deps.orchestrator.startPhaseRun(feature.id, 'specify', description.trim() || undefined);
+
+    return { feature: deps.features.get(feature.id) ?? feature, documents, rejected };
+  });
+
+  /** Hinterlegte Dokumente eines Features (US3, FR-016) — leere Liste ist kein Fehler. */
+  app.get<{ Params: { id: string } }>('/api/features/:id/documents', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    if (!deps.projects.get(feature.projectId)) throw httpError(404, 'Projekt nicht gefunden');
+    return deps.featureDocuments.listDocuments(feature.id);
+  });
+
+  /**
+   * Dokument mit der Systemanwendung öffnen (FR-016, R8). `storedName` wird gegen
+   * das Manifest geprüft und nie als Pfad übernommen (FR-005); geöffnet wird mit
+   * dem Systemöffner, nicht mit `editorCmd` — Dokumente sind beliebige Dateiarten.
+   */
+  app.post<{ Params: { id: string }; Body: { storedName?: string } }>(
+    '/api/features/:id/documents/open',
+    async (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      if (!deps.projects.get(feature.projectId)) throw httpError(404, 'Projekt nicht gefunden');
+      const storedName = req.body?.storedName;
+      if (!storedName) throw httpError(400, 'storedName fehlt');
+
+      const path = deps.featureDocuments.documentPath(feature.id, storedName);
+      if (!path) throw httpError(404, 'Dokument nicht gefunden');
+      if (!existsSync(path)) throw httpError(404, 'Datei nicht mehr vorhanden');
+
+      if (deps.openDocument) deps.openDocument(path);
+      else {
+        const env = await loginShellEnv();
+        exec(`open ${shellQuotePath(path)}`, { env }, () => {});
+      }
+      return { ok: true };
+    },
+  );
+
   app.post<{ Params: { id: string; phase: string }; Body: { prompt?: string } }>(
     '/api/features/:id/phases/:phase/start',
     async (req) => {
       const phase = validatePhase(req.params.phase);
+      actionGuard.assertAllowed('phase_start', req.params.id, { phase });
       const { gateRunning } = await deps.orchestrator.startPhaseRun(req.params.id, phase, req.body?.prompt);
       return { ...deps.features.get(req.params.id), gateRunning };
     },
   );
 
   app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/approve', (req) => {
-    deps.orchestrator.approve(req.params.id, validatePhase(req.params.phase));
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_approve', req.params.id, { phase });
+    // Mit der erneuten Freigabe des letzten Schritts ist die Zurückweisung erledigt
+    // (FR-026) — vor dem Approve, damit alle Folgeereignisse den neuen Stand tragen.
+    const before = deps.features.get(req.params.id);
+    if (before && before.reviewRejectedAt !== null && orderedPhases(before.phases).at(-1) === phase) {
+      deps.features.setReviewRejected(req.params.id, null);
+    }
+    deps.orchestrator.approve(req.params.id, phase);
+    return deps.features.get(req.params.id);
+  });
+
+  app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/reopen', (req) => {
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_reopen', req.params.id, { phase });
+    deps.orchestrator.reopen(req.params.id, phase);
     return deps.features.get(req.params.id);
   });
 
   app.post<{ Params: { id: string; phase: string } }>('/api/features/:id/phases/:phase/discard', (req) => {
-    deps.orchestrator.discard(req.params.id, validatePhase(req.params.phase));
+    const phase = validatePhase(req.params.phase);
+    actionGuard.assertAllowed('phase_discard', req.params.id, { phase });
+    deps.orchestrator.discard(req.params.id, phase);
     return deps.features.get(req.params.id);
   });
 
@@ -522,11 +781,6 @@ export async function buildServer(deps: ApiDeps) {
     },
   );
 
-  app.post<{ Params: { id: string }; Body: { to: string } }>('/api/features/:id/advance', async (req) => {
-    await deps.orchestrator.advanceTo(req.params.id, validatePhase(req.body.to));
-    return deps.features.get(req.params.id);
-  });
-
   app.post<{ Params: { id: string } }>('/api/features/:id/session', async (req) => {
     const session = await deps.orchestrator.ensureSession(req.params.id);
     return { sessionId: session.id };
@@ -538,14 +792,42 @@ export async function buildServer(deps: ApiDeps) {
     return { ok: true };
   });
 
+  /**
+   * Der einzige Fakt, den die Oberfläche nicht aus ihrem Zustand ableiten kann
+   * (FR-027): gibt es im Arbeitsverzeichnis überhaupt etwas zu integrieren?
+   * Fehlender oder unlesbarer Worktree ⇒ false — die Aktion ist dann ohnehin
+   * ausgeblendet.
+   */
+  async function integrationHasChanges(featureId: string): Promise<boolean> {
+    const { feature, project } = featureCwd(featureId);
+    if (!feature.worktreePath) return false;
+    try {
+      return await hasUnmergedChanges(feature.worktreePath, feature.integrationTarget ?? project.defaultBranch);
+    } catch {
+      return false;
+    }
+  }
+
+  app.get<{ Params: { id: string } }>('/api/features/:id/integration-readiness', async (req) => ({
+    hasChanges: await integrationHasChanges(req.params.id),
+  }));
+
   app.post<{ Params: { id: string } }>('/api/features/:id/integrate', async (req) => {
-    await deps.mergeQueue.beginIntegration(req.params.id);
+    // Serverseitig ermittelte Änderungslage in die Prüfung hereinreichen (FR-027).
+    const hasChanges = await integrationHasChanges(req.params.id);
+    actionGuard.assertAllowed('integrate', req.params.id, { hasChanges });
+    const result = await deps.mergeQueue.beginIntegration(req.params.id);
+    // Nur die Vorprüfungen tragen einen Grund und sind echte Ablehnungen (409).
+    // Bleibt der Start ohne Grund aus, hat die Selbstheilung übernommen (Branch
+    // bereits gemergt, Worktree defekt) — sie meldet sich selbst über die Inbox.
+    if (!result.started && result.reason) throw httpError(409, result.reason);
     return deps.features.get(req.params.id);
   });
 
   app.post<{ Params: { id: string }; Body: ApproveMergeRequest | undefined }>(
     '/api/features/:id/approve-merge',
     async (req) => {
+      actionGuard.assertAllowed('review_approve', req.params.id);
       try {
         await deps.mergeQueue.approveForMerge(req.params.id, req.body ?? {});
       } catch (e) {
@@ -557,38 +839,130 @@ export async function buildServer(deps: ApiDeps) {
   );
 
   app.post<{ Params: { id: string } }>('/api/features/:id/retry-integration', (req) => {
+    actionGuard.assertAllowed('integration_retry', req.params.id);
     deps.mergeQueue.retry(req.params.id);
     return deps.features.get(req.params.id);
   });
 
-  /** Extern/vorher gebaute Features als abgeschlossen markieren (kein Merge nötig). */
-  app.post<{ Params: { id: string } }>('/api/features/:id/mark-done', async (req) => {
-    const feature = deps.features.get(req.params.id);
-    if (!feature) throw httpError(404, 'Feature nicht gefunden');
-    // Abgeschlossen heißt abgeschlossen: laufende Konsole beenden, sonst bleibt
-    // eine offene Session zurück (wie beim Archive-Endpoint).
-    const session = deps.ptys.forFeature(feature.id);
-    if (session) await deps.ptys.terminate(session.id);
-    deps.features.setIntegration(feature.id, 'merged');
-    deps.attention.resolveFor({ featureId: feature.id });
-    const fresh = deps.features.get(feature.id);
-    if (fresh) bus.emitEvent('feature_updated', fresh);
-    return fresh;
-  });
-
+  // Löschen ist eine Aufräum-Aktion mit Rückfrage in der Oberfläche (FR-008/FR-017)
+  // und bleibt deshalb bewusst ungeschützt.
   app.delete<{ Params: { id: string } }>('/api/features/:id', async (req) => {
     await deps.mergeQueue.deleteFeature(req.params.id);
     return { ok: true };
   });
 
   app.post<{ Params: { id: string } }>('/api/features/:id/archive', async (req) => {
+    actionGuard.assertAllowed('archive', req.params.id);
     const feature = deps.features.get(req.params.id);
     if (feature) {
+      // Auch ohne Merge wird der Stack abgebaut und der Portblock frei — sonst
+      // belegt ein abgebrochenes Feature dauerhaft Dienste und Ports (Edge Case
+      // „archiviert oder abgebrochen, ohne je gemergt zu werden", FR-017).
+      await deps.orchestrator.tearDownStack(feature.id);
       const session = deps.ptys.forFeature(feature.id);
       if (session) await deps.ptys.terminate(session.id);
       deps.features.archive(feature.id);
     }
     return { ok: true };
+  });
+
+  // ---------- Stack-Profile und manuelle Abnahme ----------
+
+  /**
+   * Erhobener Stack-Zustand eines Features (FR-023). Lesen ist immer erlaubt —
+   * kein 409. Ohne Portblock oder ohne Konfiguration antwortet die Route mit der
+   * leeren Sicht, statt eine Adresse zu behaupten (FR-013/FR-033).
+   */
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    '/api/features/:id/stack',
+    async (req) => {
+      const { feature, project } = featureCwd(req.params.id);
+      return deps.stackService.probe(feature, project, { refresh: req.query.refresh === '1' });
+    },
+  );
+
+  /**
+   * Die vier Lane-Aktionen (FR-032). Jede wirkt AUSSCHLIESSLICH auf den Stack
+   * dieses Features — Nachbar-Features bleiben unberührt (US3 Szenario 5).
+   *
+   * Der Guard läuft VOR jeder Wirkung und antwortet 409 mit demselben Satz, den
+   * die Oberfläche anzeigt.
+   */
+  app.post<{ Params: { id: string; action: string }; Body?: { profile?: string } }>(
+    '/api/features/:id/stack/:action',
+    async (req, reply) => {
+      const action = req.params.action;
+      if (action !== 'up' && action !== 'stop' && action !== 'restart' && action !== 'down') {
+        throw httpError(400, `Unbekannte Stack-Aktion: ${action}`);
+      }
+      actionGuard.assertAllowed(`stack_${action}` as const, req.params.id);
+      const { feature, project } = featureCwd(req.params.id);
+      // Vorgabe `full`: die Lane fährt den vollen Stack. `test` wird intern beim
+      // Beginn von `implement` verwendet (FR-016).
+      const profile = req.body?.profile === 'test' ? 'test' : 'full';
+      try {
+        if (action === 'up') await deps.stackService.up(feature, project, profile);
+        else if (action === 'stop') await deps.stackService.stop(feature, project);
+        else if (action === 'restart') await deps.stackService.restart(feature, project);
+        else await deps.stackService.down(feature, project);
+      } catch (err) {
+        if (!(err instanceof StackRunError)) throw err;
+        // Der Ausschnitt steht auch in der Antwort, damit der Bedienende ihn ohne
+        // Umweg über die Inbox sieht (contracts/http-api.md).
+        void reply.code(500);
+        return { message: err.message, exitCode: err.exitCode, tail: err.tail };
+      }
+      return deps.stackService.probe(feature, project, { refresh: true });
+    },
+  );
+
+  /**
+   * Manuelle Abnahme bestätigen (FR-028). Es gibt KEINEN automatischen Weg aus
+   * der Stufe heraus — nur diese Route.
+   */
+  app.post<{ Params: { id: string } }>('/api/features/:id/manual-test/confirm', async (req) => {
+    actionGuard.assertAllowed('manual_test_confirm', req.params.id);
+    try {
+      await deps.testingLane.confirm(req.params.id);
+    } catch (e) {
+      if (e instanceof MergeApprovalError) throw httpError(400, e.message);
+      throw e;
+    }
+    return deps.features.get(req.params.id);
+  });
+
+  /**
+   * Manuelle Abnahme ablehnen (FR-029): Befunde und/oder Anmerkung. Der Dienst
+   * legt die Befunde an, setzt das Feature auf `specify` zurück und startet den
+   * Lauf mit dem kompilierten Auftrag — hier wird KEIN roher Prompt mehr in eine
+   * Session geschoben (bis 31.07.2026 ging der Grund als Freitext an die
+   * Konsole, ohne Phasenbuchführung und ohne dass er die Spezifikation erreichte).
+   */
+  app.post<{ Params: { id: string }; Body?: ManualTestRejection }>(
+    '/api/features/:id/manual-test/reject',
+    async (req) => {
+      actionGuard.assertAllowed('manual_test_reject', req.params.id);
+      try {
+        await deps.testingLane.reject(req.params.id, req.body ?? {});
+      } catch (e) {
+        if (e instanceof MergeApprovalError) throw httpError(400, e.message);
+        throw e;
+      }
+      return deps.features.get(req.params.id);
+    },
+  );
+
+  /**
+   * Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037).
+   *
+   * Erneutes Scheitern ist bewusst **200 mit `cleaned: false`**, kein 500: der
+   * Aufruf hat korrekt funktioniert, das Ergebnis ist „geht nicht". Der Pfad
+   * bleibt gesetzt und die Meldung stehen (FR-035/FR-036).
+   */
+  app.post<{ Params: { id: string } }>('/api/features/:id/cleanup', async (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    return deps.mergeQueue.retryCleanup(req.params.id);
   });
 
   /**
@@ -616,15 +990,23 @@ export async function buildServer(deps: ApiDeps) {
    * Zurückweisen im Review: offene Reviewer-Kommentare + Freitext werden zu
    * einem strukturierten Arbeitsauftrag kompiliert und gehen als Prompt in die
    * Feature-Konsole; eine gewählte Nicht-Default-Zielwahl wird zurückgesetzt.
+   *
+   * Zusätzlich (FR-020/FR-021/FR-026): der letzte aktive Schritt geht auf
+   * „wartet auf Freigabe" zurück und die Zurückweisung bleibt als Hinweis
+   * sichtbar. Es folgt KEIN automatischer Integrationsstart — erst die erneute,
+   * ausdrückliche Freigabe startet die Pipeline von vorn.
    */
   app.post<{ Params: { id: string }; Body: { comment?: string } }>(
     '/api/features/:id/reject-review',
     async (req) => {
+      actionGuard.assertAllowed('review_reject', req.params.id);
       const feature = deps.features.get(req.params.id);
       if (!feature) throw httpError(404, 'Feature nicht gefunden');
       deps.features.setIntegration(feature.id, 'none');
       deps.features.setIntegrationTarget(feature.id, null);
-      deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] });
+      deps.features.savePhases(feature.id, reopenLastPhase(feature.phases).phases);
+      deps.features.setReviewRejected(feature.id, Date.now());
+      emitAttentionResolved(deps.attention.resolveFor({ featureId: feature.id, kinds: ['review_due'] }));
       const openComments = deps.reviewComments
         .listForFeature(feature.id)
         .filter((c) => c.status === 'open');
@@ -768,8 +1150,7 @@ export async function buildServer(deps: ApiDeps) {
     return deps.attention.listOpen();
   });
   app.post<{ Params: { id: string } }>('/api/attention/:id/resolve', (req) => {
-    deps.attention.resolve(req.params.id);
-    bus.emitEvent('attention_resolved', req.params.id);
+    if (deps.attention.resolve(req.params.id)) emitAttentionResolved([req.params.id]);
     return { ok: true };
   });
 
@@ -879,7 +1260,6 @@ export async function buildServer(deps: ApiDeps) {
           lastRun?.executionId != null
             ? {
                 ...lastRun,
-                costUsd: deps.executions.get(lastRun.executionId)?.costUsd ?? null,
                 totalTokens: deps.executions.get(lastRun.executionId)?.tokens ?? null,
               }
             : lastRun,
@@ -918,6 +1298,101 @@ export async function buildServer(deps: ApiDeps) {
         .catch((err) => console.warn(`[agents] Manueller Lauf fehlgeschlagen: ${(err as Error).message}`));
       void reply.code(202);
       return { started: true };
+    },
+  );
+
+  // ---------- Lebenszyklus-Schritte (wörtlicher Zwilling der Agent-Routen) ----------
+
+  /**
+   * Validierung: Name und Kommando sind Pflicht, die Auslöser-Art muss bekannt sein,
+   * Phase bzw. Stufe sind je Art Pflicht oder verboten, und das Zeitlimit muss in
+   * einem plausiblen Bereich liegen (Schutz gegen Tippfehler wie `9e12`).
+   */
+  const validateLifecycleStep = (s: LifecycleStep): void => {
+    if (!s.name?.trim()) throw httpError(400, 'Name fehlt');
+    if (!s.command?.trim()) throw httpError(400, 'Kommando fehlt');
+    if (!LIFECYCLE_TRIGGER_KINDS.includes(s.trigger?.kind)) {
+      throw httpError(400, 'Unbekannte Auslöser-Art');
+    }
+    const needsPhase = s.trigger.kind === 'before_phase' || s.trigger.kind === 'after_phase';
+    const needsStage = s.trigger.kind === 'before_stage' || s.trigger.kind === 'after_stage';
+    if (needsPhase && !FEATURE_PHASES.includes(s.trigger.phase as FeaturePhase)) {
+      throw httpError(400, 'Phasen-Auslöser braucht eine gültige Phase');
+    }
+    if (needsStage && !INTEGRATION_STAGE_IDS.includes(s.trigger.stage as LifecycleStageId)) {
+      throw httpError(400, 'Stufen-Auslöser braucht eine gültige Stufe');
+    }
+    if (!needsPhase && s.trigger.phase) throw httpError(400, 'Auslöser-Art erlaubt keine Phase');
+    if (!needsStage && s.trigger.stage) throw httpError(400, 'Auslöser-Art erlaubt keine Stufe');
+    if (s.timeoutMs != null && (s.timeoutMs <= 0 || s.timeoutMs > 86_400_000)) {
+      throw httpError(400, 'Zeitlimit muss zwischen 1 ms und 24 h liegen');
+    }
+  };
+
+  app.get<{ Querystring: { projectId?: string } }>('/api/lifecycle-steps', (req) => {
+    const { projectId } = req.query;
+    if (projectId && projectId !== 'global') return deps.lifecycleStepRepo.forProject(projectId);
+    return deps.lifecycleStepRepo.list();
+  });
+
+  app.put<{ Body: LifecycleStep }>('/api/lifecycle-steps', (req) => {
+    validateLifecycleStep(req.body);
+    if (req.body.projectId && !deps.projects.get(req.body.projectId)) {
+      throw httpError(404, 'Projekt nicht gefunden');
+    }
+    return deps.lifecycleStepRepo.upsert(req.body);
+  });
+
+  /** Idempotent — ein unbekanntes id ist kein Fehler. Läufe bleiben über `label` lesbar. */
+  app.delete<{ Params: { id: string } }>('/api/lifecycle-steps/:id', (req) => {
+    deps.lifecycleStepRepo.remove(req.params.id);
+    return { ok: true };
+  });
+
+  /**
+   * Effektive Schritt-Sicht eines Features: Union (global ∪ Projekt) + Auswahl +
+   * jüngster Lauf. `lastRun` kommt über `executions` (kind='lifecycle_step',
+   * passendes Feature, `label` = Name) — kein eigener Lauf-Tabellen-Join nötig.
+   */
+  app.get<{ Params: { id: string } }>('/api/features/:id/lifecycle-steps', (req) => {
+    const feature = deps.features.get(req.params.id);
+    if (!feature) throw httpError(404, 'Feature nicht gefunden');
+    const selection = deps.lifecycleStepRepo.selectionFor(feature.id);
+    // Absteigend nach Startzeit (ExecutionRepo.list) ⇒ der erste Treffer je Name ist
+    // der jüngste Lauf.
+    const runs = deps.executions.list(feature.id).filter((e) => e.kind === 'lifecycle_step');
+    return deps.lifecycleStepRepo.forProject(feature.projectId).map((step) => {
+      const decision = selection.get(step.id) ?? 'auto';
+      const last = runs.find((e) => e.label === step.name);
+      return {
+        step,
+        decision,
+        effective: decision === 'include' ? true : decision === 'exclude' ? false : step.enabled,
+        lastRun: last
+          ? {
+              executionId: last.id,
+              startedAt: last.startedAt,
+              finishedAt: last.finishedAt,
+              status: last.status,
+              exitCode: last.exitCode,
+            }
+          : null,
+      };
+    });
+  });
+
+  app.put<{ Params: { id: string }; Body: { stepId: string; decision: 'include' | 'exclude' | 'auto' } }>(
+    '/api/features/:id/lifecycle-steps/selection',
+    (req) => {
+      const feature = deps.features.get(req.params.id);
+      if (!feature) throw httpError(404, 'Feature nicht gefunden');
+      const { stepId, decision } = req.body ?? ({} as never);
+      if (!deps.lifecycleStepRepo.get(stepId)) throw httpError(404, 'Schritt nicht gefunden');
+      if (decision !== 'include' && decision !== 'exclude' && decision !== 'auto') {
+        throw httpError(400, 'decision muss include|exclude|auto sein');
+      }
+      deps.lifecycleStepRepo.setDecision(feature.id, stepId, decision);
+      return { ok: true };
     },
   );
 
@@ -1205,6 +1680,18 @@ export async function buildServer(deps: ApiDeps) {
     optimization: deps.settings.setOptimization(req.body),
   }));
 
+  /**
+   * Individuelle Einstellungen (Feature "persoenliche-einstellungen"): Signaltöne
+   * und Vorauswahl der Ticket-Quelle. Teilmengen-Semantik wie bei `optimization`.
+   *
+   * Kein WS-Broadcast (A2.8): die schreibende Oberfläche kennt das Ergebnis aus
+   * der Antwort, weitere Tabs ziehen beim nächsten Boot nach. Gelesen wird über
+   * `GET /api/state` — eine eigene GET-Route wäre eine zweite Quelle.
+   */
+  app.patch<{ Body: Record<string, unknown> }>('/api/settings/personal', (req) =>
+    deps.settings.setPersonal(req.body ?? {}),
+  );
+
   app.get<{ Querystring: { featureId?: string } }>('/api/executions', (req) =>
     deps.executions.list(req.query.featureId),
   );
@@ -1213,6 +1700,23 @@ export async function buildServer(deps: ApiDeps) {
   app.get('/api/runs', () => ({
     runs: buildRunSummaries(deps.features.listAll(), deps.executions.listAll()),
   }));
+
+  /**
+   * Zustand der Telemetrie-Erfassung (FR-019): Läuft sie? Wenn nicht, warum nicht?
+   * Und übersteuert das Toolkit dabei eine bestehende Konfiguration des Nutzers (D5)?
+   * Der Nutzer soll das sehen können, statt zu raten, welche Quelle gerade misst.
+   */
+  app.get('/api/telemetry/status', () => {
+    const stats = deps.telemetry.stats();
+    return {
+      active: true,
+      reason: stats.eventsReceived === 0 ? ('no_events_yet' as const) : null,
+      endpoint: telemetryEndpoint(deps.port),
+      eventsReceived: stats.eventsReceived,
+      lastEventAt: stats.lastEventAt,
+      overridesUserConfig: detectForeignOtelConfig(process.env),
+    };
+  });
 
   /** Aggregierte Verbrauchssicht eines Features nach Phase/Art (P1, SC-003). */
   app.get<{ Params: { featureId: string }; Querystring: { groupByOptimization?: string } }>(

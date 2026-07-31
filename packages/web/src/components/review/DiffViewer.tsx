@@ -45,14 +45,14 @@ export function DiffViewer({
     return () => clearTimeout(t);
   }, [jumpTo]);
 
-  if (!diff) return <p className="p-4 text-sm text-zinc-600">Lade Diff …</p>;
-  if (files.length === 0) return <p className="p-4 text-sm text-zinc-600">Kein Diff für diese Datei.</p>;
+  if (!diff) return <p className="p-4 text-sm text-zinc-400">Lade Diff …</p>;
+  if (files.length === 0) return <p className="p-4 text-sm text-zinc-400">Kein Diff für diese Datei.</p>;
 
   return (
-    <div ref={containerRef} className="overflow-x-auto rounded border border-zinc-800 bg-[#0a0a0c] font-mono text-xs leading-5">
+    <div ref={containerRef} className="overflow-x-auto rounded border border-zinc-800 bg-zinc-950 font-mono text-xs leading-5">
       {files.map((file) =>
         file.binary ? (
-          <p key={file.newPath} className="p-4 text-zinc-600">
+          <p key={file.newPath} className="p-4 text-zinc-400">
             Binärdatei — kein Text-Diff.
           </p>
         ) : (
@@ -126,10 +126,12 @@ function HunkRows({
         return (
           <FragmentRows key={li}>
             <tr className="group" data-anchor={anchor ? `${anchor.side}:${anchor.line}` : undefined}>
-              <td className="w-10 select-none border-r border-zinc-800/60 px-1 text-right text-zinc-600">
+              {/* Zeilennummern: Stufe 500 statt 600 — 600 messt 2.57:1 und verfehlt
+                  damit selbst das 3:1-Soll fuer nicht-tragende Schrift (FR-013). */}
+              <td className="w-10 select-none border-r border-zinc-800/60 px-1 text-right text-zinc-500">
                 {line.oldNo ?? ''}
               </td>
-              <td className="w-10 select-none border-r border-zinc-800/60 px-1 text-right text-zinc-600">
+              <td className="w-10 select-none border-r border-zinc-800/60 px-1 text-right text-zinc-500">
                 {line.newNo ?? ''}
               </td>
               <td className="w-5 select-none text-center">
@@ -155,7 +157,7 @@ function HunkRows({
                   <div
                     className={`rounded border px-2 py-1 font-sans text-xs ${
                       c.status === 'resolved'
-                        ? 'border-zinc-800 text-zinc-500 line-through'
+                        ? 'border-zinc-800 text-zinc-400 line-through'
                         : 'border-sky-900 bg-sky-950/40 text-sky-200'
                     }`}
                   >

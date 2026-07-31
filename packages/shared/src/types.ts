@@ -32,9 +32,13 @@ export interface PhaseState {
 export type IntegrationStage =
   | 'none'
   | 'verifying'
+  /** Projekt ohne verifyCommands: steht ANSTELLE von 'verifying', damit die Lücke im Rückblick erkennbar bleibt (FR-001a). */
+  | 'verification_unconfigured'
   | 'verify_failed'
   | 'review_gate'
   | 'gate_failed'
+  /** Ein Mensch muss die laufende Anwendung abnehmen — VOR dem Review (FR-024). */
+  | 'awaiting_manual_test'
   | 'awaiting_human_review'
   | 'queued'
   | 'merging'
@@ -54,6 +58,8 @@ export interface AutomationSettings {
   autoMerge: boolean;
   /** Tool-/Kommando-Berechtigungen automatisch erteilen — keine Rückfragen im Feature-Lauf. */
   autoMode: boolean;
+  /** Manuelles Test-Gate: Halt auf 'awaiting_manual_test' vor dem Review (FR-025). */
+  manualTestGate: boolean;
 }
 
 export const LEVEL2_DEFAULTS: AutomationSettings = {
@@ -62,6 +68,8 @@ export const LEVEL2_DEFAULTS: AutomationSettings = {
   autoReviewAgents: false,
   autoMerge: false,
   autoMode: true,
+  // Stufe 2 hält zur Abnahme an (FR-026).
+  manualTestGate: true,
 };
 
 export const LEVEL3_DEFAULTS: AutomationSettings = {
@@ -70,6 +78,8 @@ export const LEVEL3_DEFAULTS: AutomationSettings = {
   autoReviewAgents: true,
   autoMerge: true,
   autoMode: true,
+  // Stufe 3 ist Autonomie — kein Halt zur Abnahme (FR-026).
+  manualTestGate: false,
 };
 
 /** Kontext-Strategie einer Downstream-Phase (Token-Reduktion, Feature "minimize-token-consumption"). */
@@ -111,6 +121,8 @@ export interface Project {
   editorCmd: string | null;
   /** local = direkt auf den Default-Branch mergen; pr = GitHub-PR via gh (WP13). */
   integrationMode: 'local' | 'pr';
+  /** Stack-Profile und Dienstliste; leere Konfiguration = kein Stack (FR-011/FR-013). */
+  stack: StackConfig;
   createdAt: number;
 }
 
@@ -134,6 +146,10 @@ export interface Feature {
   tasksTotal: number;
   /** Referenz auf das Jira-Ursprungsticket (Schnappschuss, unveränderlich nach Anlage). */
   jiraRef?: JiraRef;
+  /** Zeitpunkt der letzten Zurückweisung im Review; null = keine offene Zurückweisung (FR-026). */
+  reviewRejectedAt: number | null;
+  /** Grund eines fehlgeschlagenen Aufräumens; null = kein offener Fehlschlag (FR-035). */
+  cleanupError: string | null;
   createdAt: number;
   archivedAt: number | null;
 }
@@ -224,10 +240,30 @@ export type AttentionKind =
   | 'gate_failed'
   | 'merge_conflict_escalated'
   | 'review_due'
+  /** Projektbezogen (featureId === null): das Projekt hat keine Verifikation konfiguriert (FR-004). */
+  | 'verification_unconfigured'
   | 'agent_errored'
   | 'run_interrupted'
   | 'phase_gate_failed'
-  | 'approval_required';
+  | 'approval_required'
+  // Datenbefunde der Plausibilitätsprüfung: der Widerspruch steht in der Datenbank
+  // und besteht unabhängig von laufender Arbeit — nur ein Mensch löst sie auf.
+  | 'run_unpriced' // A: Tokens gezählt, kein Betrag
+  | 'phase_false_start' // B: Phase lief nie an
+  | 'project_without_runs' // C: Features, aber nie ein Phasenlauf
+  | 'metering_conflict' // D: Nachkorrektur verworfen, weil sie die Messung senkt
+  /** Der Server war unerwartet weg; die Meldung nennt Fenster, Dauer und betroffene Läufe (FR-007). */
+  | 'server_outage'
+  /** Ein blockierender Lebenszyklus-Schritt ist fehlgeschlagen (FR-023). */
+  | 'lifecycle_step_failed'
+  /** Stufe erreicht: ein Mensch muss die laufende Anwendung abnehmen (FR-024/FR-030). */
+  | 'manual_test_due'
+  /** Hoch- oder Herunterfahren eines Stack-Profils fehlgeschlagen (FR-019). */
+  | 'stack_failed'
+  /** Entfernen des Worktrees nach dem Merge fehlgeschlagen (FR-035). */
+  | 'worktree_cleanup_failed'
+  /** Worktree ohne zugeordnetes Feature (FR-039). */
+  | 'orphan_worktree';
 
 export interface AttentionItem {
   id: string;
@@ -259,21 +295,42 @@ export interface ExecutionRecord {
   id: string;
   projectId: string;
   featureId: string | null;
-  kind: 'phase' | 'verify' | 'review' | 'conflict_resolution' | 'chat' | 'chat_work';
+  kind:
+    | 'phase'
+    | 'verify'
+    | 'review'
+    | 'conflict_resolution'
+    | 'chat'
+    | 'chat_work'
+    | 'lifecycle_step';
+  /** Bezeichnung des Laufs; bei kind='lifecycle_step' der Schrittname beim Start. */
+  label: string | null;
   phase: WorkflowPhase | null;
   status: 'running' | 'succeeded' | 'failed' | 'orphaned';
   startedAt: number;
   finishedAt: number | null;
   exitCode: number | null;
-  costUsd: number | null;
   tokens: number | null;
   /** Autoritative Token-Komponenten (aus Transkript); null wenn nur geschätzt. */
   inputTokens: number | null;
   outputTokens: number | null;
   cacheReadTokens: number | null;
   cacheCreationTokens: number | null;
-  /** Herkunft des Verbrauchswerts. */
-  tokensSource: 'transcript' | 'parsed' | 'estimated' | null;
+  /**
+   * Herkunft des Verbrauchswerts, absteigend nach Verlässlichkeit:
+   * 'telemetry' (von der CLI selbst gemeldet) > 'transcript' > 'parsed' > 'estimated'.
+   */
+  tokensSource: 'telemetry' | 'transcript' | 'parsed' | 'estimated' | null;
+  /** Von der CLI gemeldeter Betrag in Mikro-USD; null = kein Betrag gemeldet (nie 0 als Ersatz). */
+  costMicros: number | null;
+  /** Tokens der Subagenten dieses Laufs; null = es liefen keine Subagenten. */
+  subagentTokens: number | null;
+  /** Betragsanteil der Subagenten in Mikro-USD; null wenn kein Betrag/keine Subagenten. */
+  subagentCostMicros: number | null;
+  /** Modell laut Telemetrie-Meldungen; null bei Transkript-/Schätz-Herkunft. */
+  model: string | null;
+  /** Ab diesem Zeitpunkt gilt der Lauf als endgültig gemessen; spätere Meldungen verfallen. */
+  telemetryFinalAt: number | null;
   /** Byte-Offset des Transkripts beim Phasenstart (Attribution der Usage). */
   transcriptOffsetStart: number | null;
   /** Byte-Offset des Transkripts beim Phasenabschluss (Ende des Lauf-Ausschnitts, nur kind='phase'). */
@@ -399,43 +456,16 @@ export interface ChatWorkSessionInfo {
   awaitingKind: AwaitingKind | null;
   /** Branch der isolierten Arbeitskopie (`chat/<conversationId>`). */
   branch: string;
-  /** Stand der Arbeitskopie gegenüber dem Default-Branch (beim letzten Start ermittelt). */
-  sync: ChatWorktreeSync | null;
 }
 
-/**
- * Stand der Chat-Arbeitskopie gegenüber dem Default-Branch. Ohne Nachziehen altert der
- * Chat-Branch bei jedem Merge nach main weiter — er sähe dauerhaft veralteten Code.
- */
-export interface ChatWorktreeSync {
-  /** Commits, die der Default-Branch der Arbeitskopie voraus ist (0 = aktuell). */
-  behind: number;
-  /** Arbeitskopie hat uncommittete Änderungen. */
-  dirty: boolean;
+/** Sichergestellte Arbeits-Session des Wissens-Chats. */
+export interface ChatWorkEnsureResult {
+  sessionId: string;
   /**
-   * - `current`: war bereits aktuell.
-   * - `rebased`: automatisch nachgezogen.
-   * - `blocked_dirty`: veraltet, aber uncommittete Arbeit verhindert das Nachziehen.
-   * - `conflict`: Nachziehen scheiterte an Konflikten (Rebase wurde zurückgerollt).
+   * Statt fortgesetzt wurde eine frische Unterhaltung begonnen, weil die alte zu lange
+   * pausiert war (`CHAT_HYGIENE_LIMITS.resumeMaxIdleMs`) — das Panel sagt es an.
    */
-  state: 'current' | 'rebased' | 'blocked_dirty' | 'conflict';
-}
-
-/** Übernahme der Wissens-Chat-Arbeit in den Default-Branch (committen → rebasen → mergen). */
-export interface ChatWorkAdoptResult {
-  target: string;
-  /** Anzahl übernommener Dateien. */
-  files: number;
-  /** Uncommittete Arbeit wurde dabei zu einem Commit zusammengefasst. */
-  committed: boolean;
-}
-
-/** Übernahme nicht möglich — nichts wurde verändert. */
-export interface ChatWorkAdoptBlocked {
-  blocked: 'nothing' | 'running' | 'conflict' | 'merge';
-  message: string;
-  /** Bei `conflict`: die kollidierenden Dateien. */
-  files?: string[];
+  startedFresh: boolean;
 }
 
 /** Erfolgreicher Neustart des Wissens-Chats: frische, automatisch gestartete Session. */
@@ -473,7 +503,6 @@ export interface ChatMessage {
   status: ChatMessageStatus;
   error: string | null;
   proposal: FeatureProposal | null;
-  costUsd: number | null;
   tokens: number | null;
   createdAt: number;
 }
@@ -529,7 +558,6 @@ export interface AgentRunSummary {
   createdAt: number;
   finishedAt: number | null;
   /** Aus der verknüpften Execution (Join); nur in API-Antworten gefüllt. */
-  costUsd?: number | null;
   totalTokens?: number | null;
   /** 'markdown' = Alt-Bericht aus der Zeit vor der strukturierten Ablage. */
   source?: 'db' | 'markdown';
@@ -542,6 +570,105 @@ export interface FeatureAgentView {
   /** Läuft der Agent für dieses Feature beim nächsten passenden Trigger? */
   effective: boolean;
   lastRun: AgentRunSummary | null;
+}
+
+// ---------- Lebenszyklus-Schritte (eigene Kommandos am Feature-Lebenszyklus) ----------
+
+/** Punkte im Lebenszyklus, an denen eigene Schritte feuern können. */
+export const LIFECYCLE_TRIGGER_KINDS = [
+  'before_worktree_create',
+  'after_worktree_create',
+  'before_phase',
+  'after_phase',
+  'before_stage',
+  'after_stage',
+] as const;
+export type LifecycleTriggerKind = (typeof LIFECYCLE_TRIGGER_KINDS)[number];
+
+/**
+ * Stufen der Integrations-Pipeline — Identität ist die `IntegrationStep.id` aus
+ * workflowModel.ts, nicht der {@link IntegrationStage}-Union: der enthält Fehler-
+ * und Zwischenzustände, an die kein Schritt gehängt werden soll.
+ *
+ * Die Konstante liegt hier statt in workflowModel.ts, weil workflowModel.ts aus
+ * types.ts importiert — die Gegenrichtung wäre ein Zyklus. workflowModel.ts
+ * verengt `IntegrationStep.id` darauf und ein Test nagelt die Gleichheit fest.
+ */
+export const INTEGRATION_STAGE_IDS = [
+  'verify',
+  'review_gate',
+  'manual_test',
+  'human_review',
+  'merge_queue',
+  'merged',
+] as const;
+export type LifecycleStageId = (typeof INTEGRATION_STAGE_IDS)[number];
+
+/**
+ * Auslöser eines Schritts. `phase` NUR bei before_phase/after_phase,
+ * `stage` NUR bei before_stage/after_stage — beides nie gleichzeitig.
+ */
+export interface LifecycleTrigger {
+  kind: LifecycleTriggerKind;
+  phase?: FeaturePhase;
+  stage?: LifecycleStageId;
+}
+
+/** Benanntes Shell-Kommando an einem Punkt des Feature-Lebenszyklus. */
+export interface LifecycleStep {
+  id: string;
+  /** null = global (gilt via Union in allen Projekten). */
+  projectId: string | null;
+  name: string;
+  /** Shell-Kommando; läuft in einer Login-Shell im Zielverzeichnis. */
+  command: string;
+  trigger: LifecycleTrigger;
+  /** true = blockierend (Fehlschlag hält an), false = beratend (nur verbucht). */
+  blocking: boolean;
+  /** Zeitlimit in ms; null = DEFAULT_STEP_TIMEOUT_MS. */
+  timeoutMs: number | null;
+  enabled: boolean;
+  sortOrder: number;
+}
+
+/** Per-Feature-Override der Geltung eines Schritts; kein Eintrag = 'auto'. */
+export type LifecycleStepFeatureDecision = 'include' | 'exclude';
+
+/**
+ * Kontext eines Schritt-Laufs. Einzige Eingabe von `buildLifecycleEnv()` — dem
+ * einen Ort, an dem der Variablensatz entsteht (Erweiterungspunkt für die
+ * zentrale Portvergabe: portBase/profile kommen später hier dazu).
+ */
+export interface LifecycleContext {
+  /** Worktree-Pfad; bei before_worktree_create der KÜNFTIGE Pfad. */
+  worktreePath: string;
+  projectName: string;
+  featureName: string;
+  branch: string;
+  /** null, wenn am Auslöser fachlich keine Phase existiert. */
+  phase: FeaturePhase | null;
+  /** null, wenn am Auslöser fachlich keine Stufe existiert. */
+  stage: LifecycleStageId | null;
+  /** Anfang des exklusiven Portblocks; null = kein Block bekannt (FR-007). */
+  portBase: number | null;
+  /** Gemeintes Stack-Profil; null bei einem gewöhnlichen Schritt (FR-018). */
+  profile: StackProfileName | null;
+}
+
+/** Effektive Schritt-Sicht eines Features (per-Feature-Auswahl + jüngster Lauf). */
+export interface FeatureLifecycleStepView {
+  step: LifecycleStep;
+  decision: LifecycleStepFeatureDecision | 'auto';
+  /** Läuft der Schritt für dieses Feature beim nächsten passenden Auslöser? */
+  effective: boolean;
+  /** Jüngster Lauf dieses Schritts für dieses Feature; null = noch keiner. */
+  lastRun: {
+    executionId: string;
+    startedAt: number;
+    finishedAt: number | null;
+    status: ExecutionRecord['status'];
+    exitCode: number | null;
+  } | null;
 }
 
 // ---------- Review-Portal ----------
@@ -571,7 +698,8 @@ export interface ReviewOverviewItem {
   deletions: number;
   audits: { passed: number; failed: number; total: number };
   openComments: number;
-  verify: { status: 'passed' | 'failed' | 'none'; executionId?: string };
+  /** 'none' = konfiguriert, aber kein Lauf; 'unconfigured' = nichts konfiguriert (FR-009). */
+  verify: { status: 'passed' | 'failed' | 'none' | 'unconfigured'; executionId?: string };
   /** Der Worktree hat uncommittete Änderungen (Arbeitsbaum ≠ HEAD). */
   hasUncommitted: boolean;
 }
@@ -590,10 +718,458 @@ export interface ApproveMergeRequest {
   createBranch?: boolean;
 }
 
+// ---------- Worktree-Übersicht (Feature "worktree-uebersicht") ----------
+
+/** Art eines Eintrags in der Worktree-Übersicht (der Haupt-Checkout ist ein eigener Typ). */
+export type WorktreeEntryKind = 'feature' | 'chat' | 'orphan';
+/** Verhältnis zwischen Git-Registrierung und tatsächlichem Verzeichnis. */
+export type WorktreeDirState = 'present' | 'missing' | 'registry_only';
+export type FileChangeKind = 'added' | 'modified' | 'deleted' | 'renamed';
+export type FileChangeState = 'committed' | 'uncommitted' | 'both';
+export type WorktreeWarningKind = 'overlap' | 'behind_target' | 'already_merged';
+
+/** Eine gegenüber dem Zielbranch geänderte Datei eines Worktrees. */
+export interface WorktreeFileChange {
+  /** Repo-relativ; bei Umbenennung der NEUE Pfad. */
+  path: string;
+  /** Nur bei kind === 'renamed' gesetzt. */
+  oldPath: string | null;
+  kind: FileChangeKind;
+  state: FileChangeState;
+  /** Datei wurde auch in einem anderen offenen Worktree desselben Projekts geändert. */
+  overlapping: boolean;
+  /** Datei wurde seit dem Abzweigpunkt auch auf dem Zielbranch geändert. */
+  behindTarget: boolean;
+}
+
+/** Eine erkannte Risikolage eines Worktrees. */
+export interface WorktreeWarning {
+  kind: WorktreeWarningKind;
+  /** Betroffene Pfade, für die Anzeige auf 20 gekürzt. */
+  files: string[];
+  /** Gesamtzahl betroffener Dateien (auch bei Kürzung vollständig). */
+  fileCount: number;
+  /** Nur bei kind === 'overlap': die anderen beteiligten Einträge. */
+  others: { entryId: string; label: string; featureId: string | null }[];
+}
+
+/** Der Haupt-Checkout eines Projekts — nie entfernbar, ohne Dateiliste und Warnungen. */
+export interface MainCheckoutInfo {
+  projectId: string;
+  projectName: string;
+  path: string;
+  /** Aktueller Branch; null = detached HEAD. */
+  branch: string | null;
+  defaultBranch: string;
+  uncommittedFileCount: number;
+}
+
+/** Ein bestehender oder erwarteter Worktree eines Projekts. */
+export interface WorktreeEntry {
+  /** Stabile Kennung `<projectId>::<realpath>` — Identität über Erhebungen hinweg. */
+  id: string;
+  projectId: string;
+  kind: WorktreeEntryKind;
+  /** Feature-Name · "Wissens-Chat" · Verzeichnisname (verwaist). */
+  label: string;
+  path: string;
+  /** null = detached HEAD. */
+  branch: string | null;
+  dirState: WorktreeDirState;
+  /** null ⇒ verwaist (keinem Feature zugeordnet). */
+  featureId: string | null;
+  /** feature.integrationTarget ?? project.defaultBranch. */
+  targetBranch: string;
+  createdAt: number | null;
+  /** Nicht beendete PTY-Session mit cwd innerhalb des Worktrees. */
+  sessionActive: boolean;
+  removable: boolean;
+  /** Gesamtzahl geänderter Dateien — auch wenn `files` gekürzt ist. */
+  changedFileCount: number;
+  uncommittedFileCount: number;
+  /** Auf 300 Einträge gekürzt. */
+  files: WorktreeFileChange[];
+  filesTruncated: boolean;
+  warnings: WorktreeWarning[];
+  /** Belegter Platz in Bytes; null = nicht ermittelbar („unbekannt", FR-044). */
+  sizeBytes: number | null;
+  /** Anfang des zugewiesenen Portblocks; null = keiner vergeben. */
+  portBase: number | null;
+  /** Erhebung dieses Eintrags fehlgeschlagen — der Eintrag bleibt trotzdem sichtbar. */
+  error: string | null;
+}
+
+/** Ein Projektblock der Übersicht. */
+export interface WorktreeProjectGroup {
+  projectId: string;
+  projectName: string;
+  projectPath: string;
+  defaultBranch: string;
+  /** null NUR wenn error !== null. */
+  main: MainCheckoutInfo | null;
+  /** Ohne Haupt-Checkout; Sortierung feature → chat → orphan, je Gruppe alphabetisch. */
+  worktrees: WorktreeEntry[];
+  worktreeCount: number;
+  /** Projekt nicht erreichbar / kein Git-Repository. */
+  error: string | null;
+}
+
+/** Plattenplatz des Datenträgers, auf dem die Worktrees liegen (FR-043). */
+export interface WorktreeDiskInfo {
+  /** Freier Platz des Datenträgers des Datenverzeichnisses; null = nicht ermittelbar. */
+  freeBytes: number | null;
+  /** Dokumentierte Warnschwelle (config.diskWarnBytes, Vorgabe 10 GiB). */
+  warnBelowBytes: number;
+  /** freeBytes !== null && freeBytes < warnBelowBytes. */
+  warn: boolean;
+}
+
+/** Wurzel der Antwort von GET /api/worktrees. */
+export interface WorktreeOverview {
+  groups: WorktreeProjectGroup[];
+  /** Erhebungszeitpunkt (ms) — die Oberfläche weist ihn als „Stand" aus. */
+  collectedAt: number;
+  /** Freier Plattenplatz und Warnschwelle (FR-043). */
+  disk: WorktreeDiskInfo;
+}
+
+// ---------- Portvergabe, Stack-Profile, Testing-Lane ----------
+// (Feature „ersetzbare-kernschritte-stack-profile-testing-lane")
+
+export type PortBlockOwnerKind = 'worktree' | 'project';
+
+/**
+ * Der einem Worktree — oder einem Projekt, für projektweit geteilte Dienste —
+ * zugewiesene exklusive Block von Ports. EINZIGE Quelle der Portvergabe
+ * (FR-001); geschrieben ausschließlich vom PortAllocator.
+ */
+export interface PortBlock {
+  ownerKind: PortBlockOwnerKind;
+  /** worktree: kanonischer Pfad (realpath); project: projectId. */
+  ownerId: string;
+  /** Immer gesetzt — auch bei ownerKind 'worktree' (Zuordnung in der Übersicht). */
+  projectId: string;
+  /** Anfang des Blocks; $SDD_PORT_BASE. */
+  base: number;
+  /**
+   * Breite; zum Zeitpunkt der Zuweisung festgehalten, damit eine Änderung der
+   * Vorgabe bestehende Blöcke nicht rückwirkend verschiebt (FR-004).
+   */
+  span: number;
+  allocatedAt: number;
+  /** null = belegt; gesetzt = freigegeben und wiederverwendbar (FR-005). */
+  releasedAt: number | null;
+}
+
+export const STACK_PROFILE_NAMES = ['test', 'full', 'down'] as const;
+export type StackProfileName = (typeof STACK_PROFILE_NAMES)[number];
+
+/** Ein Profil mit dem je Projekt konfigurierten Kommando (FR-011/FR-012). */
+export interface StackProfile {
+  /** Feature-eigenes Kommando; leer = Profil nicht konfiguriert. */
+  command: string;
+  /** Kommando für projektweit geteilte Dienste; null = keine geteilten Dienste. */
+  sharedCommand: string | null;
+  /** Zeitlimit in ms; null = DEFAULT_STEP_TIMEOUT_MS (15 min, wie bei Schritten). */
+  timeoutMs: number | null;
+}
+
+/** Ein einzelner Bestandteil eines Stacks. */
+export interface StackService {
+  name: string;
+  /** Port = portBase + portOffset; muss kleiner als die Blockbreite sein. */
+  portOffset: number;
+  /** 'feature' = je Feature eigener Dienst; 'shared' = projektweit genau einmal (FR-020). */
+  scope: 'feature' | 'shared';
+  /** Zustandsbehaftet (Datenbank, Dateiablage) — MUSS 'feature' sein (FR-021). */
+  stateful: boolean;
+  /** Haupteingang der Anwendung; höchstens einer je Projekt (Quelle der klickbaren URL). */
+  primary: boolean;
+}
+
+/** Stack-Konfiguration eines Projekts; alles leer/null = kein Stack (FR-013). */
+export interface StackConfig {
+  test: StackProfile | null;
+  full: StackProfile | null;
+  /** `command` baut ab EINSCHLIESSLICH der Datenablagen (FR-017). */
+  down: StackProfile | null;
+  /** Optional: Dienste anhalten, Daten behalten — die Lane-Aktion „Stoppen". */
+  stopCommand: string | null;
+  services: StackService[];
+}
+
+/** Persistierte Absicht: welches Profil soll für dieses Feature betrieben werden? */
+export interface FeatureStackIntent {
+  featureId: string;
+  profile: Extract<StackProfileName, 'test' | 'full'>;
+  since: number;
+}
+
+export type StackServiceStatus = 'up' | 'down' | 'unknown';
+
+export interface StackServiceView {
+  name: string;
+  /** null = kein Port ableitbar (kein Block oder nichts konfiguriert). */
+  port: number | null;
+  scope: StackService['scope'];
+  stateful: boolean;
+  primary: boolean;
+  status: StackServiceStatus;
+}
+
+/**
+ * Erhobener Stack-Zustand eines Features. Der Status kommt IMMER aus einer
+ * frischen Probe, nie aus einem gemerkten Stand (FR-023).
+ */
+export interface FeatureStackView {
+  /** Projekt hat mindestens ein Profil und mindestens einen Dienst (FR-013/FR-033). */
+  configured: boolean;
+  /** Betriebenes Profil laut Absicht; null = keines. */
+  profile: 'test' | 'full' | null;
+  portBase: number | null;
+  /** Nur wenn der Haupteingang erreichbar ist — sonst null (FR-031/FR-033). */
+  url: string | null;
+  services: StackServiceView[];
+  /** Erhebungszeitpunkt der Statusprobe (die Oberfläche weist ihn als „Stand" aus). */
+  collectedAt: number;
+}
+
+/** Die menschliche Entscheidung an der Stufe `awaiting_manual_test`. */
+export interface ManualTestDecision {
+  featureId: string;
+  decision: 'confirmed' | 'rejected';
+  /** Pflicht bei 'rejected' (FR-029); null bei Bestätigung. */
+  reason: string | null;
+  /** Abnahme-Runde, in der entschieden wurde (1-basiert). */
+  round: number;
+  decidedAt: number;
+}
+
+/**
+ * Gewicht eines Abnahme-Befunds. Nur `blocker` sperrt die Annahme — sonst
+ * blockiert jede Kleinigkeit den Merge und das Gate wird umgangen.
+ */
+export type ManualTestSeverity = 'blocker' | 'rework' | 'note';
+
+export const MANUAL_TEST_SEVERITIES: readonly ManualTestSeverity[] = ['blocker', 'rework', 'note'];
+
+/**
+ * Ein Befund aus dem Durchklicken der laufenden Anwendung.
+ *
+ * Der Anker ist ein Ort in der ANWENDUNG (`where`, freier Text), nicht in einer
+ * Datei — darum keine Wiederverwendung von `ReviewComment`, dessen Anker
+ * Datei+Zeile ist.
+ *
+ * Befunde überleben die Runde: was nicht abgehakt wird, geht in die nächste
+ * Abnahme mit. Ohne diese Buchführung weiß nach zwei Runden niemand mehr, was
+ * bereits nachgeprüft war.
+ */
+export interface ManualTestFinding {
+  id: string;
+  featureId: string;
+  /** Runde, in der der Befund entstand (1-basiert). */
+  round: number;
+  /** Wo in der Anwendung — z. B. „Board → Karte öffnen"; null = allgemein. */
+  where: string | null;
+  text: string;
+  severity: ManualTestSeverity;
+  status: 'open' | 'resolved';
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+/** Ein noch nicht gespeicherter Befund, wie ihn der Abnahme-Dialog absendet. */
+export interface NewManualTestFinding {
+  where: string | null;
+  text: string;
+  severity: ManualTestSeverity;
+}
+
+/**
+ * Eingabe einer Ablehnung. Mindestens ein Befund ODER eine Anmerkung ist
+ * erforderlich — sonst wüsste der Wiedereinstieg nicht, was zu ändern ist.
+ */
+export interface ManualTestRejection {
+  comment?: string;
+  findings?: NewManualTestFinding[];
+}
+
+/** Zusammenstellung, die ein Mensch zur manuellen Abnahme braucht (FR-030). */
+export interface TestingLaneEntry {
+  featureId: string;
+  featureName: string;
+  branch: string;
+  /** null = kein Arbeitsverzeichnis (dann keine Stack-Aktion möglich). */
+  worktreePath: string | null;
+  createdAt: number;
+  stage: IntegrationStage;
+  stack: FeatureStackView;
+  /** Jüngste Entscheidung, falls es schon eine gab (z. B. frühere Ablehnung). */
+  lastDecision: ManualTestDecision | null;
+  /** Laufende Abnahme-Runde (1 = erste Abnahme dieses Features). */
+  round: number;
+  /** Offene Befunde aus früheren Runden; ein offener `blocker` sperrt die Annahme. */
+  openFindings: ManualTestFinding[];
+}
+
+/** Wurzel der Antwort von GET /api/testing-lane. */
+export interface TestingLaneView {
+  /** Features des Projekts auf der Stufe `awaiting_manual_test`. */
+  awaitingManualTest: TestingLaneEntry[];
+  /** Features mit betriebenem Stack, die NICHT auf der Stufe stehen. */
+  running: TestingLaneEntry[];
+  collectedAt: number;
+}
+
+// ---------- Betriebsspuren: Lebenszeichen, Ausfall, Protokoll (Feature „server-ausfaelle-sichtbar-machen") ----------
+
+/** Lebenszeichen des Servers; liegt als eine JSON-Zeile in `$SDD_DATA_DIR/heartbeat.json`. */
+export interface Heartbeat {
+  /** Zeitpunkt des Schreibens (ms seit Epoche). */
+  ts: number;
+  /** Kennung des schreibenden Serverlaufs; wechselt bei jedem Start. */
+  instanceId: string;
+  /** true = der Server hat sich geordnet verabschiedet; eine Lücke danach ist kein Ausfall. */
+  clean: boolean;
+  /** Startzeitpunkt der schreibenden Instanz (Laufzeit im Abgangseintrag). */
+  startedAt: number;
+}
+
+/** Festgehaltener Ausfall — so steht er im Protokoll und so geht er an die Oberfläche. */
+export interface OutageRecord {
+  /** Letztes Lebenszeichen vor dem Ausfall; null, wenn das Fenster nicht bestimmbar ist. */
+  from: number | null;
+  /** Startzeitpunkt der neuen Instanz. */
+  to: number;
+  /** Dauer der Lücke; null bei nicht bestimmbarem Fenster. */
+  durationMs: number | null;
+  /** Zahl der zum Ausfallzeitpunkt noch als laufend geführten Läufe (über alle Projekte). */
+  affectedRuns: number;
+  /** true = kein Abgangseintrag vorhanden → stiller Abgang (FR-014). */
+  silent: boolean;
+  /** true = Zeitfenster nicht bestimmbar, etwa weil die Uhr rückwärts sprang (D15). */
+  undetermined: boolean;
+}
+
+export type OperationsEntryKind = 'startup' | 'shutdown' | 'uncaught' | 'exit' | 'outage';
+
+/** Eine Zeile in `$SDD_DATA_DIR/operations.jsonl` — ein Betriebsereignis (Contract C2). */
+export interface OperationsEntry {
+  /** Zeitpunkt des Ereignisses, ms seit Epoche. */
+  ts: number;
+  /** Kennung des Serverlaufs; verbindet `startup` mit seinem Abgang. */
+  instanceId: string;
+  kind: OperationsEntryKind;
+  /** kind='shutdown': empfangenes Signal, z. B. 'SIGINT'. */
+  signal?: string;
+  /** kind='uncaught': Fehlerbeschreibung (Message + erste Zeilen des Stacks, gekürzt). */
+  error?: string;
+  /** kind='exit': Rückgabewert des Prozesses. */
+  exitCode?: number;
+  /** kind='shutdown' | 'exit': Laufzeit der Instanz in ms. */
+  uptimeMs?: number;
+  /** kind='outage': der nachgetragene Ausfall (FR-014). */
+  outage?: OutageRecord;
+  /** kind='startup': Prozesskennung zur Zuordnung. */
+  pid?: number;
+}
+
+/**
+ * Momentaufnahme des Ressourcendrucks. Lebt nur im Arbeitsspeicher (10 s Cache),
+ * wird nie persistiert.
+ *
+ * Jede Kennzahl ist einzeln `null`-fähig: eine nicht ermittelbare Zahl darf die
+ * übrigen nicht unterdrücken und wird nirgends geraten (FR-022).
+ */
+export interface ResourceSnapshot {
+  /** Freier Plattenplatz des Datenverzeichnisses in Bytes; null = nicht ermittelbar. */
+  diskFreeBytes: number | null;
+  /** Gesamtgrösse des Datenträgers in Bytes; null = nicht ermittelbar. */
+  diskTotalBytes: number | null;
+  /** Auslastung des Auslagerungsspeichers 0..1; null = nicht ermittelbar. */
+  swapUsedRatio: number | null;
+  swapUsedBytes: number | null;
+  swapTotalBytes: number | null;
+  /** Zahl der Features, für die gerade mindestens ein Lauf läuft (D12). */
+  activeFeatures: number;
+  /** Erhebungszeitpunkt (ms) — NICHT der Antwortzeitpunkt; die Oberfläche prüft daran das Alter (FR-021). */
+  collectedAt: number;
+}
+
+/** Stufe des Ressourcendrucks; die Schwellen dazu stehen in `resourcePressure.ts`. */
+export type PressureLevel = 'ok' | 'notice' | 'warn';
+
+/**
+ * Bewertung einer {@link ResourceSnapshot}. Sie entsteht serverseitig aus einer reinen
+ * Funktion — die Oberfläche entscheidet keine Schwellen selbst, sie zeigt das Urteil (C3.5).
+ */
+export interface PressureVerdict {
+  level: PressureLevel;
+  /** Kurzform für die Kopfleiste, z. B. „813 MB · Swap 80 % · 3 parallel". */
+  summary: string;
+  /** Ausformulierter Hinweis, wenn Druck und Parallelität zusammentreffen (FR-020, US3-4); sonst null. */
+  notice: string | null;
+}
+
+/** Antwort von `GET /api/system/status` (Contract C3). */
+export interface SystemStatus {
+  resources: ResourceSnapshot;
+  pressure: PressureVerdict;
+  /** Zuletzt registrierter Ausfall — überlebt das Erledigen der Meldung (FR-023); null = keiner bekannt. */
+  lastOutage: OutageRecord | null;
+}
+
 export function resolveAutomation(
   global: AutomationSettings,
   project: Partial<AutomationSettings>,
   feature: Partial<AutomationSettings>,
 ): AutomationSettings {
   return { ...global, ...project, ...feature };
+}
+
+// ---------- Individuelle Einstellungen (Feature „persoenliche-einstellungen") ----------
+
+/**
+ * Schlüsselraum der Ton-Auslöser (20 Werte, data-model §1). Bewusst als
+ * Template-Literal ÜBER den bestehenden Unions gebildet: fällt eine
+ * `AttentionKind` weg oder kommt eine `FeaturePhase` hinzu, wandert der
+ * Schlüsselraum automatisch mit — es gibt keine zweite, handgeschriebene Liste.
+ */
+export type SoundTriggerId =
+  | `attention:${AttentionKind}`
+  | `flow:${'turn_completed' | 'merged'}`
+  | `phase:${'changed' | FeaturePhase}`;
+
+/** Stabiler Schlüssel eines Katalogtons (siehe `TONES` in soundCatalog.ts). */
+export type ToneId = string;
+
+/**
+ * Genau eine Reaktion je Auslöser (FR-005) — als unterscheidbare Union, damit
+ * „Ansage ohne Text" und „Stille" nicht verschmelzen (data-model §3).
+ */
+export type SoundReaction =
+  | { kind: 'silence' }
+  | { kind: 'tone'; toneId: ToneId }
+  | { kind: 'speech'; text: string };
+
+/** Nutzerweite Ton-Zuordnung (data-model §4). Ablage: settings-Eintrag `sound`. */
+export interface SoundSettings {
+  /** Hauptschalter (FR-010) — lässt `reactions` unangetastet. */
+  enabled: boolean;
+  /** Grundlautstärke 0…1; Standard 0.06 = heutiger Pegel (FR-013). */
+  volume: number;
+  /** Partiell: ein fehlender Auslöser bedeutet Stille (FR-020). */
+  reactions: Partial<Record<SoundTriggerId, SoundReaction>>;
+}
+
+/** Vorauswahl der Ticket-Quelle im „Neues Feature"-Fluss (data-model §6). */
+export type TicketSource = 'jira' | 'manual';
+
+/**
+ * Übertragungsform für Boot-Zustand und Teilaktualisierung (data-model §7).
+ * Enthält das Farbdesign NICHT — das liegt gerätelokal im localStorage.
+ */
+export interface PersonalSettings {
+  sound: SoundSettings;
+  ticketSource: TicketSource;
 }

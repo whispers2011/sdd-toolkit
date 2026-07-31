@@ -10,21 +10,44 @@ import { useSyncExternalStore } from 'react';
  * `data-theme` bereits vor dem ersten Paint; dieses Modul übernimmt diesen Wert
  * als Ausgangszustand.
  */
-export type ThemeMode = 'light' | 'dark';
+export type ThemeId = 'light' | 'dark' | 'high-contrast';
+
+/** Auswahlliste für die Oberfläche — Reihenfolge = Anzeigereihenfolge (U6.7). */
+export const THEMES: readonly { id: ThemeId; label: string }[] = [
+  { id: 'dark', label: 'Dunkel' },
+  { id: 'light', label: 'Hell' },
+  { id: 'high-contrast', label: 'Dunkel, hoher Kontrast' },
+];
+
+/** Zyklus des Kopfzeilen-Umschalters (U1.4, research D10). */
+const CYCLE: Record<ThemeId, ThemeId> = {
+  dark: 'light',
+  light: 'high-contrast',
+  'high-contrast': 'dark',
+};
 
 const STORAGE_KEY = 'sdd-theme';
 
-const listeners = new Set<(mode: ThemeMode) => void>();
+const listeners = new Set<(id: ThemeId) => void>();
 
-function isMode(v: unknown): v is ThemeMode {
-  return v === 'light' || v === 'dark';
+export function isThemeId(v: unknown): v is ThemeId {
+  return v === 'light' || v === 'dark' || v === 'high-contrast';
+}
+
+/**
+ * `color-scheme` steuert die vom Browser gestellten Bedienelemente
+ * (Scrollbalken, Formularfelder). Nur `light` ist hell — jedes andere Design
+ * ist dunkel (U1.2).
+ */
+function colorScheme(id: ThemeId): 'light' | 'dark' {
+  return id === 'light' ? 'light' : 'dark';
 }
 
 /** Auflösung: explizite Wahl (localStorage) → Systempräferenz → Dark-Fallback. */
-export function resolveInitialTheme(): ThemeMode {
+export function resolveInitialTheme(): ThemeId {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (isMode(stored)) return stored;
+    if (isThemeId(stored)) return stored;
   } catch {
     /* localStorage nicht verfügbar → Systempräferenz prüfen */
   }
@@ -39,47 +62,54 @@ export function resolveInitialTheme(): ThemeMode {
 }
 
 /** Den vom FOUC-Guard gesetzten data-theme als Wahrheit übernehmen. */
-function readDom(): ThemeMode {
+function readDom(): ThemeId {
   const attr = typeof document !== 'undefined' ? document.documentElement.dataset.theme : null;
-  return isMode(attr) ? attr : resolveInitialTheme();
+  return isThemeId(attr) ? attr : resolveInitialTheme();
 }
 
-let current: ThemeMode = readDom();
+let current: ThemeId = readDom();
 
-function apply(mode: ThemeMode): void {
+function apply(id: ThemeId): void {
   if (typeof document === 'undefined') return;
   const root = document.documentElement;
-  root.dataset.theme = mode;
-  root.style.colorScheme = mode;
+  root.dataset.theme = id;
+  root.style.colorScheme = colorScheme(id);
 }
 
 // DOM und Zustand angleichen (falls das Modul ohne vorherigen Guard lädt).
 apply(current);
 
-export function getTheme(): ThemeMode {
+export function getTheme(): ThemeId {
   return current;
 }
 
-/** Setzt den Modus: DOM zuerst, dann Persistenz, dann Abonnenten (Contract C1). */
-export function setTheme(mode: ThemeMode): void {
-  current = mode;
-  apply(mode);
+/** Setzt das Design: DOM zuerst, dann Persistenz, dann Abonnenten (Contract C1). */
+export function setTheme(id: ThemeId): void {
+  current = id;
+  apply(id);
   try {
-    localStorage.setItem(STORAGE_KEY, mode);
+    localStorage.setItem(STORAGE_KEY, id);
   } catch {
     /* Persistenz best effort */
   }
-  for (const cb of listeners) cb(mode);
+  for (const cb of listeners) cb(id);
 }
 
-export function toggleTheme(): ThemeMode {
-  const next: ThemeMode = current === 'dark' ? 'light' : 'dark';
+/**
+ * Schaltet durch alle Designs (dark → light → high-contrast → dark).
+ *
+ * Ersetzt das frühere binäre Umschalten: das hätte einen Nutzer im
+ * Kontrast-Design bei jedem Klick unvorhersehbar herausgeworfen und die
+ * getroffene Wahl stillschweigend verworfen (research D10).
+ */
+export function cycleTheme(): ThemeId {
+  const next = CYCLE[current];
   setTheme(next);
   return next;
 }
 
-/** Abonniert Moduswechsel (Nicht-CSS-Konsumenten). Gibt Unsubscribe zurück. */
-export function onThemeChange(cb: (mode: ThemeMode) => void): () => void {
+/** Abonniert Designwechsel (Nicht-CSS-Konsumenten). Gibt Unsubscribe zurück. */
+export function onThemeChange(cb: (id: ThemeId) => void): () => void {
   listeners.add(cb);
   return () => {
     listeners.delete(cb);
@@ -89,7 +119,7 @@ export function onThemeChange(cb: (mode: ThemeMode) => void): () => void {
 /** Liegt eine explizite (persistierte) Nutzerwahl vor? */
 function hasExplicitChoice(): boolean {
   try {
-    return isMode(localStorage.getItem(STORAGE_KEY));
+    return isThemeId(localStorage.getItem(STORAGE_KEY));
   } catch {
     return false;
   }
@@ -102,10 +132,10 @@ if (typeof matchMedia !== 'undefined') {
     const mq = matchMedia('(prefers-color-scheme: dark)');
     const onSystemChange = (e: MediaQueryListEvent) => {
       if (hasExplicitChoice()) return;
-      const mode: ThemeMode = e.matches ? 'dark' : 'light';
-      current = mode;
-      apply(mode);
-      for (const cb of listeners) cb(mode);
+      const id: ThemeId = e.matches ? 'dark' : 'light';
+      current = id;
+      apply(id);
+      for (const cb of listeners) cb(id);
     };
     if (typeof mq.addEventListener === 'function') {
       mq.addEventListener('change', onSystemChange);
@@ -115,8 +145,8 @@ if (typeof matchMedia !== 'undefined') {
   }
 }
 
-/** React-Hook: rendert bei Moduswechsel neu. */
-export function useTheme(): ThemeMode {
+/** React-Hook: rendert bei Designwechsel neu. */
+export function useTheme(): ThemeId {
   return useSyncExternalStore(
     (cb) => onThemeChange(() => cb()),
     () => current,

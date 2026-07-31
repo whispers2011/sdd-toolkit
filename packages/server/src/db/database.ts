@@ -328,9 +328,150 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   ALTER TABLE features ADD COLUMN jira_imported_at INTEGER;
   CREATE INDEX idx_features_jira ON features(project_id, jira_key);
   `,
-  // Inbox-Dedup verfeinern: gleichartige Meldungen aus unterschiedlichen Quellen
-  // (z. B. Freigabebedarf zweier Review-Agents) dürfen sich nicht gegenseitig verschlucken.
-  `ALTER TABLE attention ADD COLUMN dedup_key TEXT;`,
+  // Feature "integrieren-button-entfernen": Zurückweisung im Review bleibt als
+  // Hinweis sichtbar (FR-026) — auch über einen Server-Neustart hinweg.
+  // Bestandszeilen bleiben NULL = keine offene Zurückweisung.
+  `
+  ALTER TABLE features ADD COLUMN review_rejected_at INTEGER;
+  `,
+  // Feature "token-und-kostenmessung-auf-die-opentelemetry-daten-der-clau":
+  // Verbrauch und Betrag stammen von der CLI selbst (OTel-Ereignis claude_code.api_request)
+  // statt aus dem Transkript. Additiv/nullable — Bestandsläufe behalten ihre Transkript-Zahlen
+  // und bekommen keinen rückwirkend errechneten Betrag (FR-025).
+  // tokens_source ist bereits TEXT und nimmt den neuen Wert 'telemetry' ohne Schemaänderung auf.
+  `
+  ALTER TABLE executions ADD COLUMN cost_micros INTEGER;
+  ALTER TABLE executions ADD COLUMN subagent_tokens INTEGER;
+  ALTER TABLE executions ADD COLUMN subagent_cost_micros INTEGER;
+  ALTER TABLE executions ADD COLUMN model TEXT;
+  ALTER TABLE executions ADD COLUMN telemetry_final_at INTEGER;
+  `,
+  // Feature "plausibilitaetspruefung": quittierter Wasserstand je Befund und Bezugsobjekt.
+  // AttentionRepo.raise() dedupliziert nur gegen OFFENE Meldungen — ohne diese Marke
+  // entstünde eine aufgelöste Meldung im nächsten Prüfintervall neu (FR-014, FR-017).
+  // feature_id = '' statt NULL für projektweite Befunde (A, C): NULL wäre in einem
+  // SQLite-Primärschlüssel mehrfach erlaubt und höbe die Eindeutigkeit auf.
+  `
+  CREATE TABLE plausibility_state (
+    kind           TEXT    NOT NULL,
+    project_id     TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    feature_id     TEXT    NOT NULL DEFAULT '',
+    reported_count INTEGER NOT NULL,
+    reported_at    INTEGER NOT NULL,
+    PRIMARY KEY (kind, project_id, feature_id)
+  );
+  `,
+  // Feature "eigene-schritte-an-den-lebenszyklus-haengen": eigene Shell-Kommandos an
+  // definierten Punkten des Lebenszyklus. Muster: agents / agent_feature_selection.
+  // Additiv, keine Seeds, kein Backfill — ohne konfigurierte Schritte bleibt das
+  // Verhalten einer bestehenden Datenbank unverändert.
+  `
+  CREATE TABLE lifecycle_steps (
+    id            TEXT PRIMARY KEY,
+    project_id    TEXT REFERENCES projects(id) ON DELETE CASCADE,   -- NULL = global
+    name          TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    trigger_kind  TEXT NOT NULL CHECK (trigger_kind IN (
+                    'before_worktree_create','after_worktree_create',
+                    'before_phase','after_phase','before_stage','after_stage')),
+    trigger_phase TEXT,
+    trigger_stage TEXT,
+    blocking      INTEGER NOT NULL DEFAULT 1,
+    timeout_ms    INTEGER,                                          -- NULL = Vorgabewert
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    enabled       INTEGER NOT NULL DEFAULT 1
+  );
+
+  CREATE TABLE lifecycle_step_feature_selection (
+    feature_id TEXT NOT NULL REFERENCES features(id)        ON DELETE CASCADE,
+    step_id    TEXT NOT NULL REFERENCES lifecycle_steps(id) ON DELETE CASCADE,
+    decision   TEXT NOT NULL CHECK (decision IN ('include','exclude')),
+    PRIMARY KEY (feature_id, step_id)
+  );
+
+  CREATE INDEX idx_lifecycle_steps_project ON lifecycle_steps(project_id);
+  CREATE INDEX idx_lifecycle_steps_trigger ON lifecycle_steps(trigger_kind);
+
+  -- Bezeichnung eines Laufs; bei kind='lifecycle_step' der Schrittname beim Start.
+  -- Hält Läufe eines später gelöschten oder umbenannten Schritts lesbar.
+  ALTER TABLE executions ADD COLUMN label TEXT;
+  `,
+
+  // Feature "ersetzbare-kernschritte-stack-profile-testing-lane": Portvergabe,
+  // Stack-Profile und manuelle Abnahme. Additiv, keine Seeds, kein Backfill —
+  // ohne Stack-Konfiguration verhält sich eine bestehende Datenbank unverändert
+  // (FR-013, SC-010).
+  `
+  -- Die EINZIGE Buchführung der Portvergabe (FR-001/FR-002).
+  CREATE TABLE port_blocks (
+    owner_kind   TEXT    NOT NULL CHECK (owner_kind IN ('worktree','project')),
+    owner_id     TEXT    NOT NULL,                 -- realpath des Worktrees bzw. projectId
+    project_id   TEXT    NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    base         INTEGER NOT NULL,
+    span         INTEGER NOT NULL,
+    allocated_at INTEGER NOT NULL,
+    released_at  INTEGER,                          -- NULL = belegt
+    PRIMARY KEY (owner_kind, owner_id)
+  );
+
+  -- Eindeutigkeit der BELEGTEN Blöcke (SQLite behandelt NULL als eigenständig,
+  -- deshalb der partielle Index — zwei freigegebene Blöcke mit gleicher Basis
+  -- sind erlaubt, weil sie wiederverwendbar sind).
+  CREATE UNIQUE INDEX idx_port_blocks_base_live ON port_blocks(base) WHERE released_at IS NULL;
+
+  -- Absicht, NICHT Zustand: welches Profil soll für dieses Feature betrieben
+  -- werden (FR-014/FR-023). Der tatsächliche Dienststatus wird erhoben.
+  CREATE TABLE feature_stacks (
+    feature_id TEXT PRIMARY KEY REFERENCES features(id) ON DELETE CASCADE,
+    profile    TEXT    NOT NULL CHECK (profile IN ('test','full')),
+    since      INTEGER NOT NULL
+  );
+
+  -- Manuelle Abnahme: Bestätigung/Ablehnung mit Zeitpunkt und Grund als
+  -- Historie, nicht überschreibend — mehrere Ablehnungen sind möglich
+  -- (FR-028/FR-029).
+  CREATE TABLE manual_test_decisions (
+    id         TEXT PRIMARY KEY,
+    feature_id TEXT    NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    decision   TEXT    NOT NULL CHECK (decision IN ('confirmed','rejected')),
+    reason     TEXT,                               -- Pflicht bei 'rejected'
+    decided_at INTEGER NOT NULL
+  );
+  CREATE INDEX idx_manual_test_decisions_feature ON manual_test_decisions(feature_id);
+
+  -- Profilkommandos + Dienstliste je Projekt (JSON, '{}' = kein Stack).
+  ALTER TABLE projects ADD COLUMN stack TEXT NOT NULL DEFAULT '{}';
+
+  -- Grund eines fehlgeschlagenen Aufräumens; NULL = kein offener Fehlschlag
+  -- (FR-035/FR-037).
+  ALTER TABLE features ADD COLUMN cleanup_error TEXT;
+  `,
+  `
+  -- Befunde der manuellen Abnahme. Der Anker (where_at) ist ein Ort in der
+  -- ANWENDUNG, freier Text wie „Board → Karte öffnen" — nicht Datei+Zeile.
+  -- Darum eine eigene Tabelle statt review_comments.
+  --
+  -- Befunde überleben die Runde: was in der nächsten Abnahme nicht als behoben
+  -- abgehakt wird, bleibt offen und geht mit. Diese Tabelle ist nach einem
+  -- Rücksprung auf specify die einzige strukturierte Historie über Runden hinweg
+  -- (die Artefakte werden im neuen Lauf überschrieben).
+  CREATE TABLE manual_test_findings (
+    id          TEXT    PRIMARY KEY,
+    feature_id  TEXT    NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    round       INTEGER NOT NULL,
+    where_at    TEXT,
+    text        TEXT    NOT NULL,
+    severity    TEXT    NOT NULL CHECK (severity IN ('blocker','rework','note')),
+    status      TEXT    NOT NULL CHECK (status IN ('open','resolved')) DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX idx_manual_test_findings_feature ON manual_test_findings(feature_id, status);
+
+  -- Die Abnahme kann mehrfach durchlaufen werden; bestehende Entscheidungen
+  -- stammen aus Runde 1.
+  ALTER TABLE manual_test_decisions ADD COLUMN round INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {
@@ -348,18 +489,9 @@ export function openMemoryDatabase(): DB {
   return db;
 }
 
-/** Anzahl der Schemastände; `MIGRATION_COUNT` ist zugleich die aktuelle Zielversion. */
-export const MIGRATION_COUNT = MIGRATIONS.length;
-
-/**
- * Migriert die Datenbank auf `target` (Default: aktueller Stand). Jeder Schritt läuft in
- * einer eigenen Transaktion und schreibt danach `user_version` — bricht ein Schritt ab,
- * bleibt der letzte vollständige Stand erhalten. Der `target`-Parameter existiert, damit
- * Tests den Zwischenstand einer echten Bestandsdatenbank herstellen können.
- */
-export function migrate(db: DB, target: number = MIGRATION_COUNT): void {
+function migrate(db: DB): void {
   const version = db.pragma('user_version', { simple: true }) as number;
-  for (let v = version; v < target; v++) {
+  for (let v = version; v < MIGRATIONS.length; v++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[v]!);
       db.pragma(`user_version = ${v + 1}`);

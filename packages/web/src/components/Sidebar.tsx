@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react';
 import type { Feature } from '@sdd/shared';
+import { INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { api, type LiveSessionInfo } from '../api.js';
 import { isShowCompleted, useStore } from '../store.js';
+import { getPersonal } from '../personalSettings.js';
 import { ProjectSettings } from './ProjectSettings.js';
 import { NewFeatureDialog } from './NewFeatureDialog.js';
 import { JiraSettings } from './JiraSettings.js';
 import { JiraImportDialog } from './JiraImportDialog.js';
-import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon } from './icons.js';
+import { PersonalSettingsDialog } from './PersonalSettingsDialog.js';
+import { ChevronDownIcon, KnowledgeIcon, LogoMark, SettingsIcon, StepsIcon } from './icons.js';
 
 // ---- Projekt-Reihenfolge (gerätelokal, per Drag&Drop) ----
 const PROJECT_ORDER_KEY = 'sdd-project-order';
@@ -48,6 +51,7 @@ export function Sidebar() {
   const [settingsFor, setSettingsFor] = useState<string | null>(null);
   const [showJiraSettings, setShowJiraSettings] = useState(false);
   const [showToolSettings, setShowToolSettings] = useState(false);
+  const [showPersonalSettings, setShowPersonalSettings] = useState(false);
   const [order, setOrder] = useState<string[]>(() => loadProjectOrder());
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
@@ -192,6 +196,17 @@ export function Sidebar() {
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  dispatch({ type: 'select_project', projectId: project.id });
+                  dispatch({ type: 'set_view', view: { kind: 'lifecycle_steps', projectId: project.id } });
+                }}
+                className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
+                title="Lebenszyklus-Schritte (eigene Kommandos am Feature-Ablauf)"
+              >
+                <StepsIcon />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
                   setSettingsFor(project.id);
                 }}
                 className="hidden rounded bg-zinc-700 px-1.5 text-xs text-zinc-300 group-hover:block"
@@ -279,17 +294,24 @@ export function Sidebar() {
             setShowToolSettings(false);
             setShowJiraSettings(true);
           }}
+          onOpenPersonal={() => {
+            setShowToolSettings(false);
+            setShowPersonalSettings(true);
+          }}
         />
       )}
       {showJiraSettings && <JiraSettings onClose={() => setShowJiraSettings(false)} />}
+      {showPersonalSettings && <PersonalSettingsDialog onClose={() => setShowPersonalSettings(false)} />}
     </aside>
   );
 }
 
 /**
- * Einheitlicher Einstieg „Neues Feature": prüft den Jira-Verbindungsstatus und öffnet
- * standardmäßig den Jira-Import (wenn verbunden) bzw. die manuelle Erfassung (sonst).
- * Im verbundenen Fall lässt sich im Dialog zwischen beiden Quellen umschalten.
+ * Einheitlicher Einstieg „Neues Feature" (in den Verträgen `FeatureSourceGate`):
+ * prüft den Jira-Verbindungsstatus und öffnet die eingestellte Vorauswahl (wenn
+ * verbunden) bzw. zwingend die manuelle Erfassung (sonst). Im verbundenen Fall
+ * lässt sich im Dialog weiterhin zwischen beiden Quellen umschalten — das
+ * verändert die gespeicherte Vorauswahl NICHT (U7.4, FR-031).
  */
 function NewFeatureFlow({
   projectId,
@@ -311,7 +333,10 @@ function NewFeatureFlow({
         if (!alive) return;
         const c = s.state === 'connected';
         setConnected(c);
-        setMode(c ? 'jira' : 'manual');
+        // Verbunden ⇒ die nutzerweite Vorauswahl entscheidet (U7.1, FR-029).
+        // Ohne Verbindung ⇒ zwingend manuell, ohne den gespeicherten Wert
+        // anzufassen (U7.2, FR-030).
+        setMode(c ? getPersonal().ticketSource : 'manual');
       })
       .catch(() => {
         if (alive) {
@@ -352,9 +377,17 @@ function NewFeatureFlow({
 
 /**
  * Tool-weite Einstellungen (Zentrale): nutzerweite, projektübergreifende Konfiguration.
- * Aktuell die Jira-Anbindung — hier künftig um weitere Tool-Einstellungen erweiterbar.
+ * Die Übersichten liegen nicht hier, sondern unter dem Menüpunkt „Übersichten".
  */
-function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira: () => void }) {
+function ToolSettings({
+  onClose,
+  onOpenJira,
+  onOpenPersonal,
+}: {
+  onClose: () => void;
+  onOpenJira: () => void;
+  onOpenPersonal: () => void;
+}) {
   return (
     <Dialog title="Einstellungen" onClose={onClose}>
       <p className="mb-3 text-xs text-zinc-500">Tool-weite Einstellungen (nutzerweit, projektübergreifend).</p>
@@ -366,6 +399,16 @@ function ToolSettings({ onClose, onOpenJira }: { onClose: () => void; onOpenJira
           <span className="flex-1">
             <span className="block text-sm font-medium text-zinc-200">Jira-Verbindung</span>
             <span className="block text-xs text-zinc-500">Atlassian-Konto verbinden, Sites &amp; Projekte wählen</span>
+          </span>
+          <span className="text-zinc-500">→</span>
+        </button>
+        <button
+          onClick={onOpenPersonal}
+          className="flex w-full items-center gap-3 rounded border border-zinc-700 px-3 py-2 text-left hover:bg-zinc-800"
+        >
+          <span className="flex-1">
+            <span className="block text-sm font-medium text-zinc-200">Individuelle Einstellungen</span>
+            <span className="block text-xs text-zinc-500">Signaltöne, Darstellung, Vorauswahl der Ticket-Quelle</span>
           </span>
           <span className="text-zinc-500">→</span>
         </button>
@@ -408,7 +451,14 @@ function FeatureBadge({ feature }: { feature: Feature }) {
     );
   }
   if (feature.integration !== 'none') {
-    return <span className="ml-auto truncate text-xs text-sky-500">{feature.integration}</span>;
+    // Aus dem Katalog statt roh und pauschal Sky (FR-001a, SC-001).
+    return (
+      <span
+        className={`ml-auto truncate text-xs ${INTEGRATION_TONE_CLASS[INTEGRATION_STAGE_META[feature.integration].tone]}`}
+      >
+        {INTEGRATION_STAGE_META[feature.integration].label}
+      </span>
+    );
   }
   if (feature.tasksTotal > 0) {
     return (

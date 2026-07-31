@@ -2,6 +2,12 @@ node_modules/
 dist/
 *.log
 .DS_Store
+# Desktop-App: Stagingverzeichnis und fertige Artefakte
+packages/desktop/app/
+packages/desktop/release/
+packages/desktop/assets/icon.iconset/
+# Referenz-Repos (nur zur Analyse geklont)
+reference/
 # Laufzeitdaten
 data/
 *.sqlite
@@ -9,18 +15,15 @@ data/
 .env*
 # IDE
 .idea/
-.vscode/
-# Claude Code: lokale Einstellungen und Laufzeitzustand
-.claude/settings.local.json
-.claude/worktrees/
-.claude/checkpoints/
-.claude/mailbox/
-.claude/routines/.state/
-.claude/scheduled_tasks.json
-.claude/scheduled_tasks.lock
-.claude/agent-registry.json
-.claude/agent-memory-local/
-# spec-kit: zeigt auf das zuletzt bearbeitete Feature (flüchtiger Zustand)
+
+# spec-kit-Laufzeitzeiger: pro Worktree, gehört nicht in die Versionskontrolle.
+# Versioniert zeigte die Datei in jedem NEUEN Worktree auf das zuletzt gemergte
+# Feature (vom main-Commit geerbt) und war zugleich Dauerquelle von Merge-Konflikten.
+# Die spec-kit-Skripte legen sie lokal an; das Toolkit übergibt das Spec-Verzeichnis
+# ohnehin explizit im Slash-Kommando.
 .specify/feature.json
-# Tabellen gehören nicht ins Repo
-*.xlsx
+
+# Materialisiertes Projektwissen im Feature-Worktree (git-excluded, nie committen).
+# knowledgeService.ensureGitExcluded() kann das in einem Worktree nicht leisten:
+# dort ist .git eine Datei (gitdir-Redirect), nicht das Verzeichnis mit info/exclude.
+.sdd/
