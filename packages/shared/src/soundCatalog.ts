@@ -66,6 +66,12 @@ const ATTENTION_LABELS: Record<AttentionKind, string> = {
   metering_conflict: 'Messung widersprüchlich',
   server_outage: 'Server war weg',
   lifecycle_step_failed: 'Lebenszyklus-Schritt fehlgeschlagen',
+  // Vier weitere aus diesem Feature (Stack-Profile und Testing-Lane) — derselbe Drift-Guard,
+  // dieselbe Ursache: parallel gebaute Features ergänzen die Union, der Katalog zieht nach.
+  manual_test_due: 'Manueller Test fällig',
+  stack_failed: 'Stack-Start fehlgeschlagen',
+  worktree_cleanup_failed: 'Aufräumen fehlgeschlagen',
+  orphan_worktree: 'Verwaister Worktree',
 };
 
 /**
