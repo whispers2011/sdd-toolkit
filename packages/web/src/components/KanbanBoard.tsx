@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type DragEvent } from 'react';
 import type { Feature, FeatureArtifactStep, FeaturePhase } from '@sdd/shared';
-import { FEATURE_PHASES, evaluateAction } from '@sdd/shared';
+import { FEATURE_PHASES, evaluateAction, resolveAutomation } from '@sdd/shared';
 import { api } from '../api.js';
 import { featureActionContext, isShowCompleted, useStore } from '../store.js';
 import { ActionButton, ActionGroup, blockedReason, useAction } from './FeatureAction.js';
@@ -11,6 +11,17 @@ import { ConfirmDialog } from './Sidebar.js';
 import { PresetChip } from './ProjectSettings.js';
 import { LEVEL2_DEFAULTS, LEVEL3_DEFAULTS, INTEGRATION_STAGE_META, INTEGRATION_TONE_CLASS } from '@sdd/shared';
 import { FeatureAgentSelect } from './FeatureAgentSelect.js';
+import { ManualTestBlock, ManualTestLaneProvider } from './ManualTest.js';
+import {
+  AUTOMATIC_COLUMNS,
+  INTEGRATION_COLUMN_LABELS,
+  IntegrationColumnDialog,
+  PHASE_LABELS,
+  columnOf,
+  isIntegrationColumn,
+  type Column,
+  type IntegrationColumn,
+} from './boardColumns.js';
 import {
   SpecifyResultIcon,
   PlanResultIcon,
@@ -23,7 +34,6 @@ import {
   ArrowRightIcon,
   RestartIcon,
   ReviewIcon,
-  FlaskIcon,
   type IconProps,
 } from './icons.js';
 
@@ -37,35 +47,13 @@ const RESULT_ICONS: Partial<Record<FeaturePhase, (p: IconProps) => React.ReactEl
 
 const OpenReviewContext = createContext<(featureId: string) => void>(() => {});
 
-type Column = FeaturePhase | 'integration' | 'done';
-
-const PHASE_LABELS: Record<FeaturePhase, string> = {
-  specify: 'Specify',
-  clarify: 'Clarify',
-  plan: 'Plan',
-  checklist: 'Checklist',
-  analyze: 'Analyze',
-  tasks: 'Tasks',
-  implement: 'Implement',
-};
-
-/** Spalte, in der ein Feature aktuell steht. */
-function columnOf(feature: Feature): Column {
-  if (feature.integration === 'merged') return 'done';
-  if (feature.integration !== 'none') return 'integration';
-  for (const p of FEATURE_PHASES) {
-    const state = feature.phases[p];
-    if (state && state.status !== 'approved') return p;
-  }
-  return 'integration'; // alles approved → bereit zur Integration
-}
-
 export function KanbanBoard() {
   const { state, dispatch } = useStore();
   const [dragOver, setDragOver] = useState<Column | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [reviewFeatureId, setReviewFeatureId] = useState<string | null>(null);
   const [defPhase, setDefPhase] = useState<FeaturePhase | null>(null);
+  const [defColumn, setDefColumn] = useState<IntegrationColumn | null>(null);
   const run = useAction();
   if (!state.app) return null;
 
@@ -79,8 +67,32 @@ export function KanbanBoard() {
     for (const phase of p.enabledPhases) enabledUnion.add(phase);
   }
   const phaseColumns = FEATURE_PHASES.filter((p) => enabledUnion.has(p));
+
+  // Die menschlichen Spalten hängen an den Schaltern, die sie überhaupt
+  // erzeugen. Zusätzlich zeigen wir sie, wenn dort tatsächlich etwas steht: der
+  // Schalter gilt pro Projekt, kann aber am Feature übersteuert sein — sonst
+  // stünde ein Feature auf einer Stufe ohne Spalte.
+  const project = state.app.projects.find((p) => p.id === state.selectedProjectId);
+  const automation = project
+    ? resolveAutomation(state.app.automation, project.automation, {})
+    : null;
+  const occupied = new Set(features.map(columnOf));
+  const showAccept = automation?.manualTestGate === true || occupied.has('accept');
+  const showReview = automation?.autoMerge !== true || occupied.has('review');
+
   // Done-Spalte nur zeigen, wenn Abgeschlossene eingeblendet sind.
-  const columns: Column[] = [...phaseColumns, 'integration', ...(showCompleted ? (['done'] as Column[]) : [])];
+  const columns: Column[] = [
+    ...phaseColumns,
+    'verify',
+    ...(showAccept ? (['accept'] as Column[]) : []),
+    ...(showReview ? (['review'] as Column[]) : []),
+    'merge',
+    ...(showCompleted ? (['done'] as Column[]) : []),
+  ];
+
+  const waitingIds = features
+    .filter((f) => f.integration === 'awaiting_manual_test')
+    .map((f) => f.id);
 
   /** Der Integrations-Befund des gerade gezogenen Features (null = kein Zug aktiv). */
   const integrateVerdict = (featureId: string | null) => {
@@ -88,9 +100,11 @@ export function KanbanBoard() {
     return ctx ? evaluateAction('integrate', ctx) : null;
   };
 
-  // FR-018: Der Kartenzug in die Integrations-Spalte ist ein Bedienweg wie jeder
-  // andere und unterliegt derselben Festlegung. Schritt-Spalten sind gar kein
-  // Drop-Ziel mehr (FR-029) — es gibt keine Sammel-Freigabe.
+  // FR-018: Der Kartenzug in die erste Integrations-Spalte ist ein Bedienweg wie
+  // jeder andere und unterliegt derselben Festlegung. Schritt-Spalten sind gar
+  // kein Drop-Ziel mehr (FR-029) — es gibt keine Sammel-Freigabe. „Abnahme",
+  // „Review" und „Merge" ebenso wenig: dorthin kommt ein Feature nur durch die
+  // Pipeline, nicht durch einen Zug.
   const onDropIntegration = (e: DragEvent) => {
     e.preventDefault();
     setDragOver(null);
@@ -129,13 +143,25 @@ export function KanbanBoard() {
           />
         );
       })()}
+    {defColumn && (
+      <IntegrationColumnDialog
+        column={defColumn}
+        automation={automation}
+        onClose={() => setDefColumn(null)}
+      />
+    )}
+    <ManualTestLaneProvider projectId={state.selectedProjectId} waitingIds={waitingIds}>
     <div className="flex h-full gap-3 overflow-x-auto p-4">
       {columns.map((column) => {
         const items = features.filter((f) => columnOf(f) === column);
         // Nur die Integrations-Spalte nimmt Karten an; die Markierung erscheint
         // ausschließlich, wenn der Zug auch etwas bewirken würde.
-        const isDropTarget = column === 'integration';
+        const isDropTarget = column === 'verify';
         const wouldAccept = isDropTarget && integrateVerdict(draggingId)?.availability === 'available';
+        const isPhase = !isIntegrationColumn(column);
+        // Die Automatik-Spalten sind fast immer leer und brauchen keine
+        // Aktionsleiste — schmal, damit die Spalten mit Entscheidungen Platz haben.
+        const width = AUTOMATIC_COLUMNS.has(column) ? 'w-44' : 'w-64';
         return (
           <div
             key={column}
@@ -149,24 +175,38 @@ export function KanbanBoard() {
                   onDrop: onDropIntegration,
                 }
               : {})}
-            className={`flex w-64 shrink-0 flex-col rounded-lg border ${
+            className={`flex ${width} shrink-0 flex-col rounded-lg border ${
               dragOver === column ? 'border-emerald-600 bg-zinc-900' : 'border-zinc-800 bg-zinc-925'
             }`}
           >
             <div className="flex items-center justify-between px-3 py-2">
               <div className="flex items-center gap-1.5">
                 <h3 className="text-xs font-semibold tracking-wide text-zinc-400 uppercase">
-                  {column === 'integration' ? 'Integration' : column === 'done' ? 'Done' : PHASE_LABELS[column]}
+                  {isPhase
+                    ? PHASE_LABELS[column as FeaturePhase]
+                    : INTEGRATION_COLUMN_LABELS[column as IntegrationColumn]}
                 </h3>
-                {column !== 'integration' && column !== 'done' && (
-                  <button
-                    onClick={() => setDefPhase(column)}
-                    title="Was macht dieser Schritt? (Spezifikation ansehen/bearbeiten)"
-                    className="flex h-4 w-4 items-center justify-center rounded-full border border-zinc-600 text-[10px] leading-none font-serif text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
-                  >
-                    i
-                  </button>
-                )}
+                {/*
+                  Beide Spaltenarten erklären sich — die Quelle ist nur eine
+                  andere: bei Schritt-Spalten die (bearbeitbare) Kommando-
+                  Definition, bei Integrations-Spalten die Pipeline-Beschreibung
+                  aus INTEGRATION_STEPS.
+                */}
+                <button
+                  onClick={() =>
+                    isPhase
+                      ? setDefPhase(column as FeaturePhase)
+                      : setDefColumn(column as IntegrationColumn)
+                  }
+                  title={
+                    isPhase
+                      ? 'Was macht dieser Schritt? (Spezifikation ansehen/bearbeiten)'
+                      : 'Was passiert in dieser Spalte?'
+                  }
+                  className="flex h-4 w-4 items-center justify-center rounded-full border border-zinc-600 text-[10px] leading-none font-serif text-zinc-400 hover:border-zinc-400 hover:text-zinc-200"
+                >
+                  i
+                </button>
               </div>
               <span className="text-xs text-zinc-600">{items.length}</span>
             </div>
@@ -184,6 +224,7 @@ export function KanbanBoard() {
         );
       })}
     </div>
+    </ManualTestLaneProvider>
     </OpenReviewContext.Provider>
   );
 }
@@ -222,7 +263,7 @@ function FeatureCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feature.id, phaseSig]);
 
-  const phase = column !== 'integration' && column !== 'done' ? column : null;
+  const phase = isIntegrationColumn(column) ? null : column;
   const phaseState = phase ? feature.phases[phase] : undefined;
 
   // Sämtliche Aktions-Sichtbarkeit und -Sperrung kommt aus der gemeinsamen
@@ -409,6 +450,10 @@ function FeatureCard({
         </div>
       )}
 
+      {/* Die Abnahme findet HIER statt, nicht in einer Zweitansicht: Adresse der
+          laufenden Anwendung, Dienstzustand und die Entscheidung auf der Karte. */}
+      {feature.integration === 'awaiting_manual_test' && <ManualTestBlock featureId={feature.id} />}
+
       <ActionGroup reason={reason} className="mt-2">
         {phase && startV && (
           <ActionButton
@@ -448,9 +493,6 @@ function FeatureCard({
         )}
         {/* Betrachtend (FR-007): das Portal öffnet nur eine Ansicht und wird nie gesperrt. */}
         {feature.integration === 'awaiting_human_review' && <OpenReviewButton featureId={feature.id} />}
-        {/* Die Entscheidung selbst fällt NUR in der Lane — dort ist die laufende
-            Anwendung, an der geprüft wird. Auf der Kachel steht der Weg dorthin. */}
-        {feature.integration === 'awaiting_manual_test' && <OpenTestingLaneButton />}
         {retryV && (
           <ActionButton
             verdict={retryV}
@@ -497,19 +539,6 @@ function FeatureCard({
         )}
       </ActionGroup>
     </div>
-  );
-}
-
-/** Sprung in die Testing-Lane; die Abnahme selbst geschieht dort (FR-030). */
-function OpenTestingLaneButton() {
-  const { dispatch } = useStore();
-  return (
-    <button
-      className={`${CARD_ACTION_CLASS} inline-flex items-center gap-1`}
-      onClick={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
-    >
-      <FlaskIcon /> Testing-Lane öffnen
-    </button>
   );
 }
 

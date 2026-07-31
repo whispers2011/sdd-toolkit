@@ -369,7 +369,7 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
   });
 });
 
-describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
+describe('ChatWorkService — pauseState (Pausiert-Signal fürs Panel)', () => {
   let db: DB;
   let dataDir: string;
   let projectId: string;
@@ -404,27 +404,154 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
 
   const conv = () => new ChatRepo(db).createConversation(projectId, 'work');
 
-  it('false, wenn eine Session live ist', () => {
+  /** Beendete Vorgänger-Session der Unterhaltung — der Fall nach dem Leerlauf-Reap. */
+  const beendeteSession = (conversationId: string) => {
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId, projectId, kind: 'chat_work', pid: 123 });
+    sessionsRepo.setClaudeSessionId('s1', 'claude-abc');
+    sessionsRepo.end('s1');
+    return (db.prepare('SELECT ended_at AS e FROM sessions WHERE id=?').get('s1') as { e: number }).e;
+  };
+
+  it('nicht pausiert, wenn eine Session live ist', () => {
     const c = conv();
     live = { id: 's1' } as unknown as LiveSession;
-    expect(svc.workPaused(c)).toBe(false);
+    expect(svc.pauseState(c).paused).toBe(false);
   });
 
-  it('false für eine frische Unterhaltung ohne je gestartete Session', () => {
-    expect(svc.workPaused(conv())).toBe(false);
+  it('nicht pausiert für eine frische Unterhaltung ohne je gestartete Session', () => {
+    expect(svc.pauseState(conv()).paused).toBe(false);
   });
 
-  it('true, wenn keine Session läuft, aber eine frühere mit Claude-Session-ID existiert (fortsetzbar)', () => {
+  it('pausiert, wenn keine Session läuft, aber eine frühere mit Claude-Session-ID existiert', () => {
+    const c = conv();
+    const ende = beendeteSession(c.id);
+    const state = svc.pauseState(c, ende + 60_000);
+    expect(state.paused).toBe(true);
+    expect(state.idleMs).toBe(60_000);
+    expect(state.resumable).toBe(true); // eine Minute Pause → fortsetzbar
+  });
+
+  it('nicht pausiert, wenn die frühere Session nie eine Claude-Session-ID erhielt', () => {
+    const c = conv();
+    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
+    expect(svc.pauseState(c).paused).toBe(false);
+  });
+
+  it('kurz vor Ablauf der Pause noch fortsetzbar, danach nicht mehr', () => {
+    const c = conv();
+    const ende = beendeteSession(c.id);
+    expect(svc.pauseState(c, ende + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs - 1).resumable).toBe(true);
+    expect(svc.pauseState(c, ende + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs).resumable).toBe(false);
+  });
+
+  it('ohne ended_at zählt der Beginn der Session (harter Absturz)', () => {
     const c = conv();
     sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
     sessionsRepo.setClaudeSessionId('s1', 'claude-abc');
-    expect(svc.workPaused(c)).toBe(true);
+    const start = (db.prepare('SELECT created_at AS c FROM sessions WHERE id=?').get('s1') as { c: number }).c;
+    expect(svc.pauseState(c, start + CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 1).resumable).toBe(false);
+  });
+});
+
+/**
+ * Öffnen nach langer Pause: Der Verlauf wird nicht fortgesetzt, sondern eine frische
+ * Unterhaltung begonnen — sonst läse jeder weitere Turn den alten Verlauf erneut mit.
+ * Verworfen wird dabei nichts: Nachrichten bleiben, und eine dirty Arbeitskopie bleibt
+ * stehen (hier fragt niemand, also wird auch nichts weggeräumt).
+ */
+describe('ChatWorkService — abgelaufene Pause beim Öffnen (ensure)', () => {
+  let db: DB;
+  let chat: ChatRepo;
+  let dataDir: string;
+  let projectId: string;
+  let altConvId: string;
+  let svc: ChatWorkService;
+  let wt: { removed: string[]; deletedBranches: string[] };
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-stale-'));
+    db = openMemoryDatabase();
+    chat = new ChatRepo(db);
+    projectId = new ProjectRepo(db).create({
+      name: 'Demo', path: '/tmp/demo', defaultBranch: 'main', color: null, enabledPhases: [],
+      verifyCommands: [], automation: {}, mergeMode: 'ff', editorCmd: null, integrationMode: 'local',
+    }).id;
+    altConvId = chat.createConversation(projectId, 'work').id;
+    wt = { removed: [], deletedBranches: [] };
+
+    const worktrees = {
+      pathFor: (p: { id: string }, name: string) => join(dataDir, 'worktrees', p.id, name),
+      create: async () => join(dataDir, 'worktrees', 'neu'),
+      remove: async (_p: string, path: string) => {
+        wt.removed.push(path);
+      },
+      deleteBranch: async (_p: string, branch: string) => {
+        wt.deletedBranches.push(branch);
+      },
+    } as unknown as WorktreeManager;
+    const ptys = {
+      forConversation: () => undefined,
+      spawn: async () => ({ id: 'neue-session', pty: { pid: 4711 }, conversationId: null }),
+    } as unknown as PtySessionManager;
+
+    svc = new ChatWorkService({
+      projects: new ProjectRepo(db), chatRepo: chat, sessions: new SessionRepo(db),
+      attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
+      meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, worktrees),
+      worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
+    });
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
+    vi.mocked(locateTranscript).mockReturnValue('/tmp/transkript.jsonl'); // Resume-Kandidat lebt
   });
 
-  it('false, wenn die frühere Session nie eine Claude-Session-ID erhielt', () => {
-    const c = conv();
-    sessionsRepo.create({ id: 's1', featureId: null, conversationId: c.id, projectId, kind: 'chat_work', pid: 123 });
-    expect(svc.workPaused(c)).toBe(false);
+  afterEach(() => {
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  /** Pausierte Vorgänger-Session, deren Ende `vorMs` zurückliegt. */
+  const pausierteSession = (vorMs: number) => {
+    const sessions = new SessionRepo(db);
+    sessions.create({ id: 'alt', featureId: null, conversationId: altConvId, projectId, kind: 'chat_work', pid: 1 });
+    sessions.setClaudeSessionId('alt', 'claude-alt');
+    sessions.end('alt');
+    db.prepare('UPDATE sessions SET ended_at=? WHERE id=?').run(Date.now() - vorMs, 'alt');
+  };
+
+  it('beginnt nach abgelaufener Pause eine frische Unterhaltung und meldet es', async () => {
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 60_000);
+    chat.createMessage({ conversationId: altConvId, role: 'user', content: 'BANANE', status: 'complete' });
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(true);
+    expect(chat.getActive(projectId)!.id).not.toBe(altConvId);
+    expect(chat.getConversation(altConvId)!.endedAt).not.toBeNull();
+    expect(chat.listMessages(altConvId).map((m) => m.content)).toContain('BANANE'); // Verlauf bleibt
+    expect(wt.deletedBranches).toEqual([`chat/${altConvId}`]); // saubere Arbeitskopie abgeräumt
+  });
+
+  it('lässt eine dirty Arbeitskopie stehen, statt sie ungefragt zu verwerfen', async () => {
+    vi.mocked(isCleanWorkingTree).mockResolvedValue(false);
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs + 60_000);
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(true);
+    // Die alte Arbeitskopie bleibt samt Branch stehen (die Anlage der neuen räumt nur ihren
+    // eigenen, nicht vorhandenen Pfad auf).
+    expect(wt.removed).not.toContain(join(dataDir, 'worktrees', projectId, `chat-${altConvId}`));
+    expect(wt.deletedBranches).toEqual([]);
+  });
+
+  it('setzt eine noch fortsetzbare Pause fort — dieselbe Unterhaltung, kein Hinweis', async () => {
+    pausierteSession(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs - 60_000);
+
+    const res = await svc.ensure(projectId);
+
+    expect(res.startedFresh).toBe(false);
+    expect(chat.getActive(projectId)!.id).toBe(altConvId);
   });
 });
 
@@ -833,7 +960,7 @@ describe('ChatWorkService — Neustart-Angebot aus Kosten', () => {
     pausiere(ctx);
 
     const p = profil(ctx)!;
-    expect(ctx.svc.workPaused(ctx.chatRepo.getActive(ctx.projectId)!)).toBe(true);
+    expect(ctx.svc.pauseState(ctx.chatRepo.getActive(ctx.projectId)!).paused).toBe(true);
     expect(p.reasons).toEqual(['idle', 'history_size', 'context_per_turn']);
     expect(p.message).toContain('keine Aktivität');
     expect(p.message).toContain('16,8 MB');

@@ -14,6 +14,12 @@
 export interface ChatHygieneLimits {
   /** Leerlaufzeit, nach der eine Chat-Session beendet wird (bestehende Mechanik). */
   readonly idleMs: number;
+  /**
+   * Leerlaufzeit der pausierten Unterhaltung, nach der „Chat fortsetzen" nicht mehr
+   * angeboten wird: Wer nach so langer Pause zurückkommt, beginnt eine neue Aufgabe —
+   * ein Resume läse den alten Verlauf ab da in jedem Turn erneut mit.
+   */
+  readonly resumeMaxIdleMs: number;
   /** Verlaufsgröße in Byte, ab der ein Neustart angeboten wird (FR-002). */
   readonly historyBytes: number;
   /** Gelesener Kontext je Turn, ab dem angeboten wird (FR-003). */
@@ -36,6 +42,7 @@ export interface ChatHygieneLimits {
  */
 export const CHAT_HYGIENE_LIMITS = {
   idleMs: 5 * 60_000,
+  resumeMaxIdleMs: 60 * 60_000,
   historyBytes: 8 * 1024 * 1024,
   cacheReadTokensPerTurn: 150_000,
   ratioTrigger: 300,
@@ -228,6 +235,62 @@ function reasonPhrase(reason: ChatRestartReason, profile: ChatCostProfile, limit
     case 'context_ratio':
       return `die letzten ${limits.ratioTurns} Turns lasen ${ratioLabel(profile.ratio)} Kontext je Ausgabe`;
   }
+}
+
+/**
+ * Pausenzustand einer Unterhaltung: Die Session lebt nicht mehr, der Verlauf schon. Ob
+ * „Chat fortsetzen" überhaupt noch angeboten wird, hängt allein an der Dauer der Pause —
+ * nach `resumeMaxIdleMs` beginnt das Öffnen des Chats eine frische Unterhaltung.
+ *
+ * Gemessen ab dem Ende der Session, nicht ab der letzten Eingabe: Der Leerlauf-Reaper
+ * beendet sie `idleMs` nach der letzten Zuwendung — die tatsächliche Ruhe ist also um
+ * diese Spanne länger als `idleMs` hier.
+ */
+export interface ChatPauseState {
+  /** Die Unterhaltung hatte eine echte Session, die nicht mehr läuft (Verlauf erhalten). */
+  paused: boolean;
+  /** Beginn der Pause (Ende der letzten Session); `null`, wenn nicht ermittelbar. */
+  since: number | null;
+  /** Dauer der Pause; `null` bei unbekanntem Beginn — nie `0` als Ersatz (FR-016). */
+  idleMs: number | null;
+  /**
+   * Fortsetzen wird angeboten. Bei unbekanntem Beginn ja: eine fehlende Messung ist kein
+   * Befund und darf keinen Verlauf verwerfen.
+   */
+  resumable: boolean;
+}
+
+/** Nicht pausiert — eine laufende (oder nie gestartete) Unterhaltung. */
+export const CHAT_NOT_PAUSED: ChatPauseState = {
+  paused: false,
+  since: null,
+  idleMs: null,
+  resumable: false,
+};
+
+/** Bewertet eine Pause: wie lange sie dauert und ob sie noch fortsetzbar ist. */
+export function evaluateChatPause(
+  input: { paused: boolean; since: number | null; now?: number },
+  limits: ChatHygieneLimits = CHAT_HYGIENE_LIMITS,
+): ChatPauseState {
+  if (!input.paused) return CHAT_NOT_PAUSED;
+  const idleMs = input.since === null ? null : Math.max(0, (input.now ?? Date.now()) - input.since);
+  return {
+    paused: true,
+    since: input.since,
+    idleMs,
+    resumable: idleMs === null || idleMs < limits.resumeMaxIdleMs,
+  };
+}
+
+/** Zeitspanne als kurzer Text: `weniger als 1 min`, `12 min`, `1 h`, `1 h 20 min`. */
+export function formatIdleSpan(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000);
+  if (minutes < 1) return 'weniger als 1 min';
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 }
 
 const sortReasons = (reasons: ChatRestartReason[]): ChatRestartReason[] =>

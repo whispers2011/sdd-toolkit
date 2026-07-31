@@ -22,8 +22,6 @@ export type View =
   | { kind: 'workflow' }
   /** Tool-weite Worktree-Übersicht (projektübergreifend, Einstieg über Einstellungen). */
   | { kind: 'worktrees' }
-  /** Testing-Lane: manuelle Abnahme der laufenden Anwendung vor dem Merge. */
-  | { kind: 'testing' }
   | { kind: 'console'; featureId: string }
   | { kind: 'shell'; projectId: string }
   | { kind: 'knowledge'; projectId: string }
@@ -63,9 +61,15 @@ export interface UiState {
   /**
    * Zuletzt ERHOBENER Stack-Zustand je Feature. Nur ein Zwischenspeicher für die
    * Aktions-Policy — die Wahrheit steht im Server, der bei jedem Abruf frisch
-   * probt (FR-023). Wird von StackPanel/TestingLane befüllt.
+   * probt (FR-023). Wird von StackPanel/Abnahme-Spalte befüllt.
    */
   featureStacks: Record<string, FeatureStackView>;
+  /**
+   * Offene Blocker-Befunde je Feature. Wie `featureStacks` nur ein
+   * Zwischenspeicher für die Aktions-Policy; durchgesetzt wird die Sperre
+   * serverseitig in `confirmManualTest`.
+   */
+  manualTestBlockers: Record<string, number>;
   /** Invalidierung nach Gate-Abschluss — Audit-Ansichten refetchen. */
   agentGateVersion: number;
   /** Zähler: hochgesetzt, wenn ein Lauf nachträglich verrechnet wurde (Telemetrie-Nachtrag). */
@@ -100,7 +104,8 @@ export type Action =
   | { type: 'execution_updated' }
   | { type: 'readiness_requested'; featureId: string }
   | { type: 'readiness_result'; payload: { featureId: string; hasChanges: boolean } }
-  | { type: 'stack_probed'; payload: { featureId: string; stack: FeatureStackView } };
+  | { type: 'stack_probed'; payload: { featureId: string; stack: FeatureStackView } }
+  | { type: 'manual_test_blockers'; payload: Record<string, number> };
 
 function reducer(state: UiState, action: Action): UiState {
   switch (action.type) {
@@ -270,6 +275,10 @@ function reducer(state: UiState, action: Action): UiState {
         ...state,
         featureStacks: { ...state.featureStacks, [action.payload.featureId]: action.payload.stack },
       };
+    // Ersetzend, nicht ergänzend: wer die Stufe verlässt, hat auch keine
+    // offenen Blocker mehr, die eine Schaltfläche sperren dürften.
+    case 'manual_test_blockers':
+      return { ...state, manualTestBlockers: action.payload };
     case 'readiness_requested': {
       return {
         ...state,
@@ -315,6 +324,9 @@ export function featureActionContext(state: UiState, featureId: string): Feature
     stackConfigured: stack !== null && isStackConfigured(stack),
     stackRunning: state.featureStacks[featureId]?.profile != null,
     stackCanStop: (stack?.stopCommand ?? '').trim() !== '',
+    // Wie `featureStacks`: der erhobene Stand füttert die Policy, die Oberfläche
+    // entscheidet nicht selbst. Gefüllt beim Laden der Abnahme-Spalte.
+    openBlockers: state.manualTestBlockers[featureId] ?? 0,
   };
 }
 
@@ -404,6 +416,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     reviewCommentsVersion: {},
     gateRunning: {},
     featureStacks: {},
+    manualTestBlockers: {},
     agentGateVersion: 0,
     executionsVersion: 0,
     integrationReadiness: {},

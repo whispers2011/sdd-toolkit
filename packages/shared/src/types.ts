@@ -458,6 +458,16 @@ export interface ChatWorkSessionInfo {
   branch: string;
 }
 
+/** Sichergestellte Arbeits-Session des Wissens-Chats. */
+export interface ChatWorkEnsureResult {
+  sessionId: string;
+  /**
+   * Statt fortgesetzt wurde eine frische Unterhaltung begonnen, weil die alte zu lange
+   * pausiert war (`CHAT_HYGIENE_LIMITS.resumeMaxIdleMs`) — das Panel sagt es an.
+   */
+  startedFresh: boolean;
+}
+
 /** Erfolgreicher Neustart des Wissens-Chats: frische, automatisch gestartete Session. */
 export interface ChatWorkRestartResult {
   sessionId: string;
@@ -930,7 +940,58 @@ export interface ManualTestDecision {
   decision: 'confirmed' | 'rejected';
   /** Pflicht bei 'rejected' (FR-029); null bei Bestätigung. */
   reason: string | null;
+  /** Abnahme-Runde, in der entschieden wurde (1-basiert). */
+  round: number;
   decidedAt: number;
+}
+
+/**
+ * Gewicht eines Abnahme-Befunds. Nur `blocker` sperrt die Annahme — sonst
+ * blockiert jede Kleinigkeit den Merge und das Gate wird umgangen.
+ */
+export type ManualTestSeverity = 'blocker' | 'rework' | 'note';
+
+export const MANUAL_TEST_SEVERITIES: readonly ManualTestSeverity[] = ['blocker', 'rework', 'note'];
+
+/**
+ * Ein Befund aus dem Durchklicken der laufenden Anwendung.
+ *
+ * Der Anker ist ein Ort in der ANWENDUNG (`where`, freier Text), nicht in einer
+ * Datei — darum keine Wiederverwendung von `ReviewComment`, dessen Anker
+ * Datei+Zeile ist.
+ *
+ * Befunde überleben die Runde: was nicht abgehakt wird, geht in die nächste
+ * Abnahme mit. Ohne diese Buchführung weiß nach zwei Runden niemand mehr, was
+ * bereits nachgeprüft war.
+ */
+export interface ManualTestFinding {
+  id: string;
+  featureId: string;
+  /** Runde, in der der Befund entstand (1-basiert). */
+  round: number;
+  /** Wo in der Anwendung — z. B. „Board → Karte öffnen"; null = allgemein. */
+  where: string | null;
+  text: string;
+  severity: ManualTestSeverity;
+  status: 'open' | 'resolved';
+  createdAt: number;
+  resolvedAt: number | null;
+}
+
+/** Ein noch nicht gespeicherter Befund, wie ihn der Abnahme-Dialog absendet. */
+export interface NewManualTestFinding {
+  where: string | null;
+  text: string;
+  severity: ManualTestSeverity;
+}
+
+/**
+ * Eingabe einer Ablehnung. Mindestens ein Befund ODER eine Anmerkung ist
+ * erforderlich — sonst wüsste der Wiedereinstieg nicht, was zu ändern ist.
+ */
+export interface ManualTestRejection {
+  comment?: string;
+  findings?: NewManualTestFinding[];
 }
 
 /** Zusammenstellung, die ein Mensch zur manuellen Abnahme braucht (FR-030). */
@@ -945,6 +1006,10 @@ export interface TestingLaneEntry {
   stack: FeatureStackView;
   /** Jüngste Entscheidung, falls es schon eine gab (z. B. frühere Ablehnung). */
   lastDecision: ManualTestDecision | null;
+  /** Laufende Abnahme-Runde (1 = erste Abnahme dieses Features). */
+  round: number;
+  /** Offene Befunde aus früheren Runden; ein offener `blocker` sperrt die Annahme. */
+  openFindings: ManualTestFinding[];
 }
 
 /** Wurzel der Antwort von GET /api/testing-lane. */

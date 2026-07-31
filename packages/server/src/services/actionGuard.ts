@@ -40,6 +40,8 @@ export interface ActionGuardDeps {
   projects?: ProjectRepo;
   /** Wird für dieses Feature ein Profil betrieben? (Absicht, nicht erhobener Status.) */
   stackRunning?: (featureId: string) => boolean;
+  /** Offene Blocker-Befunde früherer Abnahme-Runden; sperren nur die Annahme. */
+  openBlockers?: (featureId: string) => number;
 }
 
 /**
@@ -72,6 +74,7 @@ export class ActionGuard {
       stackConfigured: stack ? isStackConfigured(stack) : false,
       stackRunning: this.deps.stackRunning?.(featureId) ?? false,
       stackCanStop: (stack?.stopCommand ?? '').trim() !== '',
+      openBlockers: this.deps.openBlockers?.(featureId) ?? 0,
     };
   }
 

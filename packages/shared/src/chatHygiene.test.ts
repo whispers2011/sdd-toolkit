@@ -3,7 +3,9 @@ import {
   CHAT_HYGIENE_LIMITS,
   contextRatio,
   evaluateChatHygiene,
+  evaluateChatPause,
   formatHistorySize,
+  formatIdleSpan,
   ratioLabel,
   restartOfferMessage,
   type ChatHygieneInput,
@@ -257,9 +259,63 @@ describe('formatHistorySize / ratioLabel', () => {
   });
 });
 
+/**
+ * Nach langer Pause wird nicht mehr fortgesetzt: Wer nach Stunden zurückkommt, beginnt
+ * eine neue Aufgabe — der alte Verlauf würde ab da nur in jedem Turn mitgelesen.
+ */
+describe('evaluateChatPause — wie lange „Chat fortsetzen" angeboten wird', () => {
+  const T = 1_000_000_000;
+
+  it('nicht pausiert → keine Dauer, kein Angebot', () => {
+    expect(evaluateChatPause({ paused: false, since: T, now: T + 60_000 })).toEqual({
+      paused: false,
+      since: null,
+      idleMs: null,
+      resumable: false,
+    });
+  });
+
+  it('misst die Pause ab dem Ende der Session', () => {
+    const state = evaluateChatPause({ paused: true, since: T, now: T + 12 * 60_000 });
+    expect(state.idleMs).toBe(12 * 60_000);
+    expect(state.resumable).toBe(true);
+  });
+
+  it('genau auf der Grenze ist nicht mehr fortsetzbar', () => {
+    expect(evaluateChatPause({ paused: true, since: T, now: T + L.resumeMaxIdleMs - 1 }).resumable).toBe(true);
+    expect(evaluateChatPause({ paused: true, since: T, now: T + L.resumeMaxIdleMs }).resumable).toBe(false);
+  });
+
+  it('unbekannter Beginn verwirft keinen Verlauf (FR-016)', () => {
+    const state = evaluateChatPause({ paused: true, since: null, now: T });
+    expect(state.idleMs).toBeNull();
+    expect(state.resumable).toBe(true);
+  });
+
+  it('rückwärts laufende Uhr ergibt keine negative Dauer', () => {
+    expect(evaluateChatPause({ paused: true, since: T, now: T - 5_000 }).idleMs).toBe(0);
+  });
+});
+
+describe('formatIdleSpan', () => {
+  it('nennt Minuten, Stunden und beides zusammen', () => {
+    expect(formatIdleSpan(12 * 60_000)).toBe('12 min');
+    expect(formatIdleSpan(60 * 60_000)).toBe('1 h');
+    expect(formatIdleSpan(80 * 60_000)).toBe('1 h 20 min');
+  });
+
+  it('unter einer Minute wird nicht auf 0 min gerundet', () => {
+    expect(formatIdleSpan(20_000)).toBe('weniger als 1 min');
+  });
+});
+
 describe('Grenzwerte an einer Stelle (FR-018)', () => {
   it('trägt auch die bestehende Leerlaufzeit', () => {
     expect(L.idleMs).toBe(5 * 60_000);
+  });
+
+  it('trägt die Frist, nach der nicht mehr fortgesetzt wird', () => {
+    expect(L.resumeMaxIdleMs).toBe(60 * 60_000);
   });
 
   it('lässt sich ohne Testumbau nachjustieren — Grenzen sind Parameter', () => {

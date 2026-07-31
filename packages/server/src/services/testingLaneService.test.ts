@@ -175,6 +175,7 @@ describe('TestingLaneService: die fünf Pflichtangaben (FR-030, SC-009)', () => 
       featureId: feature.id,
       decision: 'rejected',
       reason: 'Der Knopf tut nichts.',
+      round: 1,
       decidedAt: 1000,
     });
 

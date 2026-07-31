@@ -28,7 +28,7 @@ export const STACK_PROFILE_META: Record<StackProfileName, { label: string; help:
   },
   full: {
     label: 'Voller Stack',
-    help: 'Fährt nur auf Anforderung aus der Testing-Lane hoch — der vollständige Stack des Features.',
+    help: 'Fährt nur auf Anforderung aus der Abnahme hoch — der vollständige Stack des Features.',
   },
   down: {
     label: 'Abbau',

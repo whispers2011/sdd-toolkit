@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ACTION_REASON } from '@sdd/shared';
-import type { LifecycleStageId } from '@sdd/shared';
+import { ACTION_REASON, initialPhases } from '@sdd/shared';
+import type { FeaturePhase, LifecycleStageId, PhaseMap } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
+import { StackRepo } from '../db/stackRepo.js';
 import {
   AttentionRepo,
   ExecutionRepo,
@@ -33,6 +34,7 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
   let worktrees: WorktreeManager;
   let features: FeatureRepo;
   let svc: MergeQueueService;
+  let stackRepo: StackRepo;
   let projectId: string;
   let executions: ExecutionRepo;
   let attention: AttentionRepo;
@@ -77,9 +79,11 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     executions = new ExecutionRepo(db);
     attention = new AttentionRepo(db);
     steps = new LifecycleStepRepo(db);
+    stackRepo = new StackRepo(db);
     mkdirSync(join(dataDir, 'logs'), { recursive: true });
 
     svc = new MergeQueueService({
+      stackRepo,
       projects,
       features,
       queue: new QueueRepo(db),
@@ -486,6 +490,14 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     return features.get(feature.id)!;
   }
 
+  /** Alle Schritte freigegeben — Ausgangslage für den Rücksprung auf `specify`. */
+  function approvedPhases(): PhaseMap {
+    const enabled: FeaturePhase[] = ['specify', 'plan', 'implement'];
+    const map = initialPhases(enabled);
+    for (const p of enabled) map[p] = { ...map[p]!, status: 'approved' };
+    return map;
+  }
+
   it('hält bei eingeschaltetem Gate auf der Abnahme an — VOR dem Review (FR-024)', async () => {
     const feature = await makeGatedFeature('gate-an');
 
@@ -542,23 +554,77 @@ describe('MergeQueueService.reconcileMergedLeftovers (Integration)', () => {
     await expect(svc.confirmManualTest(feature.id)).rejects.toThrow(/wartet nicht auf eine manuelle Abnahme/);
   });
 
-  /** FR-029 / Assumption: zurück in die Nacharbeit, nicht an den Anfang. */
-  it('führt eine Ablehnung mit Grund in die Nacharbeit zurück (FR-029)', async () => {
+  /**
+   * FR-029, neu ab 31.07.2026: zurück auf `specify`, nicht nach `implement`.
+   * Ein Feature erreicht die Abnahme nur nach Verifikation UND Review-Gate — was
+   * danach beim Durchklicken auffällt, ist eine Aussage über die Absicht.
+   */
+  it('setzt eine Ablehnung auf specify zurück und entwertet alles Nachgelagerte', async () => {
     const feature = await makeGatedFeature('gate-nein');
+    features.savePhases(feature.id, approvedPhases());
     await svc.beginIntegration(feature.id);
 
-    await svc.rejectManualTest(feature.id, 'Der Knopf tut nichts.');
+    await svc.rejectManualTest(feature.id, { comment: 'Der Knopf tut nichts.' });
 
     const fresh = features.get(feature.id)!;
     expect(fresh.integration).toBe('none');
     expect(fresh.reviewRejectedAt).not.toBeNull();
+    expect(fresh.phases.specify?.status).toBe('idle');
+    expect(fresh.phases.implement?.stale).toBe(true);
     expect(attention.listOpen(projectId).some((i) => i.kind === 'manual_test_due')).toBe(false);
   });
 
-  it('verlangt bei der Ablehnung einen Grund', async () => {
+  it('legt die Befunde an und startet den specify-Lauf mit dem kompilierten Auftrag', async () => {
+    const started: { phase: string; prompt?: string }[] = [];
+    svc.attachRework({
+      startPhaseRun: async (_id, phase, extraPrompt) => {
+        started.push({ phase, prompt: extraPrompt });
+        return { gateRunning: false };
+      },
+    });
+    const feature = await makeGatedFeature('gate-befunde');
+    features.savePhases(feature.id, approvedPhases());
+    await svc.beginIntegration(feature.id);
+
+    await svc.rejectManualTest(feature.id, {
+      comment: 'sonst in Ordnung',
+      findings: [
+        { where: 'Board → Karte öffnen', text: 'öffnet die Konsole', severity: 'blocker' },
+        { where: null, text: 'Speichern bleibt aktiv', severity: 'rework' },
+      ],
+    });
+
+    expect(stackRepo.openFindingsFor(feature.id)).toHaveLength(2);
+    expect(started).toHaveLength(1);
+    expect(started[0]!.phase).toBe('specify');
+    // Der Auftrag trägt die Befunde und die Anweisung, die Spezifikation zu
+    // ergänzen statt neu zu schreiben — sonst wäre der Befund nach einer Runde weg.
+    expect(started[0]!.prompt).toContain('Board → Karte öffnen');
+    expect(started[0]!.prompt).toContain('BESTEHENDE Spezifikation');
+  });
+
+  it('sperrt die Annahme, solange ein Blocker aus einer früheren Runde offen ist', async () => {
+    const feature = await makeGatedFeature('gate-blocker');
+    await svc.beginIntegration(feature.id);
+    stackRepo.addFinding({
+      featureId: feature.id,
+      round: 1,
+      where: null,
+      text: 'kippt beim Speichern um',
+      severity: 'blocker',
+      createdAt: Date.now(),
+    });
+
+    await expect(svc.confirmManualTest(feature.id)).rejects.toThrow(/Blocker/);
+    expect(features.get(feature.id)?.integration).toBe('awaiting_manual_test');
+  });
+
+  it('verlangt bei der Ablehnung einen Befund oder eine Anmerkung', async () => {
     const feature = await makeGatedFeature('gate-ohne-grund');
     await svc.beginIntegration(feature.id);
-    await expect(svc.rejectManualTest(feature.id, '   ')).rejects.toThrow(/Grund ist erforderlich/);
+    await expect(svc.rejectManualTest(feature.id, { comment: '   ' })).rejects.toThrow(
+      /Befund oder eine Anmerkung/,
+    );
     expect(features.get(feature.id)?.integration).toBe('awaiting_manual_test');
   });
 

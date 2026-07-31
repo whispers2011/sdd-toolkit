@@ -6,9 +6,11 @@
  */
 import type { FastifyInstance } from 'fastify';
 import type { TestingLaneService } from '../services/testingLaneService.js';
+import type { StackRepo } from '../db/stackRepo.js';
 
 export interface TestingLaneRouteDeps {
   testingLane: TestingLaneService;
+  stacks: StackRepo;
 }
 
 export function registerTestingLaneRoutes(app: FastifyInstance, deps: TestingLaneRouteDeps): void {
@@ -28,4 +30,36 @@ export function registerTestingLaneRoutes(app: FastifyInstance, deps: TestingLan
       }
     },
   );
+
+  /**
+   * Das „behoben?"-Häkchen der Folgerunde. Umkehrbar — wer versehentlich abhakt,
+   * bekommt den Befund zurück in die offene Liste. Was offen bleibt, geht in die
+   * nächste Ablehnung mit; ein offener Blocker sperrt die Annahme.
+   */
+  app.patch<{ Params: { id: string }; Body?: { status?: string } }>(
+    '/api/manual-test-findings/:id',
+    (req, reply) => {
+      const status = req.body?.status;
+      if (status !== 'open' && status !== 'resolved') {
+        void reply.code(400);
+        return { message: "status muss 'open' oder 'resolved' sein" };
+      }
+      const updated = deps.stacks.setFindingStatus(req.params.id, status, Date.now());
+      if (!updated) {
+        void reply.code(404);
+        return { message: 'Befund nicht gefunden' };
+      }
+      return updated;
+    },
+  );
+
+  /** Einen Befund verwerfen (versehentlich erfasst). */
+  app.delete<{ Params: { id: string } }>('/api/manual-test-findings/:id', (req, reply) => {
+    if (!deps.stacks.getFinding(req.params.id)) {
+      void reply.code(404);
+      return { message: 'Befund nicht gefunden' };
+    }
+    deps.stacks.removeFinding(req.params.id);
+    return { ok: true };
+  });
 }

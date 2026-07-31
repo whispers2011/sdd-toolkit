@@ -4,6 +4,7 @@ import type {
   FileChangeKind,
   FileChangeState,
   MainCheckoutInfo,
+  TestingLaneEntry,
   WorktreeEntry,
   WorktreeFileChange,
   WorktreeOverview as Overview,
@@ -169,6 +170,8 @@ export function WorktreeOverview() {
       )}
 
       {data?.disk.warn && <DiskWarning overview={data} />}
+
+      <RunningStacks />
 
       {!data && !error && <p className="text-sm text-zinc-600">Lade Worktree-Übersicht …</p>}
 
@@ -577,4 +580,85 @@ const TAG_TONE = {
 
 export function Tag({ tone, children }: { tone: keyof typeof TAG_TONE; children: React.ReactNode }) {
   return <span className={`rounded px-1.5 py-0.5 text-[10px] ${TAG_TONE[tone]}`}>{children}</span>;
+}
+
+/**
+ * Laufende Stacks des gewählten Projekts — Features, die Ports und Dienste
+ * belegen, ohne auf eine Abnahme zu warten.
+ *
+ * Diese Liste stand bis 31.07.2026 als Abschnitt „Läuft gerade" im Reiter
+ * „Testing-Lane". Der Reiter ist entfallen (die Abnahme findet auf der Karte in
+ * der Board-Spalte statt); die Liste gehört hierher, weil sie eine
+ * RESSOURCEN-Sicht ist und keine Entscheidungssicht: ohne sie wäre wieder
+ * unsichtbar, was im Hintergrund Dienste offen hält.
+ */
+function RunningStacks() {
+  const { state } = useStore();
+  const projectId = state.selectedProjectId;
+  const [entries, setEntries] = useState<TestingLaneEntry[]>([]);
+
+  useEffect(() => {
+    if (!projectId) {
+      setEntries([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .testingLane(projectId)
+      .then((view) => !cancelled && setEntries(view.running))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  if (entries.length === 0) return null;
+
+  return (
+    <section className="rounded border border-zinc-800">
+      <h2 className="border-b border-zinc-800 px-4 py-2 text-xs font-semibold text-zinc-300">
+        Laufende Stacks <span className="text-zinc-500">({entries.length})</span>
+      </h2>
+      <ul className="divide-y divide-zinc-800">
+        {entries.map((e) => (
+          <li key={e.featureId} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-xs">
+            <span className="font-medium text-zinc-200">{e.featureName}</span>
+            {e.stack.profile && <Tag tone="zinc">Profil {e.stack.profile}</Tag>}
+            {e.stack.url !== null ? (
+              <a
+                href={e.stack.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-sky-400 underline underline-offset-2 hover:text-sky-300"
+              >
+                {e.stack.url} ↗
+              </a>
+            ) : (
+              <span className="text-zinc-500">nicht erreichbar</span>
+            )}
+            <span className="ml-auto flex items-center gap-2 text-zinc-500">
+              {e.stack.services.map((s) => (
+                <span key={s.name} className="flex items-center gap-1">
+                  <span
+                    className={
+                      s.status === 'up'
+                        ? 'text-emerald-400'
+                        : s.status === 'down'
+                          ? 'text-zinc-600'
+                          : 'text-amber-400'
+                    }
+                    aria-hidden
+                  >
+                    ●
+                  </span>
+                  {s.name}
+                  <span className="tabular-nums">{s.port ?? '—'}</span>
+                </span>
+              ))}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }

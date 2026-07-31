@@ -341,7 +341,7 @@ export const INTEGRATION_STEPS: IntegrationStep[] = [
     id: 'manual_test',
     label: 'Manuelle Abnahme',
     detail:
-      'Testing-Lane: vollen Stack starten, die laufende Anwendung durchklicken, bestätigen oder mit Grund ablehnen.',
+      'Spalte „Abnahme": vollen Stack starten, die laufende Anwendung durchklicken, bestätigen oder mit Befunden ablehnen. Eine Ablehnung setzt das Feature auf specify zurück.',
     icon: '🧪',
     requires: 'manualTestGate',
     // Kein `humanUnless`: die Abnahme ist IMMER menschlich — es gibt keinen

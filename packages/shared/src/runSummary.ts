@@ -5,6 +5,7 @@
  * Verbrauch in Spezifikation vs. Coding vs. Overhead. Reine Funktionen, keine IO.
  */
 import { FEATURE_PHASES, type ExecutionRecord, type Feature, type IntegrationStage } from './types.js';
+import { featureProgressLabel } from './workflowModel.js';
 import type { CostRollup, TokensSource } from './costBreakdown.js';
 
 export type RunCategory = 'spec' | 'coding' | 'overhead' | 'chat';
@@ -58,7 +59,19 @@ export interface RunSummary {
   projectId: string;
   branch: string;
   integration: IntegrationStage;
+  /**
+   * Bearbeitungsstand als Satzteil („Umsetzen läuft", „Bereit zum Review", „Abgeschlossen").
+   * Dieselbe Ableitung wie in der Worktree-Übersicht — ein Lauf vor der Integration hiess in
+   * dieser Liste bisher nur „offen" und verriet den Prozessschritt nicht.
+   */
+  progressLabel: string;
   archived: boolean;
+  /**
+   * Die Arbeitskopie existiert noch — nur dann lässt sie sich öffnen. Nach dem Merge
+   * wird sie entfernt; ein Öffnen-Knopf würde dann den Haupt-Checkout zeigen und damit
+   * etwas anderes, als er verspricht.
+   */
+  hasWorktree: boolean;
   /** Erste Execution des Laufs (0, wenn noch keine existiert). */
   startedAt: number;
   /** Letzte Aktivität (Ende bzw. Start der jüngsten Execution). */
@@ -191,7 +204,9 @@ function buildOne(feature: Feature, executions: ExecutionRecord[]): RunSummary {
     projectId: feature.projectId,
     branch: feature.branch,
     integration: feature.integration,
+    progressLabel: featureProgressLabel(feature),
     archived: feature.archivedAt !== null,
+    hasWorktree: feature.worktreePath !== null,
     startedAt,
     lastActivityAt,
     running,

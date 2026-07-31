@@ -50,6 +50,7 @@ function ctx(overrides: Partial<FeatureActionContext> = {}): FeatureActionContex
     stackConfigured: true,
     stackRunning: true,
     stackCanStop: true,
+    openBlockers: 0,
     ...overrides,
   };
 }
@@ -444,6 +445,7 @@ function generatedContexts(): FeatureActionContext[] {
                     stackConfigured,
                     stackRunning: stackConfigured,
                     stackCanStop: stackConfigured,
+                    openBlockers: 0,
                   });
                 }
               }

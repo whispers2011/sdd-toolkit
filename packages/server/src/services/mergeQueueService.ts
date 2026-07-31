@@ -4,9 +4,12 @@ import { writeFile } from 'node:fs/promises';
 import {
   ACTION_REASON,
   alreadyIntegratingReason,
+  compileManualTestPrompt,
+  discardPhase,
   isValidBranchName,
   manualTestDueMessage,
   mergedNotificationBody,
+  orderedPhases,
   reopenLastPhase,
   reviewDueMessage,
   taskProgressText,
@@ -14,8 +17,10 @@ import {
 import type {
   ApproveMergeRequest,
   Feature,
+  FeaturePhase,
   IntegrationStage,
   LifecycleStageId,
+  ManualTestRejection,
   Project,
 } from '@sdd/shared';
 import type { AttentionRepo, ExecutionRepo, FeatureRepo, ProjectRepo, QueueRepo, SettingsRepo } from '../db/repos.js';
@@ -77,6 +82,19 @@ export interface MergeQueueDeps {
 }
 
 /**
+ * Der Teil des Orchestrators, den die Ablehnung der Abnahme braucht: einen
+ * Phasenlauf mit Auftrag starten. Bewusst schmal gehalten, damit die
+ * Spätverdrahtung nicht zur Hintertür in den ganzen Orchestrator wird.
+ */
+export interface PhaseRework {
+  startPhaseRun(
+    featureId: string,
+    phase: FeaturePhase,
+    extraPrompt?: string,
+  ): Promise<{ gateRunning: boolean }>;
+}
+
+/**
  * Merge-Queue (Alleinstellungsmerkmal): approvte Features werden pro Projekt
  * sequentiell integriert — rebase → Auto-Konfliktauflösung → Verifikation →
  * merge → Cleanup. Scheitert etwas, wird eskaliert statt blind gemergt.
@@ -84,8 +102,18 @@ export interface MergeQueueDeps {
 export class MergeQueueService {
   private engine = new MergeEngine();
   private working = new Set<string>(); // projectIds mit aktivem Worker
+  private rework: PhaseRework | null = null;
 
   constructor(private deps: MergeQueueDeps) {}
+
+  /**
+   * Orchestrator nachreichen — dieselbe Spätverdrahtung wie
+   * `orchestrator.attachMergeQueue()`, weil sich beide gegenseitig brauchen.
+   * Nur die Ablehnung der Abnahme nutzt ihn (Neustart des Lebenszyklus).
+   */
+  attachRework(rework: PhaseRework): void {
+    this.rework = rework;
+  }
 
   /**
    * Nach Server-Neustart: unterbrochene Queue-Items wieder aufnehmen. Ein Worker,
@@ -284,12 +312,27 @@ export class MergeQueueService {
       throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
     }
 
-    this.deps.stackRepo?.addDecision({
-      featureId,
-      decision: 'confirmed',
-      reason: null,
-      decidedAt: Date.now(),
-    });
+    const repo = this.deps.stackRepo;
+
+    // Ein offener Blocker sperrt die Annahme — der einzige Grund, aus dem ein
+    // Befund den Merge aufhält. „Nacharbeit" und „Hinweis" gehen mit durch,
+    // sonst blockiert jede Kleinigkeit und das Gate wird umgangen.
+    const blockers = (repo?.openFindingsFor(featureId) ?? []).filter((f) => f.severity === 'blocker');
+    if (blockers.length > 0) {
+      throw new MergeApprovalError(
+        `${blockers.length} offene(r) Blocker aus einer früheren Abnahme — beheben und abhaken oder herabstufen.`,
+      );
+    }
+
+    if (repo) {
+      repo.addDecision({
+        featureId,
+        decision: 'confirmed',
+        reason: null,
+        round: repo.currentRound(featureId),
+        decidedAt: Date.now(),
+      });
+    }
 
     if (!(await this.runStageSteps(feature, project, 'after_stage', 'manual_test'))) return;
     emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
@@ -312,32 +355,82 @@ export class MergeQueueService {
   }
 
   /**
-   * Manuelle Abnahme ablehnen (FR-029): zurück in die Nacharbeit der
-   * Implementierung, NICHT an den Anfang des Lebenszyklus (Assumption der Spec).
-   * Derselbe Zurückweisungs-Pfad wie beim Review — kein zweiter Weg.
+   * Manuelle Abnahme ablehnen (FR-029): zurück auf `specify` — der GANZE
+   * Lebenszyklus läuft neu.
+   *
+   * Warum nicht zurück nach `implement` (so war es bis 31.07.2026): ein Feature
+   * erreicht die Abnahme nur, wenn Verifikation UND Review-Gate durch sind. Was
+   * beide maschinellen Tore passiert und woran ein Mensch dann beim
+   * Durchklicken scheitert, ist fast nie ein Umsetzungsfehler, sondern eine
+   * Aussage über die ABSICHT. Repariert man nur den Code, beschreibt die
+   * Spezifikation ab da etwas, das bewusst verworfen wurde — und jeder Agent,
+   * der sie danach als Kontext bekommt, erbt die Lüge.
+   *
+   * Die Befunde gehen deshalb als Auftrag in den `specify`-Lauf, mit der
+   * ausdrücklichen Anweisung, sie als Akzeptanzkriterium in die BESTEHENDE
+   * Spezifikation einzuarbeiten. Was nur im Prompt steht, ist nach einer Runde
+   * verloren; was in der Spec steht, ist das, wogegen die nächste Abnahme prüft.
    */
-  async rejectManualTest(featureId: string, reason: string): Promise<void> {
+  async rejectManualTest(featureId: string, input: ManualTestRejection): Promise<void> {
     const feature = this.mustFeature(featureId);
     if (feature.integration !== 'awaiting_manual_test') {
       throw new MergeApprovalError('Das Feature wartet nicht auf eine manuelle Abnahme.');
     }
-    const text = reason.trim();
-    if (text === '') throw new MergeApprovalError('Ein Grund ist erforderlich.');
 
-    this.deps.stackRepo?.addDecision({
+    const comment = (input.comment ?? '').trim();
+    const fresh = (input.findings ?? []).filter((f) => f.text.trim() !== '');
+    // Mindestens ein Befund ODER eine Anmerkung: ohne beides wüsste der
+    // Wiedereinstieg nicht, was an der Spezifikation zu ändern ist.
+    if (fresh.length === 0 && comment === '') {
+      throw new MergeApprovalError('Ein Befund oder eine Anmerkung ist erforderlich.');
+    }
+
+    const repo = this.deps.stackRepo;
+    const now = Date.now();
+    const round = repo?.currentRound(featureId) ?? 1;
+
+    for (const f of fresh) {
+      repo?.addFinding({
+        featureId,
+        round,
+        where: f.where?.trim() ? f.where.trim() : null,
+        text: f.text.trim(),
+        severity: f.severity,
+        createdAt: now,
+      });
+    }
+    repo?.addDecision({
       featureId,
       decision: 'rejected',
-      reason: text,
-      decidedAt: Date.now(),
+      reason: comment === '' ? null : comment,
+      round,
+      decidedAt: now,
     });
 
     this.deps.features.setIntegration(featureId, 'none');
     this.deps.features.setIntegrationTarget(featureId, null);
-    this.deps.features.savePhases(featureId, reopenLastPhase(feature.phases).phases);
-    this.deps.features.setReviewRejected(featureId, Date.now());
+
+    // Rücksprung: `discardPhase` setzt die Zielphase auf `idle` und entwertet
+    // alles Nachgelagerte als `stale` — die Artefakte bleiben liegen, sie sollen
+    // überarbeitet und nicht neu erstellt werden. Der Zustand hängt bewusst
+    // NICHT am Orchestrator; ohne ihn (Tests) stimmt die Buchführung trotzdem.
+    const target = 'specify' in feature.phases ? 'specify' : orderedPhases(feature.phases)[0];
+    this.deps.features.savePhases(
+      featureId,
+      target ? discardPhase(feature.phases, target).phases : reopenLastPhase(feature.phases).phases,
+    );
+    this.deps.features.setReviewRejected(featureId, now);
     emitAttentionResolved(this.deps.attention.resolveFor({ featureId, kinds: ['manual_test_due'] }));
-    const fresh = this.deps.features.get(featureId);
-    if (fresh) bus.emitEvent('feature_updated', fresh);
+
+    const updated = this.deps.features.get(featureId);
+    if (updated) bus.emitEvent('feature_updated', updated);
+
+    // Auftrag an den Agenten. Alle offenen Befunde gehen mit, nicht nur die
+    // dieser Runde — was aus Runde 1 nie abgehakt wurde, steht noch aus.
+    if (this.rework && target) {
+      const open = repo?.openFindingsFor(featureId) ?? [];
+      await this.rework.startPhaseRun(featureId, target, compileManualTestPrompt(open, comment, round));
+    }
   }
 
   /**

@@ -55,7 +55,7 @@ function NextAction({
   ctx,
   onReview,
   onConsole,
-  onTestingLane,
+  onBoard,
   onWorktrees,
   run,
 }: {
@@ -64,16 +64,16 @@ function NextAction({
   ctx: FeatureActionContext | null;
   onReview: (featureId: string) => void;
   onConsole: (featureId: string) => void;
-  onTestingLane: () => void;
+  onBoard: () => void;
   onWorktrees: () => void;
   run: (key: string, fn: () => Promise<unknown>) => void;
 }) {
   // Die Abnahme und ein fehlgeschlagener Stack werden dort erledigt, wo die
-  // laufende Anwendung steht — in der Lane (ui-contract §8).
+  // Karte liegt — in der Spalte „Abnahme" des Boards (ui-contract §8).
   if (ctx?.integration === 'awaiting_manual_test' || kind === 'manual_test_due' || kind === 'stack_failed') {
     return (
-      <button onClick={onTestingLane} className={BTN}>
-        Testing-Lane
+      <button onClick={onBoard} className={BTN}>
+        Zur Abnahme
       </button>
     );
   }
@@ -237,7 +237,7 @@ export function AttentionInbox() {
                 ctx={featureActionContext(state, item.featureId)}
                 onReview={setPortalFeature}
                 onConsole={(id) => dispatch({ type: 'set_view', view: { kind: 'console', featureId: id } })}
-                onTestingLane={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+                onBoard={() => dispatch({ type: 'set_view', view: { kind: 'board' } })}
                 onWorktrees={() => dispatch({ type: 'set_view', view: { kind: 'worktrees' } })}
                 run={runAction}
               />

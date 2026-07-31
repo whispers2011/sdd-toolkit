@@ -7,6 +7,7 @@ import { initialPhases, type Feature, type IntegrationStage, type Project, type 
 import { buildAllowedOrigins } from '../api/originGuard.js';
 import { buildServer, type ApiDeps } from '../api/server.js';
 import { openMemoryDatabase, type DB } from '../db/database.js';
+import { StackRepo } from '../db/stackRepo.js';
 import {
   AttentionRepo,
   ChatRepo,
@@ -523,6 +524,7 @@ describe('API — die beiden HTTP-Auflösewege', () => {
       queue: new QueueRepo(db),
       settings: new SettingsRepo(db),
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       orchestrator: { reconcileOpenAttention: () => {}, isGateRunning: () => false },
       mergeQueue: {},
       ptys: { forFeature: () => undefined, sendPrompt: () => {} },

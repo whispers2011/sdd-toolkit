@@ -234,6 +234,8 @@ async function main(): Promise<void> {
     stackRepo,
   });
   orchestrator.attachMergeQueue(mergeQueue);
+  // Gegenrichtung: die Ablehnung der Abnahme startet den Lebenszyklus neu.
+  mergeQueue.attachRework(orchestrator);
 
   // Testing-Lane: liest zusammen, entscheidet nichts selbst — die Übergänge der
   // Stufe liegen im MergeQueueService (FR-028/FR-029).
@@ -369,6 +371,7 @@ async function main(): Promise<void> {
     worktreeOverview,
     stackService,
     testingLane,
+    stackRepo,
     resourceMonitor,
     outageMonitor,
     worktrees,

@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import {
   CHAT_HYGIENE_LIMITS,
+  CHAT_NOT_PAUSED,
   displayStatus,
   evaluateChatHygiene,
+  evaluateChatPause,
   parseSessionFeatures,
   resolveAutomation,
   restartOfferMessage,
@@ -12,8 +14,10 @@ import {
   type ChatCostProfile,
   type ChatFeatureProposal,
   type ChatOfferWatermark,
+  type ChatPauseState,
   type ChatRestartReason,
   type ChatTurnUsage,
+  type ChatWorkEnsureResult,
   type ChatWorkRestartNeedsConfirm,
   type ChatWorkRestartResult,
   type ChatWorkSessionInfo,
@@ -133,9 +137,13 @@ export class ChatWorkService {
    * beide „keine Session" und spawnten beide eine: am 28.07.2026 fünfmal beobachtet,
    * zuletzt mit zwei arbeitenden Claude-Prozessen in derselben Arbeitskopie.
    */
-  async ensure(projectId: string): Promise<{ sessionId: string }> {
-    const live = await this.deps.sessionCore.ensure(`chat:${projectId}`, () => {
+  async ensure(projectId: string): Promise<ChatWorkEnsureResult> {
+    let startedFresh = false;
+    const live = await this.deps.sessionCore.ensure(`chat:${projectId}`, async () => {
       const project = this.mustProject(projectId);
+      // Zu lange pausiert → die alte Unterhaltung endet hier, `ensureActive` legt gleich
+      // darauf eine frische an: Öffnen startet dann automatisch einen neuen Chat.
+      startedFresh = await this.retireStaleConversation(project);
       const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
       const worktreeName = `chat-${conv.id}`;
 
@@ -162,7 +170,52 @@ export class ChatWorkService {
             : new ChatError(503, `Session konnte nicht gestartet werden: ${err.message}`),
       };
     });
-    return { sessionId: live.id };
+    if (startedFresh && live.conversationId) {
+      bus.emitEvent('chat_updated', { projectId, conversationId: live.conversationId });
+    }
+    return { sessionId: live.id, startedFresh };
+  }
+
+  /**
+   * Eine zu lange pausierte Unterhaltung beenden, damit `ensure()` eine frische beginnt.
+   * Der Verlauf bleibt lesbar (Nachrichten in der DB, Transkript auf der Platte) — verworfen
+   * wird nur die Fortsetzung, die jeden weiteren Turn mit dem alten Kontext belastet hätte.
+   *
+   * Die Arbeitskopie wird nur abgeräumt, wenn nichts Unbestätigtes darin steht. Anders als
+   * beim ausgelösten Neustart (FR-006) fragt hier niemand — also wird auch nichts verworfen:
+   * Eine dirty Arbeitskopie bleibt samt Branch liegen und ist über die Worktree-Übersicht
+   * erreichbar.
+   *
+   * @returns ob eine Unterhaltung beendet wurde
+   */
+  private async retireStaleConversation(project: Project): Promise<boolean> {
+    const conv = this.deps.chatRepo.getActive(project.id);
+    if (!conv) return false;
+    const pause = this.pauseState(conv);
+    if (!pause.paused || pause.resumable) return false;
+
+    const worktreePath = this.deps.worktrees.pathFor(project, `chat-${conv.id}`);
+    let clean: boolean;
+    try {
+      clean = await isCleanWorkingTree(worktreePath);
+    } catch {
+      clean = true; // Worktree existiert nicht (mehr) → nichts zu verlieren
+    }
+    if (clean) {
+      await this.deps.worktrees.remove(project.path, worktreePath, { force: true }).catch(() => {});
+      await this.deps.worktrees.deleteBranch(project.path, this.branchFor(conv.id)).catch(() => {});
+    } else {
+      console.log(
+        `[chatWork] Unterhaltung ${conv.id} nach ${Math.round((pause.idleMs ?? 0) / 60_000)} min Pause beendet; ` +
+          `Arbeitskopie ${worktreePath} bleibt (unbestätigte Änderungen)`,
+      );
+    }
+
+    this.proposals.delete(conv.id);
+    this.lastMarker.delete(conv.id);
+    this.hygiene.delete(conv.id); // frische Unterhaltung startet mit leerer Bewertung (FR-012)
+    this.deps.chatRepo.endConversation(conv.id);
+    return true;
   }
 
   /**
@@ -248,13 +301,22 @@ export class ChatWorkService {
 
   /**
    * „Pausiert": Die Unterhaltung hatte schon eine echte Session, die aber nicht mehr
-   * läuft (Leerlauf-Reaper oder Server-Neustart) und sich fortsetzen ließe. Signal für
-   * das Panel, den Nutzer zu fragen (fortsetzen ODER neu) statt still zu resumen.
+   * läuft (Leerlauf-Reaper oder Server-Neustart). Signal für das Panel, den Nutzer zu
+   * fragen (fortsetzen ODER neu) statt still zu resumen.
+   *
+   * Wie lange die Pause dauert, entscheidet mit, ob überhaupt noch gefragt wird: Ab
+   * `resumeMaxIdleMs` ist der Verlauf nicht mehr fortsetzbar — `ensure()` beginnt dann
+   * eine frische Unterhaltung, statt einen alten Verlauf in jeden weiteren Turn zu ziehen.
+   *
+   * Gemessen wird ab dem Ende der letzten Session. Fehlt `ended_at` (Session-Zeile aus
+   * einem harten Absturz), zählt ihr Beginn — nach einem regulären Neustart setzt
+   * `reapOnBoot()` das Ende ohnehin auf die Bootzeit, die Pause beginnt dort also neu.
    */
-  workPaused(conversation: ChatConversation): boolean {
-    if (this.deps.ptys.forConversation(conversation.id)) return false; // läuft → nicht pausiert
+  pauseState(conversation: ChatConversation, now: number = Date.now()): ChatPauseState {
+    if (this.deps.ptys.forConversation(conversation.id)) return CHAT_NOT_PAUSED; // läuft
     const prev = this.deps.sessions.latestForConversation(conversation.id);
-    return !!prev?.claude_session_id; // es gab bereits eine echte Session → fortsetzbar
+    if (!prev?.claude_session_id) return CHAT_NOT_PAUSED; // nie eine echte Session → nichts zu pausieren
+    return evaluateChatPause({ paused: true, since: prev.ended_at ?? prev.created_at, now });
   }
 
   // ---------- Feature-Vorschläge ----------
@@ -461,7 +523,7 @@ export class ChatWorkService {
   costProfileFor(conversation: ChatConversation): ChatCostProfile | null {
     const stored = this.hygiene.get(conversation.id)?.profile ?? null;
     if (!stored) return null;
-    if (!this.workPaused(conversation) || stored.reasons.includes('idle')) return stored;
+    if (!this.pauseState(conversation).paused || stored.reasons.includes('idle')) return stored;
     const reasons: ChatRestartReason[] = ['idle', ...stored.reasons];
     const withIdle: ChatCostProfile = { ...stored, reasons };
     return { ...withIdle, message: restartOfferMessage(withIdle) };

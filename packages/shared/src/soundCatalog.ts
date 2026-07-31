@@ -75,16 +75,16 @@ const ATTENTION_LABELS: Record<AttentionKind, string> = {
 };
 
 /**
- * Die WhisperM8-Regel: Rückfragen waren bisher bewusst lautlos, damit viele
- * parallele Agents keinen Ton-Spam erzeugen. Wer sie jetzt hörbar macht, soll
- * wissen, warum sie es nicht waren (FR-014, S1.4).
+ * Rückfragen waren bisher bewusst lautlos, damit viele parallele Agents keinen
+ * Ton-Spam erzeugen. Wer sie jetzt hörbar macht, soll wissen, warum sie es nicht
+ * waren (FR-014, S1.4).
  */
-const WHISPER_HINT =
-  'War bisher bewusst lautlos: bei vielen parallelen Agents erzeugen Rückfragen sonst Dauerton (WhisperM8-Regel).';
+const SILENT_BY_DEFAULT_HINT =
+  'War bisher bewusst lautlos: bei vielen parallelen Agents erzeugen Rückfragen sonst Dauerton.';
 
 const ATTENTION_HINTS: Partial<Record<AttentionKind, string>> = {
-  awaiting_input: WHISPER_HINT,
-  permission_request: WHISPER_HINT,
+  awaiting_input: SILENT_BY_DEFAULT_HINT,
+  permission_request: SILENT_BY_DEFAULT_HINT,
 };
 
 /** Die zwei heute hörbaren `notification`-Arten (research D1). */

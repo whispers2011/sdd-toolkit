@@ -17,6 +17,8 @@ import type {
   ChatCostProfile,
   ChatFeatureProposal,
   ChatMessage,
+  ChatPauseState,
+  ChatWorkEnsureResult,
   ChatWorkRestartNeedsConfirm,
   ChatWorkRestartResult,
   ChatWorkSessionInfo,
@@ -31,6 +33,8 @@ import type {
   SaveFeatureArtifactResult,
   FeatureProposalStatus,
   FeatureStackView,
+  ManualTestFinding,
+  ManualTestRejection,
   TestingLaneView,
   JiraConnectionStatus,
   JiraImportResult,
@@ -74,8 +78,11 @@ export interface ChatState {
   conversation: ChatConversation | null;
   messages: ChatMessage[];
   workSession?: ChatWorkSessionInfo | null;
-  /** Session war live, ist aber pausiert (Leerlauf-Reaper) und fortsetzbar → Panel fragt nach. */
-  workPaused?: boolean;
+  /**
+   * Session war live, läuft nicht mehr (Leerlauf-Reaper) → Panel fragt nach, statt still zu
+   * resumen. Ab `resumeMaxIdleMs` Pause entfällt die Frage: dann beginnt ein neuer Chat.
+   */
+  workPause?: ChatPauseState;
   pendingFeatures?: ChatFeatureProposal | null;
   /** Bewertung der letzten Turn-Grenze: Verlaufsgröße, Verbrauch, Verhältnis, offenes Angebot. */
   costProfile?: ChatCostProfile | null;
@@ -388,7 +395,7 @@ export const api = {
     request<ChatMessage>('PATCH', `/api/chat/messages/${messageId}/proposal`, { status, featureId }),
   // Projekt-Chat als vollwertige Session
   ensureChatWorkSession: (projectId: string) =>
-    request<{ sessionId: string }>('POST', `/api/projects/${projectId}/chat/work/session`),
+    request<ChatWorkEnsureResult>('POST', `/api/projects/${projectId}/chat/work/session`),
   /** Neustart: frische Session. 409 → { needsConfirm, reason }; sonst { sessionId, conversationId }. */
   restartChatWorkSession: async (
     projectId: string,
@@ -484,9 +491,19 @@ export const api = {
     ),
   confirmManualTest: (featureId: string) =>
     request<Feature>('POST', `/api/features/${featureId}/manual-test/confirm`),
-  /** Ablehnen; der Grund ist Pflicht (FR-029). */
-  rejectManualTest: (featureId: string, reason: string) =>
-    request<Feature>('POST', `/api/features/${featureId}/manual-test/reject`, { reason }),
+  /**
+   * Ablehnen: Befunde und/oder Anmerkung (mindestens eines). Der Server legt
+   * die Befunde an, setzt das Feature auf `specify` zurück und startet den Lauf
+   * mit dem kompilierten Auftrag.
+   */
+  rejectManualTest: (featureId: string, input: ManualTestRejection) =>
+    request<Feature>('POST', `/api/features/${featureId}/manual-test/reject`, input),
+  /** „behoben?"-Häkchen der Folgerunde; umkehrbar. */
+  setFindingStatus: (findingId: string, status: 'open' | 'resolved') =>
+    request<ManualTestFinding>('PATCH', `/api/manual-test-findings/${findingId}`, { status }),
+  /** Einen versehentlich erfassten Befund verwerfen. */
+  removeFinding: (findingId: string) =>
+    request<{ ok: true }>('DELETE', `/api/manual-test-findings/${findingId}`),
   /** Fehlgeschlagenes Aufräumen erneut anstoßen (FR-037). */
   retryCleanup: (featureId: string) =>
     request<{ cleaned: boolean; worktreePath: string | null; cleanupError: string | null }>(

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
   CHAT_HYGIENE_LIMITS,
+  CHAT_NOT_PAUSED,
   formatHistorySize,
+  formatIdleSpan,
   ratioLabel,
   type ChatCostProfile,
 } from '@sdd/shared';
@@ -44,6 +46,10 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const [size, setSize] = useState(loadSize);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [restarting, setRestarting] = useState(false);
+  /** Beim Öffnen wurde ein neuer Chat begonnen, weil der alte zu lange ruhte — wird angesagt. */
+  const [startedFresh, setStartedFresh] = useState(false);
+  /** Uhr für die laufende Pause: nur damit das Angebot verschwindet, wenn sie abläuft. */
+  const [now, setNow] = useState(() => Date.now());
 
   const load = () =>
     void api
@@ -51,21 +57,25 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
       .then(setChat)
       .catch((e: Error) => setError(e.message));
 
-  // Beim Öffnen: erst den Zustand prüfen. Eine wegen Inaktivität pausierte (fortsetzbare)
-  // Session wird NICHT still resumt — stattdessen fragt die Karte den Nutzer. Eine frische
-  // Unterhaltung startet wie gehabt automatisch.
+  // Beim Öffnen: erst den Zustand prüfen. Eine wegen Inaktivität pausierte, noch fortsetzbare
+  // Session wird NICHT still resumt — stattdessen fragt die Karte den Nutzer. Ist die Pause
+  // abgelaufen, beginnt `ensure()` serverseitig eine frische Unterhaltung; der alte Verlauf
+  // wird also nicht wieder in jeden Turn gezogen. Eine frische startet wie gehabt automatisch.
   useEffect(() => {
     let cancelled = false;
     setReady(false);
     setError(null);
+    setStartedFresh(false);
     void api
       .getChat(projectId)
       .then((st) => {
         if (cancelled) return undefined;
         setChat(st);
-        if (st.workPaused && !st.workSession) return undefined; // pausiert → Karte, nicht starten
-        return api.ensureChatWorkSession(projectId).then(() => {
+        setNow(Date.now());
+        if (st.workPause?.paused && st.workPause.resumable && !st.workSession) return undefined; // → Karte
+        return api.ensureChatWorkSession(projectId).then((res) => {
           if (cancelled) return;
+          setStartedFresh(res.startedFresh);
           setReady(true);
           load();
         });
@@ -91,8 +101,14 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const status = liveWork?.status ?? chat?.workSession?.status ?? 'idle';
   const projectName = state.app?.projects.find((p) => p.id === projectId)?.name ?? '';
   // Wegen 5 min Inaktivität pausiert: Session beendet, Verlauf erhalten. Der Nutzer
-  // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird.
-  const paused = !!chat?.workPaused;
+  // entscheidet, ob fortgesetzt (claude --resume) oder frisch begonnen wird — bis die Pause
+  // `resumeMaxIdleMs` erreicht: dann steht nur noch der neue Chat zur Wahl.
+  const pause = chat?.workPause ?? null;
+  const paused = !!pause?.paused;
+  // Der Server liefert den Stand des Abrufs; hier läuft die Uhr weiter, damit ein offenes
+  // Panel nach Ablauf der Pause kein Fortsetzen mehr anbietet.
+  const pausedMs = pause?.since != null ? Math.max(0, now - pause.since) : (pause?.idleMs ?? null);
+  const resumable = pausedMs === null ? !!pause?.resumable : pausedMs < CHAT_HYGIENE_LIMITS.resumeMaxIdleMs;
   // Bewertung der letzten Turn-Grenze. Der Verlauf kann auch aus Kosten teuer geworden sein —
   // dann trägt entweder die Pausiert-Karte den Grund mit oder der Streifen über der Konsole
   // fragt, nie beides (FR-013).
@@ -102,12 +118,20 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const pausedMessage =
     costReasons.length > 0 && costProfile?.message
       ? costProfile.message
-      : 'Seit 5 min keine Aktivität — die Session wurde beendet. Dein Verlauf ist erhalten.';
+      : `Nach ${formatIdleSpan(CHAT_HYGIENE_LIMITS.idleMs)} ohne Aktivität wurde die Session beendet. Dein Verlauf ist erhalten.`;
 
   // Bei neuem Vorschlag alle Features vorauswählen.
   useEffect(() => {
     if (pending) setSelected(new Set(pending.features.map((f) => f.name)));
   }, [pending?.id]);
+
+  // Solange pausiert wird, läuft die Uhr mit: Ohne sie bliebe „Chat fortsetzen" auch nach
+  // Ablauf der Pause stehen — es vergeht nur Zeit, es kommt kein Ereignis vom Server.
+  useEffect(() => {
+    if (!paused) return;
+    const t = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, [paused]);
 
   const toggle = (name: string) =>
     setSelected((cur) => {
@@ -163,7 +187,7 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
   const resume = () => {
     setError(null);
     dismissOffer();
-    setChat((c) => (c ? { ...c, workPaused: false } : c));
+    setChat((c) => (c ? { ...c, workPause: CHAT_NOT_PAUSED } : c));
     setReady(true);
   };
 
@@ -273,6 +297,24 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
         </div>
       )}
 
+      {/* Beim Öffnen wurde nicht fortgesetzt, sondern neu begonnen — das sagt das Panel an,
+          damit niemand einen leeren Verlauf für einen Fehler hält. */}
+      {startedFresh && (
+        <div className="flex items-center gap-2 border-b border-sky-900 bg-sky-950/50 px-3 py-1.5 text-xs text-sky-200">
+          <span className="min-w-0 flex-1">
+            Der vorherige Chat ruhte länger als {formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} — er
+            wurde beendet und ein neuer gestartet. Sein Verlauf bleibt erhalten.
+          </span>
+          <button
+            onClick={() => setStartedFresh(false)}
+            title="Hinweis ausblenden"
+            className="text-sky-400 hover:text-sky-200"
+          >
+            <CloseIcon />
+          </button>
+        </div>
+      )}
+
       {/* Echte Konsole der Session — man tippt direkt hier hinein.
           Hintergrund folgt dem Terminal-Theme (zinc-950 ⇄ hell). */}
       <div className="min-h-0 flex-1 bg-zinc-950">
@@ -282,20 +324,34 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
               ⏸
             </span>
             <div>
-              <p className="text-sm font-semibold text-zinc-200">Chat wegen Inaktivität pausiert</p>
+              <p className="text-sm font-semibold text-zinc-200">
+                {resumable ? 'Chat wegen Inaktivität pausiert' : 'Chat pausiert — Fortsetzen entfällt'}
+              </p>
               <p className="mt-1 text-xs text-zinc-500">{pausedMessage}</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                {pausedMs !== null && `Pausiert seit ${formatIdleSpan(pausedMs)}. `}
+                {resumable
+                  ? `Nach ${formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} Pause startet stattdessen ein neuer Chat.`
+                  : `Länger als ${formatIdleSpan(CHAT_HYGIENE_LIMITS.resumeMaxIdleMs)} — der alte Verlauf wird nicht fortgesetzt, sonst zahlt ihn jeder weitere Turn mit.`}
+              </p>
             </div>
             <div className="flex flex-col gap-2">
-              <button
-                onClick={resume}
-                className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600"
-              >
-                Chat fortsetzen
-              </button>
+              {resumable && (
+                <button
+                  onClick={resume}
+                  className="rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600"
+                >
+                  Chat fortsetzen
+                </button>
+              )}
               <button
                 onClick={onRestart}
                 disabled={restarting}
-                className="rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40"
+                className={
+                  resumable
+                    ? 'rounded border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-40'
+                    : 'rounded bg-emerald-700 px-3 py-1.5 text-xs font-medium text-zinc-50 hover:bg-emerald-600 disabled:opacity-40'
+                }
               >
                 Neuen Chat starten
               </button>
@@ -305,7 +361,14 @@ export function ChatPanel({ projectId, onClose }: { projectId: string; onClose: 
           <TerminalPane
             key={conversationId ?? 'boot'}
             featureId={null}
-            getSession={() => api.ensureChatWorkSession(projectId)}
+            // Auch hier kann ein neuer Chat entstehen: Fortsetzen kurz vor Ablauf der Pause
+            // oder ein Reconnect danach landet serverseitig in einer frischen Unterhaltung.
+            getSession={() =>
+              api.ensureChatWorkSession(projectId).then((res) => {
+                if (res.startedFresh) setStartedFresh(true);
+                return res;
+              })
+            }
             focused
             fontSize={12}
           />

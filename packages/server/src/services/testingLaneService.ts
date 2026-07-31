@@ -6,7 +6,13 @@
  * MergeQueueService, weil dort die Integrations-Pipeline sitzt. Es entsteht kein
  * zweiter Weg aus `awaiting_manual_test` heraus.
  */
-import type { Feature, Project, TestingLaneEntry, TestingLaneView } from '@sdd/shared';
+import type {
+  Feature,
+  ManualTestRejection,
+  Project,
+  TestingLaneEntry,
+  TestingLaneView,
+} from '@sdd/shared';
 import type { FeatureRepo, ProjectRepo } from '../db/repos.js';
 import type { StackRepo } from '../db/stackRepo.js';
 import type { StackService } from './stackService.js';
@@ -63,6 +69,10 @@ export class TestingLaneService {
       stack: await this.deps.stackService.probe(feature, project, opts),
       // Eine frühere Ablehnung bleibt am Eintrag sichtbar (FR-029).
       lastDecision: this.deps.stacks.lastDecision(feature.id),
+      round: this.deps.stacks.currentRound(feature.id),
+      // Was in einer früheren Runde nicht abgehakt wurde, steht noch aus — ein
+      // offener Blocker sperrt die Annahme.
+      openFindings: this.deps.stacks.openFindingsFor(feature.id),
     };
   }
 
@@ -82,7 +92,7 @@ export class TestingLaneService {
     await this.deps.mergeQueue.confirmManualTest(featureId);
   }
 
-  async reject(featureId: string, reason: string): Promise<void> {
-    await this.deps.mergeQueue.rejectManualTest(featureId, reason);
+  async reject(featureId: string, input: ManualTestRejection): Promise<void> {
+    await this.deps.mergeQueue.rejectManualTest(featureId, input);
   }
 }

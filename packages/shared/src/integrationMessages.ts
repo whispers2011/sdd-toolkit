@@ -47,7 +47,7 @@ export function reviewDueMessage(f: NamedFeature, opts: { verificationConfigured
  * Leere (FR-033).
  */
 export function manualTestDueMessage(f: NamedFeature, url: string | null): string {
-  const adresse = url ?? 'keine erreichbare Adresse — Stack in der Testing-Lane starten';
+  const adresse = url ?? 'keine erreichbare Adresse — Stack auf der Karte starten';
   return `${f.name}: wartet auf manuelle Abnahme — ${adresse}${TRENNER}${taskProgressText(f)}`;
 }
 

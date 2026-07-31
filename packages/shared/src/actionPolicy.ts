@@ -97,6 +97,11 @@ export interface FeatureActionContext {
   stackRunning: boolean;
   /** Ein Kommando zum Anhalten ist hinterlegt; ohne das ist nur Abbauen möglich. */
   stackCanStop: boolean;
+  /**
+   * Offene Blocker-Befunde aus früheren Abnahme-Runden. Sperren ausschließlich
+   * die Annahme — ablehnen bleibt möglich, sonst säße das Feature fest.
+   */
+  openBlockers: number;
 }
 
 // ---------- Stufen-Klassifikation (FR-025) ----------
@@ -202,7 +207,8 @@ export const DECISION_REASON: Record<
   string
 > = {
   awaiting_human_review: 'Das Feature wartet auf dein Review — dort entscheiden.',
-  awaiting_manual_test: 'Das Feature wartet auf die manuelle Abnahme — in der Testing-Lane entscheiden.',
+  awaiting_manual_test:
+    'Das Feature wartet auf die manuelle Abnahme — in der Spalte „Abnahme" entscheiden.',
   verify_failed: 'Die Verifikation ist fehlgeschlagen — Integration erneut anstoßen.',
   gate_failed: 'Das Review-Gate ist fehlgeschlagen — Integration erneut anstoßen.',
   conflict_escalated: 'Der Merge-Konflikt ist eskaliert — Integration erneut anstoßen.',
@@ -287,7 +293,7 @@ export function evaluateAction(
       return evaluateCleanup(action, ctx);
     case 'manual_test_confirm':
     case 'manual_test_reject':
-      return evaluateManualTest(ctx);
+      return evaluateManualTest(action, ctx);
     case 'stack_up':
     case 'stack_stop':
     case 'stack_restart':
@@ -305,11 +311,21 @@ export function evaluateAction(
  * über eine laufende Session: solange ein Agent schreibt, ist der Stand, den
  * jemand abnimmt, nicht der Stand, der gemergt wird.
  */
-function evaluateManualTest(ctx: FeatureActionContext): ActionVerdict {
+function evaluateManualTest(
+  action: 'manual_test_confirm' | 'manual_test_reject',
+  ctx: FeatureActionContext,
+): ActionVerdict {
   if (ctx.archived) return hidden(ACTION_REASON.archived);
   if (ctx.integration !== 'awaiting_manual_test') return hidden(ACTION_REASON.notAwaitingManualTest);
   const busy = busyReason(ctx);
   if (busy !== null) return blocked(busy);
+  // Ein Befund aus einer früheren Runde, der nie abgehakt wurde, hält die
+  // Annahme auf — aber nur als 'blocker'. Ablehnen bleibt in jedem Fall offen.
+  if (action === 'manual_test_confirm' && ctx.openBlockers > 0) {
+    return blocked(
+      `${ctx.openBlockers} offene(r) Blocker aus einer früheren Abnahme — beheben und abhaken oder herabstufen.`,
+    );
+  }
   return AVAILABLE;
 }
 

@@ -99,12 +99,13 @@ export function ReviewOverview() {
                   {INTEGRATION_STAGE_META.awaiting_manual_test.label}
                 </span>
                 {/* Kein Freigeben/Ablehnen hier: die Entscheidung fällt dort, wo
-                    die laufende Anwendung geprüft wird. */}
+                    die laufende Anwendung geprüft wird — auf der Karte in der
+                    Spalte „Abnahme". */}
                 <button
                   className="ml-auto rounded border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-                  onClick={() => dispatch({ type: 'set_view', view: { kind: 'testing' } })}
+                  onClick={() => dispatch({ type: 'set_view', view: { kind: 'board' } })}
                 >
-                  In der Testing-Lane prüfen
+                  Auf dem Board abnehmen
                 </button>
               </li>
             ))}

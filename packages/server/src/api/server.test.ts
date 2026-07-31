@@ -7,13 +7,16 @@ import type { FastifyInstance } from 'fastify';
 import {
   ACTION_REASON,
   BUSY_REASON,
+  CHAT_NOT_PAUSED,
   initialPhases,
   phaseRunningReason,
   type ChatCostProfile,
+  type ManualTestRejection,
   type FeaturePhase,
   type PhaseMap,
 } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
+import { StackRepo } from '../db/stackRepo.js';
 import {
   AttentionRepo,
   ExecutionRepo,
@@ -175,6 +178,7 @@ describe('Feature-Routen setzen die Aktions-Policy durch', () => {
       queue: new QueueRepo(db),
       settings: new SettingsRepo(db),
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       orchestrator: {
         isGateRunning: () => gateRunning,
         startPhaseRun: async (id: string) => {
@@ -457,6 +461,7 @@ describe('GET /api/telemetry/status', () => {
       sessions: new SessionRepo(db),
       executions: new ExecutionRepo(db),
       attention: new AttentionRepo(db),
+      stackRepo: new StackRepo(db),
       // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
       // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
       stackService: { isRunning: () => false },
@@ -584,6 +589,7 @@ describe('Feature-Dokumente: Routen', () => {
       queue: new QueueRepo(db),
       settings: new SettingsRepo(db),
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       featureDocuments: new FeatureDocumentsService({ projects, features }),
       orchestrator: {
         // Nachbau von Orchestrator.createFeature: gleicher Fehler bei Namenskollision.
@@ -944,10 +950,11 @@ describe('Chat-Routen — Kostenprofil und Neustart-Angebot', () => {
       sessions: new SessionRepo(db),
       executions: new ExecutionRepo(db),
       attention: new AttentionRepo(db),
+      stackRepo: new StackRepo(db),
       chat: { getState: () => ({ conversation, messages: [] }) },
       chatWork: {
         workSessionInfo: () => null,
-        workPaused: () => false,
+        pauseState: () => CHAT_NOT_PAUSED,
         proposalForProject: () => null,
         costProfileFor: () => costProfile,
         // Wie im Service: Wasserstand merken ⇒ das Angebot ist zu, die Zahlen bleiben.
@@ -985,7 +992,7 @@ describe('Chat-Routen — Kostenprofil und Neustart-Angebot', () => {
     expect(status).toBe(200);
     expect(body.costProfile).toBeNull();
     expect(body.workSession).toBeNull();
-    expect(body.workPaused).toBe(false);
+    expect(body.workPause).toEqual(CHAT_NOT_PAUSED);
     expect(body.pendingFeatures).toBeNull();
     expect(body.conversation).toMatchObject({ id: 'c1' });
   });
@@ -1089,6 +1096,7 @@ describe('Lebenszyklus-Schritt-Routen', () => {
       queue: new QueueRepo(db),
       settings: new SettingsRepo(db),
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       lifecycleStepRepo: steps,
       lifecycleSteps: {},
       telemetry: new TelemetryStore({ autoSweep: false }),
@@ -1361,6 +1369,7 @@ describe('Individuelle Einstellungen: Ablage und Routen', () => {
       queue: new QueueRepo(db),
       settings,
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       orchestrator: { reconcileOpenAttention: () => {} },
       ptys: { list: () => [] },
       telemetry: new TelemetryStore({ autoSweep: false }),
@@ -1517,7 +1526,7 @@ describe('Stack- und Abnahme-Routen', () => {
   let featureId: string;
   let stackCalls: string[];
   let confirmCalls: string[];
-  let rejectCalls: { id: string; reason: string }[];
+  let rejectCalls: { id: string; input: ManualTestRejection }[];
   let laufend: boolean;
   const ENABLED_P: FeaturePhase[] = ['specify', 'implement'];
 
@@ -1585,6 +1594,7 @@ describe('Stack- und Abnahme-Routen', () => {
       queue: new QueueRepo(db),
       settings: new SettingsRepo(db),
       reviewComments: new ReviewCommentRepo(db),
+      stackRepo: new StackRepo(db),
       orchestrator: {
         isGateRunning: () => false,
         ensureSession: async () => ({ id: 's1' }),
@@ -1602,7 +1612,7 @@ describe('Stack- und Abnahme-Routen', () => {
       },
       testingLane: {
         confirm: async (id: string) => confirmCalls.push(id),
-        reject: async (id: string, reason: string) => rejectCalls.push({ id, reason }),
+        reject: async (id: string, input: ManualTestRejection) => rejectCalls.push({ id, input }),
       },
       telemetry: new TelemetryStore({ autoSweep: false }),
       dataDir,
@@ -1670,19 +1680,34 @@ describe('Stack- und Abnahme-Routen', () => {
     expect(confirmCalls).toEqual([featureId]);
   });
 
-  it('verlangt bei der Ablehnung einen Grund (400)', async () => {
+  /**
+   * Die Prüfung „Befund oder Anmerkung" sitzt im Dienst, nicht in der Route —
+   * dort, wo auch die Befunde angelegt werden. Die Route reicht durch und
+   * übersetzt nur die Ablehnung des Dienstes in 400.
+   */
+  it('reicht Befunde und Anmerkung an den Dienst durch', async () => {
     features.setIntegration(featureId, 'awaiting_manual_test');
-    const ohne = await post(`/api/features/${featureId}/manual-test/reject`, { reason: '   ' });
-    expect(ohne.statusCode).toBe(400);
-    expect(msg(ohne)).toBe('Ein Grund ist erforderlich.');
-    expect(rejectCalls).toEqual([]);
+    const res = await post(`/api/features/${featureId}/manual-test/reject`, {
+      comment: 'Knopf tot',
+      findings: [{ where: 'Board', text: 'öffnet nichts', severity: 'blocker' }],
+    });
+    expect(res.statusCode).toBe(200);
+    expect(rejectCalls).toEqual([
+      {
+        id: featureId,
+        input: {
+          comment: 'Knopf tot',
+          findings: [{ where: 'Board', text: 'öffnet nichts', severity: 'blocker' }],
+        },
+      },
+    ]);
   });
 
-  it('reicht die Ablehnung samt Grund durch', async () => {
+  it('reicht auch einen leeren Rumpf durch — die Prüfung fällt im Dienst', async () => {
     features.setIntegration(featureId, 'awaiting_manual_test');
-    const res = await post(`/api/features/${featureId}/manual-test/reject`, { reason: 'Knopf tot' });
+    const res = await post(`/api/features/${featureId}/manual-test/reject`);
     expect(res.statusCode).toBe(200);
-    expect(rejectCalls).toEqual([{ id: featureId, reason: 'Knopf tot' }]);
+    expect(rejectCalls).toEqual([{ id: featureId, input: {} }]);
   });
 
   /** FR-037: erneutes Scheitern ist ein Ergebnis, kein Fehler. */

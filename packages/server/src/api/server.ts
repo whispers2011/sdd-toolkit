@@ -16,9 +16,11 @@ import type {
   FeaturePhase,
   LifecycleStageId,
   LifecycleStep,
+  ManualTestRejection,
   SystemStatus,
 } from '@sdd/shared';
 import {
+  CHAT_NOT_PAUSED,
   FEATURE_PHASES,
   INTEGRATION_STAGE_IDS,
   LIFECYCLE_TRIGGER_KINDS,
@@ -45,6 +47,7 @@ import type {
   SettingsRepo,
 } from '../db/repos.js';
 import type { AgentRepo, AgentRunRepo } from '../db/agentRepo.js';
+import type { StackRepo } from '../db/stackRepo.js';
 import type { LifecycleStepRepo } from '../db/lifecycleStepRepo.js';
 import type { AgentGateService } from '../services/agentGateService.js';
 import type { LifecycleStepService } from '../services/lifecycleStepService.js';
@@ -121,6 +124,8 @@ export interface ApiDeps {
   stackService: StackService;
   /** Zusammenstellung der Testing-Lane und die manuelle Abnahme. */
   testingLane: TestingLaneService;
+  /** Stack-Absicht, Abnahme-Entscheidungen und Befunde. */
+  stackRepo: StackRepo;
   /** Ressourcendruck für die Kopfleiste (Feature „server-ausfaelle-sichtbar-machen", C3). */
   resourceMonitor: ResourceMonitor;
   /** Quelle des zuletzt registrierten Ausfalls (FR-023, D13). */
@@ -166,6 +171,8 @@ export async function buildServer(deps: ApiDeps) {
     // Oberfläche (FR-032/FR-033).
     projects: deps.projects,
     stackRunning: (featureId) => deps.stackService.isRunning(featureId),
+    openBlockers: (featureId) =>
+      deps.stackRepo.openFindingsFor(featureId).filter((f) => f.severity === 'blocker').length,
   });
 
   // Review-Portal-Routen (Übersicht, Branches, Dateibaum/Editor, Kommentare, Audits).
@@ -181,7 +188,7 @@ export async function buildServer(deps: ApiDeps) {
   registerWorktreeRoutes(app, { worktreeOverview: deps.worktreeOverview });
 
   // Testing-Lane: die Zusammenstellung für die manuelle Abnahme vor dem Merge.
-  registerTestingLaneRoutes(app, { testingLane: deps.testingLane });
+  registerTestingLaneRoutes(app, { testingLane: deps.testingLane, stacks: deps.stackRepo });
 
   // Systemzustand für die Kopfleiste (Contract C3): Ressourcendruck und der zuletzt
   // registrierte Ausfall. Antwortet IMMER 200 — auch wenn jede einzelne Kennzahl
@@ -522,12 +529,13 @@ export async function buildServer(deps: ApiDeps) {
     if (!deps.projects.get(req.params.id)) throw httpError(404, 'Projekt nicht gefunden');
     const base = deps.chat.getState(req.params.id);
     const workSession = base.conversation ? deps.chatWork.workSessionInfo(base.conversation) : null;
-    const workPaused = base.conversation ? deps.chatWork.workPaused(base.conversation) : false;
+    // Pausiert samt Dauer: Ab `resumeMaxIdleMs` bietet das Panel kein Fortsetzen mehr an.
+    const workPause = base.conversation ? deps.chatWork.pauseState(base.conversation) : CHAT_NOT_PAUSED;
     const pendingFeatures = deps.chatWork.proposalForProject(req.params.id);
     // Nur der an der letzten Turn-Grenze gebildete Stand — diese Route erzeugt kein
     // Angebot (FR-007).
     const costProfile = base.conversation ? deps.chatWork.costProfileFor(base.conversation) : null;
-    return { ...base, workSession, workPaused, pendingFeatures, costProfile };
+    return { ...base, workSession, workPause, pendingFeatures, costProfile };
   });
 
   /** Session sicherstellen (Worktree + interaktive Session) → sessionId für /ws/terminal. */
@@ -914,23 +922,32 @@ export async function buildServer(deps: ApiDeps) {
    */
   app.post<{ Params: { id: string } }>('/api/features/:id/manual-test/confirm', async (req) => {
     actionGuard.assertAllowed('manual_test_confirm', req.params.id);
-    await deps.testingLane.confirm(req.params.id);
+    try {
+      await deps.testingLane.confirm(req.params.id);
+    } catch (e) {
+      if (e instanceof MergeApprovalError) throw httpError(400, e.message);
+      throw e;
+    }
     return deps.features.get(req.params.id);
   });
 
-  /** Manuelle Abnahme ablehnen (FR-029) — Grund ist Pflicht. */
-  app.post<{ Params: { id: string }; Body?: { reason?: string } }>(
+  /**
+   * Manuelle Abnahme ablehnen (FR-029): Befunde und/oder Anmerkung. Der Dienst
+   * legt die Befunde an, setzt das Feature auf `specify` zurück und startet den
+   * Lauf mit dem kompilierten Auftrag — hier wird KEIN roher Prompt mehr in eine
+   * Session geschoben (bis 31.07.2026 ging der Grund als Freitext an die
+   * Konsole, ohne Phasenbuchführung und ohne dass er die Spezifikation erreichte).
+   */
+  app.post<{ Params: { id: string }; Body?: ManualTestRejection }>(
     '/api/features/:id/manual-test/reject',
     async (req) => {
-      const reason = (req.body?.reason ?? '').trim();
-      if (reason === '') throw httpError(400, 'Ein Grund ist erforderlich.');
       actionGuard.assertAllowed('manual_test_reject', req.params.id);
-      await deps.testingLane.reject(req.params.id, reason);
-
-      // Der Grund geht als Prompt in die Feature-Konsole — derselbe Weg wie bei
-      // einer Zurückweisung im Review.
-      const session = await deps.orchestrator.ensureSession(req.params.id);
-      deps.ptys.sendPrompt(session.id, `Die manuelle Abnahme wurde abgelehnt:\n\n${reason}`);
+      try {
+        await deps.testingLane.reject(req.params.id, req.body ?? {});
+      } catch (e) {
+        if (e instanceof MergeApprovalError) throw httpError(400, e.message);
+        throw e;
+      }
       return deps.features.get(req.params.id);
     },
   );

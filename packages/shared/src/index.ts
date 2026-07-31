@@ -26,6 +26,7 @@ export * from './diffParse.js';
 export * from './changeOverview.js';
 export * from './branchSuggest.js';
 export * from './reviewPrompt.js';
+export * from './manualTestPrompt.js';
 export * from './agentSelect.js';
 export * from './lifecycleSteps.js';
 export * from './workflowModel.js';

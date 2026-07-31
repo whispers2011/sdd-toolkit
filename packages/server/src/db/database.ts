@@ -446,6 +446,32 @@ BERICHT (Markdown nach {reviewFile}): Klassifikation, aktivierte Profile, Findin
   -- (FR-035/FR-037).
   ALTER TABLE features ADD COLUMN cleanup_error TEXT;
   `,
+  `
+  -- Befunde der manuellen Abnahme. Der Anker (where_at) ist ein Ort in der
+  -- ANWENDUNG, freier Text wie „Board → Karte öffnen" — nicht Datei+Zeile.
+  -- Darum eine eigene Tabelle statt review_comments.
+  --
+  -- Befunde überleben die Runde: was in der nächsten Abnahme nicht als behoben
+  -- abgehakt wird, bleibt offen und geht mit. Diese Tabelle ist nach einem
+  -- Rücksprung auf specify die einzige strukturierte Historie über Runden hinweg
+  -- (die Artefakte werden im neuen Lauf überschrieben).
+  CREATE TABLE manual_test_findings (
+    id          TEXT    PRIMARY KEY,
+    feature_id  TEXT    NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+    round       INTEGER NOT NULL,
+    where_at    TEXT,
+    text        TEXT    NOT NULL,
+    severity    TEXT    NOT NULL CHECK (severity IN ('blocker','rework','note')),
+    status      TEXT    NOT NULL CHECK (status IN ('open','resolved')) DEFAULT 'open',
+    created_at  INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE INDEX idx_manual_test_findings_feature ON manual_test_findings(feature_id, status);
+
+  -- Die Abnahme kann mehrfach durchlaufen werden; bestehende Entscheidungen
+  -- stammen aus Runde 1.
+  ALTER TABLE manual_test_decisions ADD COLUMN round INTEGER NOT NULL DEFAULT 1;
+  `,
 ];
 
 export function openDatabase(dataDir: string): DB {

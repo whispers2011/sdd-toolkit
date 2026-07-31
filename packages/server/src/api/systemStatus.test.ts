@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OutageRecord, SystemStatus } from '@sdd/shared';
 import { openMemoryDatabase, type DB } from '../db/database.js';
+import { StackRepo } from '../db/stackRepo.js';
 import { ExecutionRepo } from '../db/repos.js';
 import { ResourceMonitor, type DiskUsage } from '../services/resourceMonitor.js';
 import { buildAllowedOrigins } from './originGuard.js';
@@ -53,6 +54,7 @@ describe('GET /api/system/status', () => {
       // Stack-Profile werden in diesen Tests nicht bedient — der Guard fragt nur,
       // ob ein Profil betrieben wird (kein Projekt hier hat einen Stack).
       stackService: { isRunning: () => false },
+      stackRepo: new StackRepo(db),
       testingLane: { confirm: async () => {}, reject: async () => {} },
       portBlockSize: 20,
       dataDir,

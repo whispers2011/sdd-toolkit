@@ -129,11 +129,12 @@ describe('StackRepo: geteilte Dienste — die Frage wird abgeleitet, nicht gezä
 describe('StackRepo: manuelle Abnahme als Historie', () => {
   it('hält eine Bestätigung ohne Grund fest', () => {
     const f = makeFeature(projectId, 'a');
-    stacks.addDecision({ featureId: f, decision: 'confirmed', reason: null, decidedAt: 5000 });
+    stacks.addDecision({ featureId: f, decision: 'confirmed', reason: null, round: 1, decidedAt: 5000 });
     expect(stacks.lastDecision(f)).toEqual({
       featureId: f,
       decision: 'confirmed',
       reason: null,
+      round: 1,
       decidedAt: 5000,
     });
   });
@@ -141,23 +142,23 @@ describe('StackRepo: manuelle Abnahme als Historie', () => {
   /** FR-029: mehrere Ablehnungen sind möglich — nicht überschreibend. */
   it('sammelt mehrere Ablehnungen, statt sie zu überschreiben', () => {
     const f = makeFeature(projectId, 'a');
-    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'erster Grund', decidedAt: 1000 });
-    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'zweiter Grund', decidedAt: 2000 });
+    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'erster Grund', round: 1, decidedAt: 1000 });
+    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'zweiter Grund', round: 1, decidedAt: 2000 });
     expect(stacks.decisionsFor(f)).toHaveLength(2);
     expect(stacks.lastDecision(f)?.reason).toBe('zweiter Grund');
   });
 
   it('liefert die Historie jüngste zuerst', () => {
     const f = makeFeature(projectId, 'a');
-    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'alt', decidedAt: 1000 });
-    stacks.addDecision({ featureId: f, decision: 'confirmed', reason: null, decidedAt: 3000 });
+    stacks.addDecision({ featureId: f, decision: 'rejected', reason: 'alt', round: 1, decidedAt: 1000 });
+    stacks.addDecision({ featureId: f, decision: 'confirmed', reason: null, round: 1, decidedAt: 3000 });
     expect(stacks.decisionsFor(f).map((d) => d.decidedAt)).toEqual([3000, 1000]);
   });
 
   it('hält Entscheidungen zweier Features auseinander', () => {
     const a = makeFeature(projectId, 'a');
     const b = makeFeature(projectId, 'b');
-    stacks.addDecision({ featureId: a, decision: 'rejected', reason: 'nur a', decidedAt: 1000 });
+    stacks.addDecision({ featureId: a, decision: 'rejected', reason: 'nur a', round: 1, decidedAt: 1000 });
     expect(stacks.lastDecision(b)).toBeNull();
   });
 
