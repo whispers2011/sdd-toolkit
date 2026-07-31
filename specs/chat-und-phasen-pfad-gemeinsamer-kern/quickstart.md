@@ -277,6 +277,28 @@ rm -rf "$HOME/.sdd-toolkit-probe"
 
 ### Stand 31.07.2026 — was durchgeführt wurde
 
+**Durchgeführt**: Boot-Gegenprobe auf Port **4861** (eigenes Datenverzeichnis
+`~/.sdd-toolkit-probe-f9`, abgeräumt über die gemerkte PID; 4820/4830 blieben unangetastet):
+
+- Der Server startet mit der neuen Verdrahtung fehlerfrei — `SessionCore` und `RunMeter` einmal
+  aufgebaut und beiden Diensten mitgegeben, Boot-Reaper und Plausibilitätsprüfung laufen.
+  **0 Fehler im Log.**
+- `GET /api/state` → 200.
+- `POST /api/projects/<unbekannt>/chat/work/session` → **404 `{"message":"Projekt nicht
+  gefunden"}`**. Das ist der `ChatError` aus `mustProject` — er entsteht in der Auflösefunktion
+  *innerhalb* des Doppelstart-Schutzes und erreicht den HTTP-Rand mit dem Fehlerbild des
+  Chat-Pfads. Damit sind FR-005 und research.md D3 am laufenden Server belegt.
+
+**Nicht durchgeführt**: der echte Chat-Turn gegen echte Telemetrie. Er startet einen realen
+Claude-Code-Prozess und verursacht reale Kosten — ein Seiteneffekt, der eine ausdrückliche
+Entscheidung braucht. Die Zahlen, die er prüfen würde (`tokens_source`, Preis > 0, Modell, vier
+Token-Klassen, Dauer > 0, Nachtrag nach ~8 s ohne Absenkung), sind durch `runMeter.test.ts`
+gedeckt; was der Live-Lauf zusätzlich zeigte, wäre das Zusammenspiel mit dem echten
+OTLP-Exporter der CLI. **Offen — bei der nächsten echten Chat-Nutzung nachholen** (Abfrage
+aus §1.7).
+
+### Stand 31.07.2026 — was durchgeführt wurde
+
 **Durchgeführt**: Boot-Gegenprobe auf Port **4871** (4899 war von einer fremden Instanz belegt und
 blieb unangetastet), eigenes Datenverzeichnis `~/.sdd-toolkit-probe-oyhw`, abgeräumt über die
 gemerkte PID. Ergebnis:

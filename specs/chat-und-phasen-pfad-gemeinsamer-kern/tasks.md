@@ -281,11 +281,11 @@ durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
 
 **Purpose**: Aufräumen, Buchführung, Gegenprobe an echter Telemetrie.
 
-- [ ] T047 [P] Ungenutzte Importe und toten Code in
+- [X] T047 [P] Ungenutzte Importe und toten Code in
       `packages/server/src/services/orchestrator.ts` und
       `packages/server/src/services/chatWorkService.ts` entfernen; Zeilenbilanz gegen die Erwartung
       aus plan.md prüfen (~−200 bzw. ~−90 Zeilen)
-- [ ] T048 [P] SC-007 abschliessen: die Tabelle der vier Verbesserungen vom 30.07.2026 in
+- [X] T048 [P] SC-007 abschliessen: die Tabelle der vier Verbesserungen vom 30.07.2026 in
       [quickstart.md](./quickstart.md) gegen den gebauten Stand prüfen — zwei im Chat wirksam
       (Nachweis T009/T024), zwei mit Grund ausgeschlossen (Nachweis T044) — 4 von 4 beantwortet,
       0 offen
@@ -300,7 +300,7 @@ durchsuchen — jede kommt ausserhalb von Tests höchstens einmal vor.
       abgeräumt. Der echte Chat-Turn wurde **nicht** gefahren — er startet einen realen
       Claude-Prozess und verursacht Kosten; das braucht eine ausdrückliche Entscheidung. Details
       und Nachholanleitung in quickstart.md §Live.
-- [ ] T050 Abschluss-Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel; Ergebnis gegen
+- [X] T050 Abschluss-Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel; Ergebnis gegen
       den Referenzstand aus T001 halten (SC-006)
 
 ---
