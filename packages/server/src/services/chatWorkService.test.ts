@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -12,10 +12,17 @@ import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import type { Orchestrator } from './orchestrator.js';
 import { ChatWorkService } from './chatWorkService.js';
 import { RunMeter } from './core/runMeter.js';
+import { SessionCore } from './core/sessionCore.js';
 
-/** Turn messen liegt im gemeinsamen Kern; der Chat bekommt ihn mit (FR-002). */
+/** Session sicherstellen und Turn messen liegen im gemeinsamen Kern (FR-001/FR-002). */
 const meterFor = (executions: ExecutionRepo, telemetry?: unknown) =>
   new RunMeter({ executions, ...(telemetry ? { telemetry: telemetry as never } : {}) });
+const coreFor = (db: DB, ptys: unknown, worktrees: unknown) =>
+  new SessionCore({
+    sessions: new SessionRepo(db),
+    ptys: ptys as PtySessionManager,
+    worktrees: worktrees as WorktreeManager,
+  });
 
 // Nur isCleanWorkingTree steuern; restliche git.js-Exporte real belassen.
 vi.mock('../git/git.js', async (importOriginal) => {
@@ -75,6 +82,7 @@ describe('ChatWorkService — Feature-Vorschläge aus der Session', () => {
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, {}),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -176,6 +184,7 @@ describe('ChatWorkService — Neustart (restart)', () => {
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, worktrees),
       settings: new SettingsRepo(db),
       worktrees,
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
@@ -296,6 +305,7 @@ describe('ChatWorkService — Leerlauf-Reaper (reapIdleSessions)', () => {
       attention: new AttentionRepo(db),
       executions: new ExecutionRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,
       ptys,
@@ -382,6 +392,7 @@ describe('ChatWorkService — workPaused (Pausiert-Signal fürs Panel)', () => {
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: sessionsRepo,
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
       worktrees: {} as unknown as WorktreeManager, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
     });
   });
@@ -466,6 +477,7 @@ describe('ChatWorkService — Verbrauch und Kosten eines Turns', () => {
       ptys: { forConversation: () => undefined } as unknown as PtySessionManager,
       orchestrator: { reconcileOpenAttention: () => {} } as unknown as Orchestrator, dataDir,
       meter: meterFor(executions, telemetry),
+      sessionCore: coreFor(db, { forConversation: () => undefined }, {}),
     });
 
   const session = (): LiveSession =>
@@ -561,6 +573,7 @@ function hygieneSetup() {
       hold: vi.fn(),
       release: vi.fn(),
     }),
+    sessionCore: coreFor(db, { forConversation: () => ctx.live }, {}),
   });
   ctx.svc.ensure = async () => ({ sessionId: 's-neu' });
   vi.mocked(isCleanWorkingTree).mockResolvedValue(true);
@@ -851,6 +864,9 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
   let projectId: string;
   let spawns: number;
   let svc: ChatWorkService;
+  let erstellt: { featureName: string; branch: string; projectPath: string; defaultBranch: string }[];
+  let entfernt: [string, string][];
+  let anlageScheitert: boolean;
 
   beforeEach(() => {
     dataDir = mkdtempSync(join(tmpdir(), 'sdd-cw-ensure-'));
@@ -861,13 +877,24 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
     }).id;
     spawns = 0;
 
+    erstellt = [];
+    entfernt = [];
+    anlageScheitert = false;
+
     const worktrees = {
       // Verzögert wie die echte Worktree-Anlage — genau hier klaffte das Zeitfenster.
-      create: async () => {
+      create: async (o: { featureName: string; branch: string; projectPath: string; defaultBranch: string }) => {
         await new Promise((r) => setTimeout(r, 10));
+        if (anlageScheitert) throw new Error('kein Platz auf dem Gerät');
+        erstellt.push(o);
         return join(dataDir, 'wt');
       },
       pathFor: () => join(dataDir, 'wt'),
+      // Der Chat räumt jetzt einen verwaisten Eintrag auf, bevor er neu anlegt (W2) —
+      // die Erholung, die vorher nur der Phasen-Pfad hatte.
+      remove: async (repo: string, pfad: string) => {
+        entfernt.push([repo, pfad]);
+      },
     } as unknown as WorktreeManager;
 
     const ptys = {
@@ -882,6 +909,7 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, worktrees),
       worktrees, ptys, orchestrator: {} as unknown as Orchestrator, dataDir,
     });
   });
@@ -903,6 +931,52 @@ describe('ChatWorkService — ensure() koalesziert parallele Aufrufe', () => {
     await svc.ensure(projectId);
     // Zweiter Aufruf läuft neu, weil der erste abgeschlossen ist — Koaleszenz gilt nur währenddessen.
     expect(spawns).toBe(2);
+  });
+
+  /**
+   * US3: Chat und Feature legen ihre Arbeitskopie über denselben Weg an. Der Chat
+   * bekommt damit die Waisen-Erholung, die vorher nur der Phasen-Pfad hatte.
+   */
+  describe('Arbeitskopie über den gemeinsamen Weg (US3)', () => {
+    it('legt sie mit Chat-Namen und Chat-Zweig an — genau einmal (Szenario 1)', async () => {
+      await svc.ensure(projectId);
+
+      const conv = new ChatRepo(db).getActive(projectId)!;
+      expect(erstellt).toHaveLength(1);
+      expect(erstellt[0]).toMatchObject({
+        featureName: `chat-${conv.id}`,
+        branch: `chat/${conv.id}`,
+        projectPath: '/tmp/demo',
+        defaultBranch: 'main',
+      });
+    });
+
+    it('räumt einen verwaisten Eintrag auf und legt neu an (Szenario 2, W2)', async () => {
+      // `pathFor` liefert einen Pfad, den es auf der Platte nicht gibt — genau der Fall,
+      // in dem `worktree add` sonst an einem unsichtbaren Registry-Eintrag scheitert.
+      await svc.ensure(projectId);
+
+      expect(entfernt).toEqual([['/tmp/demo', join(dataDir, 'wt')]]);
+      expect(erstellt).toHaveLength(1); // nach dem Aufräumen neu angelegt
+    });
+
+    it('lässt eine vorhandene Arbeitskopie unangetastet (W1)', async () => {
+      mkdirSync(join(dataDir, 'wt'), { recursive: true });
+
+      await svc.ensure(projectId);
+
+      expect(entfernt).toEqual([]); // nichts aufzuräumen
+      expect(erstellt).toHaveLength(1);
+    });
+
+    it('antwortet bei gescheiterter Anlage unverändert mit 503 (Szenario 3, FR-005)', async () => {
+      anlageScheitert = true;
+
+      await expect(svc.ensure(projectId)).rejects.toMatchObject({
+        statusCode: 503,
+        message: 'Arbeitskopie konnte nicht erstellt werden: kein Platz auf dem Gerät',
+      });
+    });
   });
 });
 
@@ -941,6 +1015,7 @@ describe('ChatWorkService — Reaper und laufende Ausgabe', () => {
       projects: new ProjectRepo(db), chatRepo: new ChatRepo(db), sessions: new SessionRepo(db),
       attention: new AttentionRepo(db), executions: new ExecutionRepo(db), settings: new SettingsRepo(db),
       meter: meterFor(new ExecutionRepo(db)),
+      sessionCore: coreFor(db, ptys, {}),
       worktrees: {} as unknown as WorktreeManager, ptys,
       orchestrator: {} as unknown as Orchestrator, dataDir,
     });

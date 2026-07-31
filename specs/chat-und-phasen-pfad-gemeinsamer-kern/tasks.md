@@ -178,38 +178,38 @@ Kennung, Berechtigungsmodus aus derselben aufgelösten Automatisierung.
 **Independent Test**: Je Pfad zwei Aufrufe gleichzeitig absetzen — genau ein Prozess, dieselbe
 Session-Kennung für beide Aufrufer, in 20 aufeinanderfolgenden Versuchen 0 Doppelstarts.
 
-- [ ] T029 [US2] `SessionSpec`, `SpawnStage` und `SessionCore.ensure(key, resolve)` nach
+- [X] T029 [US2] `SessionSpec`, `SpawnStage` und `SessionCore.ensure(key, resolve)` nach
       [contracts/session-core.md](./contracts/session-core.md) in
       `packages/server/src/services/core/sessionCore.ts` — In-Flight-Karte, `resolve()` **innerhalb**
       des Schutzes, Ablauf 1–11 einschliesslich Resume-Prüfung über `locateTranscript` (FR-014),
       `permissionMode` aus `automation.autoMode` (FR-015) und `finally`-Freigabe auch im Fehlerfall
-- [ ] T030 [US2] `Orchestrator.ensureSession` wird ein Aufruf mit `key = 'feature:<featureId>'` in
+- [X] T030 [US2] `Orchestrator.ensureSession` wird ein Aufruf mit `key = 'feature:<featureId>'` in
       `packages/server/src/services/orchestrator.ts`; `ensureSessionInner` und die eigene
       In-Flight-Karte entfallen. Die `resolve`-Funktion behält die heutige Reihenfolge bei: erst
       `ptys.forFeature`, **dann** die Prüfung auf abgeschlossenes Feature
-- [ ] T031 [US2] `ChatWorkService.ensure` wird ein Aufruf mit `key = 'chat:<projectId>'` in
+- [X] T031 [US2] `ChatWorkService.ensure` wird ein Aufruf mit `key = 'chat:<projectId>'` in
       `packages/server/src/services/chatWorkService.ts`; `ensureUnlocked`, die Karte `ensuring` und
       der eigene Worktree-Block entfallen. `wrapError` liefert
       `ChatError(503, 'Arbeitskopie konnte nicht erstellt werden: …')` und
       `ChatError(503, 'Session konnte nicht gestartet werden: …')` zeichengleich wie heute; die
       Rückgabe bleibt `{ sessionId }` und setzt weiterhin `turnStart.set(session.id, 0)`
-- [ ] T032 [US2] `SessionCore` einmal in `packages/server/src/index.ts` aufbauen und beiden
+- [X] T032 [US2] `SessionCore` einmal in `packages/server/src/index.ts` aufbauen und beiden
       Diensten mitgeben
-- [ ] T033 [P] [US2] SC-005 in `packages/server/src/services/core/sessionCore.test.ts`: je Pfad
+- [X] T033 [P] [US2] SC-005 in `packages/server/src/services/core/sessionCore.test.ts`: je Pfad
       20 × zwei gleichzeitige Aufrufe mit künstlich um 10 ms verzögerter Worktree-Anlage — 20 × genau
       ein Spawn, 20 × dieselbe Session-Kennung (S1, US2 Szenarien 1+2)
-- [ ] T034 [P] [US2] Tote Kennung in `packages/server/src/services/core/sessionCore.test.ts`:
+- [X] T034 [P] [US2] Tote Kennung in `packages/server/src/services/core/sessionCore.test.ts`:
       `locateTranscript` findet nichts → `sessions.setClaudeSessionId(prev.id, null)` und das `argv`
       enthält kein `--resume` (S5, US2 Szenario 3)
-- [ ] T035 [P] [US2] Laufende Session und Freigabe in
+- [X] T035 [P] [US2] Laufende Session und Freigabe in
       `packages/server/src/services/core/sessionCore.test.ts`: `spec.existing` gesetzt → kein zweiter
       Prozess (FR-016, Szenario 4); nach Abschluss ist der Schutz frei (S2); ein Fehler in `resolve`,
       Schritt 4 oder 8 erreicht alle Wartenden und gibt frei (S3)
-- [ ] T036 [P] [US2] Fehlerbild und Berechtigungsmodus in
+- [X] T036 [P] [US2] Fehlerbild und Berechtigungsmodus in
       `packages/server/src/services/core/sessionCore.test.ts`: ohne `wrapError` fliegt der rohe
       Fehler (S4, Phasen-Pfad), mit `wrapError` kommt der `ChatError(503, …)` heraus (FR-005,
       Szenario 5); `autoMode` → `bypassPermissions`, sonst `acceptEdits` (S6)
-- [ ] T037 [US2] Tor Schritt 3: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel, inklusive
+- [X] T037 [US2] Tor Schritt 3: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel, inklusive
       der bestehenden Nebenläufigkeits-Tests in
       `packages/server/src/services/chatWorkService.test.ts` (Zeilen 511, 546) und
       `packages/server/src/services/orchestrator.test.ts` (Zeile 402)
@@ -228,20 +228,20 @@ fehlt. Der Baustein steht seit Phase 2; hier wird die Abnahme geführt.
 **Independent Test**: Für Chat und Feature eine Arbeitskopie anlegen, ihr Verzeichnis von aussen
 entfernen und die Anlage erneut anfordern — beide Pfade zeigen dieselbe Erholung.
 
-- [ ] T038 [P] [US3] Szenario 1 in `packages/server/src/services/chatWorkService.test.ts`: nach
+- [X] T038 [P] [US3] Szenario 1 in `packages/server/src/services/chatWorkService.test.ts`: nach
       `ensure()` existiert `chat-<convId>` mit Zweig `chat/<convId>`, angelegt über `ensureWorkspace`
       — geprüft an der Attrappe, dass `worktrees.create` genau einmal und aus dem Kern gerufen wurde
-- [ ] T039 [P] [US3] Szenario 2 in `packages/server/src/services/chatWorkService.test.ts`:
+- [X] T039 [P] [US3] Szenario 2 in `packages/server/src/services/chatWorkService.test.ts`:
       `recordedPath` aus `worktrees.pathFor` gesetzt, Verzeichnis fehlt → `worktrees.remove`
       best-effort, danach neu angelegt, Session startet (W2 — der Chat bekommt sie neu)
-- [ ] T040 [P] [US3] Szenario 3 in `packages/server/src/services/chatWorkService.test.ts`: scheitert
+- [X] T040 [P] [US3] Szenario 3 in `packages/server/src/services/chatWorkService.test.ts`: scheitert
       das Anlegen, antwortet der Chat unverändert mit
       `ChatError(503, 'Arbeitskopie konnte nicht erstellt werden: …')`
-- [ ] T041 [US3] Gegenprobe im Quellcode: kein `worktrees.create` mehr in
+- [X] T041 [US3] Gegenprobe im Quellcode: kein `worktrees.create` mehr in
       `packages/server/src/services/chatWorkService.ts` und kein eigener Worktree-Block mehr in
       `packages/server/src/services/orchestrator.ts` — verbleibende Fundstellen ausserhalb von
       `services/core/workspace.ts` entfernen
-- [ ] T042 [US3] Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel
+- [X] T042 [US3] Tor: `pnpm test` und `pnpm typecheck` in der Repository-Wurzel
 
 **Checkpoint**: Alle drei Aufgaben laufen über den Kern. Was fehlt, ist der Nachweis, dass es so
 bleibt.

@@ -5,14 +5,20 @@ import { join } from 'node:path';
 import { initialPhases, type Feature, type FeatureDocument, type OptimizationSettings } from '@sdd/shared';
 import { Orchestrator, type OrchestratorDeps } from './orchestrator.js';
 import { RunMeter } from './core/runMeter.js';
+import { SessionCore } from './core/sessionCore.js';
 import type { LiveSession } from '../pty/sessionManager.js';
 
-/** Turn messen liegt im gemeinsamen Kern; der Orchestrator bekommt ihn mit (FR-002). */
-function withMeter(deps: OrchestratorDeps): OrchestratorDeps {
+/** Session sicherstellen und Turn messen liegen im gemeinsamen Kern (FR-001/FR-002). */
+function withCore(deps: OrchestratorDeps): OrchestratorDeps {
   deps.meter = new RunMeter({
     executions: deps.executions,
     ...(deps.telemetry ? { telemetry: deps.telemetry } : {}),
     ...(deps.plausibility ? { plausibility: deps.plausibility } : {}),
+  });
+  deps.sessionCore = new SessionCore({
+    sessions: deps.sessions,
+    ptys: deps.ptys,
+    worktrees: deps.worktrees,
   });
   return deps;
 }
@@ -151,7 +157,7 @@ function setup(
     },
     dataDir: '/tmp',
   } as unknown as OrchestratorDeps;
-  const orch = new Orchestrator(withMeter(deps));
+  const orch = new Orchestrator(withCore(deps));
   return { orch, state, savePhases, raise, finish, runTrigger, stepsRunTrigger, sendPrompt, listDocuments };
 }
 
@@ -653,7 +659,7 @@ describe('Orchestrator — Arbeit ohne offenen Lauf wird gemeldet', () => {
       agentGate: { hasAgentsFor: () => false },
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
-    return { orch: new Orchestrator(withMeter(deps)), raise };
+    return { orch: new Orchestrator(withCore(deps)), raise };
   }
 
   it('meldet eine schreibende Session, für die kein Schritt offen ist', () => {
@@ -825,7 +831,7 @@ describe('Orchestrator — Worktree-Auslöser (Lebenszyklus-Schritte)', () => {
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
 
-    return { orch: new Orchestrator(withMeter(deps)), calls, stored, hardDelete, stepsRunTrigger, deps };
+    return { orch: new Orchestrator(withCore(deps)), calls, stored, hardDelete, stepsRunTrigger, deps };
   }
 
   it('führt die Worktree-Auslöser in der richtigen Reihenfolge aus: vor Anlage → Anlage → nach Anlage → Phase', async () => {
@@ -1194,7 +1200,7 @@ describe('Orchestrator — test-Profil beim Beginn von implement', () => {
       dataDir: '/tmp',
     } as unknown as OrchestratorDeps;
 
-    return { orch: new Orchestrator(withMeter(deps)), calls, deps };
+    return { orch: new Orchestrator(withCore(deps)), calls, deps };
   }
 
   it('fährt das test-Profil beim Beginn von implement hoch (FR-014)', async () => {

@@ -23,6 +23,7 @@ import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { ChatWorkService } from './chatWorkService.js';
 import { RunMeter } from './core/runMeter.js';
+import { SessionCore } from './core/sessionCore.js';
 import type { KnowledgeService } from './knowledgeService.js';
 import { MergeQueueService, type MergeQueueDeps } from './mergeQueueService.js';
 import { Orchestrator } from './orchestrator.js';
@@ -244,6 +245,11 @@ describe('Orchestrator — Auflösewege senden pro Meldung genau ein Ereignis', 
       sessions,
       executions: new ExecutionRepo(db),
       meter: new RunMeter({ executions: new ExecutionRepo(db) }),
+      sessionCore: new SessionCore({
+        sessions: new SessionRepo(db),
+        ptys: {} as unknown as PtySessionManager,
+        worktrees: {} as unknown as WorktreeManager,
+      }),
       attention,
       settings: new SettingsRepo(db),
       worktrees: {} as unknown as WorktreeManager,

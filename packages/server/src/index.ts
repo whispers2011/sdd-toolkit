@@ -17,6 +17,7 @@ import { KnowledgeRepo } from './db/knowledgeRepo.js';
 import { PlausibilityRepo } from './db/plausibilityRepo.js';
 import { PlausibilityService } from './services/plausibilityService.js';
 import { RunMeter } from './services/core/runMeter.js';
+import { SessionCore } from './services/core/sessionCore.js';
 import { KnowledgeService } from './services/knowledgeService.js';
 import { AtlassianMcpClient } from './services/atlassianMcpClient.js';
 import { JiraBrowseService } from './services/jiraBrowseService.js';
@@ -175,6 +176,10 @@ async function main(): Promise<void> {
     state: new PlausibilityRepo(db),
   });
 
+  // Der gemeinsame Kern: Session sicherstellen und Turn messen existieren je EINMAL
+  // und werden beiden Diensten mitgegeben (FR-001, FR-002).
+  const sessionCore = new SessionCore({ sessions, ptys, worktrees });
+
   // Turn messen: EIN Baustein für beide Pfade (FR-002). Wer die Messung verbessert,
   // verbessert sie für Chat und Phase in einem Schritt.
   const runMeter = new RunMeter({
@@ -204,6 +209,7 @@ async function main(): Promise<void> {
     featureDocuments,
     agentGate,
     lifecycleSteps,
+    sessionCore,
     meter: runMeter,
     dataDir: config.dataDir,
     telemetry,
@@ -256,6 +262,7 @@ async function main(): Promise<void> {
     ptys,
     orchestrator,
     meter: runMeter,
+    sessionCore,
     dataDir: config.dataDir,
   });
   orchestrator.attachChatWork(chatWork);

@@ -194,11 +194,11 @@ export const LIFECYCLE_CATALOG: Record<LifecycleCatalogStageId, LifecycleStage> 
         id: 'ensure-session',
         name: 'Session sicherstellen',
         description:
-          'Je Feature läuft genau eine persistente Claude-Session im Worktree; pro Feature sind die Aufrufe serialisiert, damit nicht zwei Sessions entstehen. Eine frühere Session wird nur fortgesetzt, wenn ihr Transkript noch auf der Platte liegt.',
+          'Je Bezugsobjekt läuft genau eine persistente Claude-Session im Worktree; die Aufrufe sind je Bezugsobjekt serialisiert, damit nicht zwei Sessions entstehen. Derselbe Baustein trägt Feature- und Chat-Sessions. Eine frühere Session wird nur fortgesetzt, wenn ihr Transkript noch auf der Platte liegt.',
         trigger: 'Phasenstart ohne laufende Session',
         location: {
-          file: 'packages/server/src/services/orchestrator.ts',
-          symbol: 'Orchestrator.ensureSessionInner',
+          file: 'packages/server/src/services/core/sessionCore.ts',
+          symbol: 'SessionCore.ensure',
         },
       },
       {

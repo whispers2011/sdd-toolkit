@@ -27,7 +27,7 @@ import type { FeatureDocumentsService } from './featureDocuments.js';
 import type { WorktreeManager } from '../git/worktrees.js';
 import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
-import { buildClaudeArgv, phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
+import { phaseSlashCommand, resetCommand } from '../pty/commandBuilder.js';
 import type { TelemetryStore } from '../telemetry/telemetryStore.js';
 import { prepareForPhase } from './contextOptimizer.js';
 import { artifactExists, parseTaskProgress, speckitCommandPrefix } from './artifacts.js';
@@ -46,6 +46,7 @@ import {
 import { resolveVerificationGaps } from './verificationGap.js';
 import { ensureWorkspace } from './core/workspace.js';
 import { markSession, startOffsetIn, type RunMark, type RunMeter } from './core/runMeter.js';
+import type { SessionCore } from './core/sessionCore.js';
 
 export interface EnsureSessionOptions {
   /**
@@ -69,6 +70,8 @@ export interface OrchestratorDeps {
   featureDocuments: FeatureDocumentsService;
   agentGate: AgentGateService;
   lifecycleSteps: LifecycleStepService;
+  /** Session sicherstellen — gemeinsamer Kern, denselben Baustein benutzt der Chat-Pfad (FR-001). */
+  sessionCore: SessionCore;
   /** Turn messen — gemeinsamer Kern, denselben Baustein benutzt der Chat-Pfad (FR-002). */
   meter: RunMeter;
   dataDir: string;
@@ -143,7 +146,6 @@ export class Orchestrator {
   private runningPhases = new Map<string, RunningPhase>(); // featureId → Phase
   private runningGates = new Set<string>(); // `${featureId}:${phase}` — Doppelstart-Guard für before-Gates
   private startingPhases = new Set<string>(); // featureId — synchroner Guard gegen Start-Races (vor runningPhases)
-  private ensuringSessions = new Map<string, Promise<LiveSession>>(); // featureId → laufender ensureSession-Aufruf
   private lastPreamble = new Map<string, string>(); // featureId → zuletzt injizierte Wissens-Präambel
   private mergeQueue: MergeQueueService | null = null;
   private chatWork: ChatWorkService | null = null;
@@ -278,85 +280,53 @@ export class Orchestrator {
 
   /**
    * Konsole pro Feature: eine persistente Claude-Session im Worktree.
-   * Pro Feature serialisiert (in-flight Promise), sonst spawnen zwei gleichzeitige
-   * Aufrufe (z. B. Grid-Auto-Select + Konsole öffnen) doppelte Sessions.
+   *
+   * Der Doppelstart-Schutz, die Resume-Prüfung und der Berechtigungsmodus kommen aus
+   * dem gemeinsamen Kern — derselbe Baustein, den der Chat-Pfad benutzt (FR-001).
+   * Feature-eigen bleibt nur, was hier in der Auflösefunktion steht: die Abschluss-
+   * Prüfung und die Worktree-Vorbereitung samt ihrer Lebenszyklus-Auslöser.
    */
   ensureSession(featureId: string, opts: EnsureSessionOptions = {}): Promise<LiveSession> {
-    const inFlight = this.ensuringSessions.get(featureId);
-    if (inFlight) return inFlight;
-    const p = this.ensureSessionInner(featureId, opts).finally(() => {
-      this.ensuringSessions.delete(featureId);
-    });
-    this.ensuringSessions.set(featureId, p);
-    return p;
-  }
+    return this.deps.sessionCore.ensure(`feature:${featureId}`, () => {
+      const feature = this.mustFeature(featureId);
+      const project = this.mustProject(feature.projectId);
+      const existing = this.deps.ptys.forFeature(featureId);
 
-  private async ensureSessionInner(
-    featureId: string,
-    opts: EnsureSessionOptions = {},
-  ): Promise<LiveSession> {
-    const feature = this.mustFeature(featureId);
-    const project = this.mustProject(feature.projectId);
-    const existing = this.deps.ptys.forFeature(featureId);
-    if (existing) return existing;
-
-    // Abgeschlossene Features bekommen keine neue Session mehr — sonst sammeln
-    // sich offene Sessions auf gemergten/archivierten Features an.
-    if (feature.integration === 'merged' || feature.archivedAt !== null) {
-      throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
-    }
-
-    // Worktree über denselben Weg wie bei der Erstanlage sicherstellen: ein erneutes
-    // Anstoßen wiederholt damit auch die Worktree-Auslöser (Wiederanlauf, FR-025).
-    // Ausnahme: `createFeature` hat unmittelbar davor selbst vorbereitet — ein
-    // zweiter Durchlauf würde jeden Worktree-Schritt der Anlage doppelt ausführen.
-    if (!opts.skipPrepare) {
-      const prepared = await this.prepareWorktree(feature);
-      if (!prepared.ok) {
-        throw new Error(
-          `${feature.name}: Lebenszyklus-Schritt vor der Session fehlgeschlagen — siehe „Braucht dich".`,
-        );
+      // Reihenfolge mit Absicht: erst „läuft schon eine?", DANN „ist das Feature
+      // abgeschlossen?". Ein gemergtes Feature mit laufender Session bekommt seine
+      // Session zurück, statt einen Fehler zu werfen — offene Konsolen brechen sonst weg.
+      if (!existing && (feature.integration === 'merged' || feature.archivedAt !== null)) {
+        throw new Error(`Feature '${feature.name}' ist abgeschlossen — keine neue Session`);
       }
-    }
-    const worktreePath = feature.worktreePath;
-    if (!worktreePath) throw new Error(`${feature.name}: Worktree konnte nicht bereitgestellt werden`);
 
-    // Resume-Recovery (WP2): nie blind auf eine tote Session-ID resumen —
-    // erst prüfen, ob das Transkript-JSONL noch existiert (Claude räumt nach ~30 Tagen auf).
-    const prev = this.deps.sessions.latestForFeature(featureId);
-    let resumeId = prev?.claude_session_id ?? undefined;
-    if (resumeId && prev) {
-      if (!locateTranscript(worktreePath, resumeId)) {
-        this.deps.sessions.setClaudeSessionId(prev.id, null);
-        resumeId = undefined;
-      }
-    }
-
-    // Auto-Modus (aufgelöst global → Projekt → Feature): an → bypassPermissions
-    // (keine Kommando-/Tool-Rückfragen), aus → acceptEdits (nur Edits, Kommandos fragen nach).
-    const automation = this.automationFor(feature);
-    const argv = buildClaudeArgv({
-      ...(resumeId ? { resume: resumeId } : {}),
-      settingsPath: '__SETTINGS__',
-      permissionMode: automation.autoMode ? 'bypassPermissions' : 'acceptEdits',
+      return {
+        project,
+        featureId,
+        conversationId: null,
+        kind: 'feature' as const,
+        existing,
+        // Der Phasen-Pfad legt die Arbeitskopie über denselben Weg an wie die
+        // Erstanlage: ein erneutes Anstoßen wiederholt damit auch die
+        // Worktree-Auslöser (Wiederanlauf, FR-025). Ausnahme: `createFeature` hat
+        // unmittelbar davor selbst vorbereitet — ein zweiter Durchlauf würde jeden
+        // Worktree-Schritt der Anlage doppelt ausführen.
+        workspace: async () => {
+          if (!opts.skipPrepare) {
+            const prepared = await this.prepareWorktree(feature);
+            if (!prepared.ok) {
+              throw new Error(
+                `${feature.name}: Lebenszyklus-Schritt vor der Session fehlgeschlagen — siehe „Braucht dich".`,
+              );
+            }
+          }
+          const pfad = feature.worktreePath;
+          if (!pfad) throw new Error(`${feature.name}: Worktree konnte nicht bereitgestellt werden`);
+          return pfad;
+        },
+        previous: this.deps.sessions.latestForFeature(featureId),
+        automation: this.automationFor(feature),
+      };
     });
-
-    const session = await this.deps.ptys.spawn({
-      projectId: project.id,
-      featureId,
-      kind: 'feature',
-      cwd: worktreePath,
-      argv,
-      withHooks: true,
-    });
-    this.deps.sessions.create({
-      id: session.id,
-      featureId,
-      projectId: project.id,
-      kind: 'feature',
-      pid: session.pty.pid,
-    });
-    return session;
   }
 
   // ---------- Phasen ----------

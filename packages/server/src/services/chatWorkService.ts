@@ -35,8 +35,8 @@ import type { LiveSession, PtySessionManager } from '../pty/sessionManager.js';
 import type { Orchestrator } from './orchestrator.js';
 import { locateTranscript, transcriptSize } from '../pty/transcriptWatcher.js';
 import type { RunMeter } from './core/runMeter.js';
+import type { SessionCore, SpawnStage } from './core/sessionCore.js';
 import { isCleanWorkingTree } from '../git/git.js';
-import { buildClaudeArgv } from '../pty/commandBuilder.js';
 import { buildChatWorkSystemPrompt } from './chatWorkPrompt.js';
 import { NotificationThrottle } from './notificationThrottle.js';
 import { ChatError } from './chatService.js';
@@ -60,6 +60,8 @@ export interface ChatWorkDeps {
    * Fallunterscheidung der Transkript-Startmarke.
    */
   meter: RunMeter;
+  /** Session sicherstellen — derselbe Baustein wie im Phasen-Pfad (FR-001). */
+  sessionCore: SessionCore;
   dataDir: string;
   model?: string;
 }
@@ -111,8 +113,6 @@ export class ChatWorkService {
   private hygiene = new Map<string, ChatHygieneState>(); // conversationId → Bewertung
   /** Laufender Neustart je Projekt — koalesziert schnelle Doppelklicks (FR-008). */
   private restarting = new Map<string, Promise<ChatWorkRestartResult | ChatWorkRestartNeedsConfirm>>();
-  /** Laufendes ensure() je Projekt — verhindert zwei Sessions auf derselben Unterhaltung. */
-  private ensuring = new Map<string, Promise<{ sessionId: string }>>();
   /** Sessions, die für einen Neustart absichtlich beendet werden — kein Fehler-Alarm beim Exit. */
   private terminating = new Set<string>();
 
@@ -123,83 +123,46 @@ export class ChatWorkService {
   // ---------- Session-Lifecycle ----------
 
   /**
-   * Session sicherstellen (idempotent): Worktree anlegen + interaktive Claude-Session spawnen.
+   * Session sicherstellen (idempotent): Arbeitskopie anlegen + interaktive Claude-Session
+   * spawnen. Beides über den gemeinsamen Kern (FR-001/FR-003) — der Chat erbt damit die
+   * Waisen-Erholung der Arbeitskopie, die er vorher nicht hatte.
    *
-   * Koalesziert wie `restart()`, denn zwischen der Prüfung „läuft schon eine?" und dem Spawn
-   * liegt ein `await` auf die Worktree-Anlage. Zwei gleichzeitige Aufrufe — Panel-Öffnen und
-   * reconnectender Client — lasen beide „keine Session" und spawnten beide eine: am 28.07.2026
-   * fünfmal beobachtet, zuletzt mit zwei arbeitenden Claude-Prozessen in derselben Arbeitskopie.
+   * Der Schlüssel ist das Projekt, nicht die Unterhaltung: Der Chat hat höchstens eine
+   * aktive Unterhaltung je Projekt, und die wird erst INNERHALB des Schutzes ermittelt.
+   * Zwei gleichzeitige Aufrufe — Panel-Öffnen und reconnectender Client — lasen sonst
+   * beide „keine Session" und spawnten beide eine: am 28.07.2026 fünfmal beobachtet,
+   * zuletzt mit zwei arbeitenden Claude-Prozessen in derselben Arbeitskopie.
    */
-  ensure(projectId: string): Promise<{ sessionId: string }> {
-    const inflight = this.ensuring.get(projectId);
-    if (inflight) return inflight;
-    const run = this.ensureUnlocked(projectId).finally(() => this.ensuring.delete(projectId));
-    this.ensuring.set(projectId, run);
-    return run;
-  }
+  async ensure(projectId: string): Promise<{ sessionId: string }> {
+    const live = await this.deps.sessionCore.ensure(`chat:${projectId}`, () => {
+      const project = this.mustProject(projectId);
+      const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
+      const worktreeName = `chat-${conv.id}`;
 
-  private async ensureUnlocked(projectId: string): Promise<{ sessionId: string }> {
-    const project = this.mustProject(projectId);
-    const conv = this.deps.chatRepo.ensureActive(projectId, 'work');
-
-    const existing = this.deps.ptys.forConversation(conv.id);
-    if (existing) return { sessionId: existing.id };
-
-    const worktreeName = `chat-${conv.id}`;
-    const branch = this.branchFor(conv.id);
-    let worktreePath: string;
-    try {
-      worktreePath = await this.deps.worktrees.create({
+      return {
         project,
-        projectPath: project.path,
-        featureName: worktreeName,
-        branch,
-        defaultBranch: project.defaultBranch,
-      });
-    } catch (err) {
-      throw new ChatError(503, `Arbeitskopie konnte nicht erstellt werden: ${(err as Error).message}`);
-    }
-
-    // Resume-Recovery: nie blind auf eine tote Session-ID resumen.
-    const prev = this.deps.sessions.latestForConversation(conv.id);
-    let resumeId = prev?.claude_session_id ?? undefined;
-    if (resumeId && prev && !locateTranscript(worktreePath, resumeId)) {
-      this.deps.sessions.setClaudeSessionId(prev.id, null);
-      resumeId = undefined;
-    }
-
-    const automation = resolveAutomation(this.deps.settings.getAutomation(), project.automation, {});
-    const argv = buildClaudeArgv({
-      ...(resumeId ? { resume: resumeId } : {}),
-      settingsPath: '__SETTINGS__',
-      appendSystemPrompt: buildChatWorkSystemPrompt(project),
-      ...(this.deps.model ? { model: this.deps.model } : {}),
-      permissionMode: automation.autoMode ? 'bypassPermissions' : 'acceptEdits',
-    });
-
-    let session: LiveSession;
-    try {
-      session = await this.deps.ptys.spawn({
-        projectId: project.id,
         featureId: null,
         conversationId: conv.id,
-        kind: 'chat_work',
-        cwd: worktreePath,
-        argv,
-        withHooks: true,
-      });
-    } catch (err) {
-      throw new ChatError(503, `Session konnte nicht gestartet werden: ${(err as Error).message}`);
-    }
-    this.deps.sessions.create({
-      id: session.id,
-      featureId: null,
-      conversationId: conv.id,
-      projectId: project.id,
-      kind: 'chat_work',
-      pid: session.pty.pid,
+        kind: 'chat_work' as const,
+        existing: this.deps.ptys.forConversation(conv.id),
+        workspace: {
+          project,
+          name: worktreeName,
+          branch: this.branchFor(conv.id),
+          recordedPath: this.deps.worktrees.pathFor(project, worktreeName),
+        },
+        previous: this.deps.sessions.latestForConversation(conv.id),
+        automation: resolveAutomation(this.deps.settings.getAutomation(), project.automation, {}),
+        appendSystemPrompt: buildChatWorkSystemPrompt(project),
+        ...(this.deps.model ? { model: this.deps.model } : {}),
+        // Fehlerbild bleibt beim Pfad (FR-005): der Chat antwortet weiterhin mit 503.
+        wrapError: (stage: SpawnStage, err: Error) =>
+          stage === 'worktree'
+            ? new ChatError(503, `Arbeitskopie konnte nicht erstellt werden: ${err.message}`)
+            : new ChatError(503, `Session konnte nicht gestartet werden: ${err.message}`),
+      };
     });
-    return { sessionId: session.id };
+    return { sessionId: live.id };
   }
 
   /**
